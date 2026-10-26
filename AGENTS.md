@@ -3,7 +3,7 @@
 `CLAUDE.md` imports this file, so Claude Code and Codex read the same instructions; edit this file only.
 
 ## What this project is
-A roguelike game for Roblox. Its design is not written down yet: the first task is a `/grill-me-with-docs` session that produces the first stage of `docs/plan.md`, the first ADRs and the glossary. Until a stage with acceptance criteria exists, there is nothing to implement.
+A multiplayer action roguelite for Roblox: a world generated for each run, aimed combat, builds from perks, alliances and betrayal, extraction with gear at risk. `docs/plan.md` describes the game and its stages; a stage without acceptance criteria is grilled before anything is implemented.
 
 ## Language
 - Talk to the user in Polish.
@@ -42,10 +42,15 @@ Agents read it, cite it and propose amendments; only the user changes it. A stag
 5. A recorded decision changes through a new ADR that supersedes it, proposed to the user.
 
 ## Stack and layout
-Decided in the first grilling session and recorded as `ADR-0001` (engine tooling, how the place is built and tested). Record the directory layout here when that lands. Today: `docs/` (plan, ADRs, agent instructions) and `scripts/` (tooling).
+Toolchain, gate and Studio use: `ADR-0001`; the rules core: `ADR-0002`. `default.project.json` maps the folders into the place:
+
+- `src/shared/Core/`: the pure rules core. No Roblox API, time or randomness of its own (`make purity`); the adapter passes them in.
+- `src/shared/Config.luau`: every gameplay number (rule 3). `src/shared/Protocol.luau`: the wire format; every remote is parsed there.
+- `src/server/`, `src/client/`: the engine adapter, verified in Studio through the Studio MCP. Code changes only in files; Rojo syncs them into Studio.
+- `tests/`: Lune specs of the core and protocol.
 
 ## Commands
-`make ci` is the **gate** before a merge; there is no hosted CI. The targets are documented in the `Makefile`; `make hooks` once per clone.
+`make ci` is the **gate** before a merge; there is no hosted CI. The targets are documented in the `Makefile`; `make setup` and `make hooks` once per clone.
 
 ## Conventions
 - Conventional Commits 1.0.0-beta.2 subjects (`feat(combat): add dash cooldown`), branches `<type>/<short-kebab-case-description>`, every change on its own branch ending in a PR: [workflow](docs/agent/workflow.md).
