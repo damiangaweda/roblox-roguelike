@@ -169,6 +169,8 @@ export type SelfView = {
 	xpToNext: number,
 	skillReadyIn: number,
 	skillCooldown: number,
+	kills: number,
+	-- The oldest perk offer waiting for a choice.
 	offer: { string }?,
 }
 
