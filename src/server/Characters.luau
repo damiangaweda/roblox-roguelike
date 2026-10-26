@@ -89,6 +89,22 @@ end
 
 -- Makes the player's character match `state`. Call it every frame; it acts
 -- on a change of state and keeps the Humanoid's health full.
+-- Puts a character back where the run says the player is, once it has drifted
+-- further than walking allows: a teleport, a speed hack, or a downed player
+-- trying to crawl away (rule 1).
+function Characters.hold(player: Player, x: number, z: number)
+	local character = player.Character
+	local root = if character then character:FindFirstChild("HumanoidRootPart") else nil
+	if character == nil or root == nil or not root:IsA("BasePart") then
+		return
+	end
+	local position = root.Position
+	local dx, dz = position.X - x, position.Z - z
+	if dx * dx + dz * dz > Config.player.correctionDistance ^ 2 then
+		character:PivotTo(character:GetPivot() + Vector3.new(-dx, 0, -dz))
+	end
+end
+
 function Characters.apply(player: Player, state: Types.PlayerState)
 	local entry = entryFor(player)
 	if entry == nil then

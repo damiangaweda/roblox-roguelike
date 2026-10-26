@@ -58,6 +58,7 @@ return {
 		local events = advance(run, config.run.zonesOpenAtSeconds + 1)
 		Assert.truthy(Assert.findEvent(events, "zonesOpened"))
 		local zone = run.zones[1]
+		run.players[1].x, run.players[1].z = zone.x, zone.z
 		events = advance(run, config.run.extractSeconds + 1, { [1] = { x = zone.x, z = zone.z } })
 		Assert.truthy(Assert.findEvent(events, "extracted"))
 		Assert.truthy(Assert.findEvent(events, "ended"))
@@ -117,8 +118,46 @@ return {
 	["positions are held inside the arena"] = function()
 		local run = Fixtures.run(1)
 		local half = run.config.arena.halfSize
-		Run.step(run, STEP, { [1] = { x = half + 500, z = -half - 500 } })
+		run.players[1].x, run.players[1].z = half - 0.5, -half + 0.5
+		advance(run, 1, { [1] = { x = half + 500, z = -half - 500 } })
 		Assert.equal(run.players[1].x, half)
 		Assert.equal(run.players[1].z, -half)
+	end,
+
+	["walking at walking speed is accepted"] = function()
+		local run = Fixtures.run(1)
+		local speed = run.config.player.walkSpeed
+		for step = 1, 60 do
+			Run.step(run, STEP, { [1] = { x = speed * STEP * step, z = 0 } })
+		end
+		Assert.near(run.players[1].x, speed * STEP * 60, 1e-6)
+	end,
+
+	["late updates catch up within the burst"] = function()
+		local run = Fixtures.run(1)
+		local speed = run.config.player.walkSpeed
+		-- Ten steps without news, then the whole walk arrives at once.
+		for _ = 1, 10 do
+			Run.step(run, STEP, {})
+		end
+		Run.step(run, STEP, { [1] = { x = speed * STEP * 11, z = 0 } })
+		Assert.near(run.players[1].x, speed * STEP * 11, 1e-6)
+	end,
+
+	["a teleport is held to the movement budget"] = function()
+		local run = Fixtures.run(1)
+		local player = run.config.player
+		advance(run, 2)
+		Run.step(run, STEP, { [1] = { x = 100, z = 0 } })
+		local most = player.walkSpeed * player.moveTolerance * player.moveBurstSeconds
+		Assert.truthy(run.players[1].x <= most + 1e-6, "moved " .. run.players[1].x .. " studs")
+	end,
+
+	["a downed player does not move"] = function()
+		local run = Fixtures.run(1)
+		run.players[1].state = "downed"
+		run.players[1].downedAt = 0
+		Run.step(run, STEP, { [1] = { x = 1, z = 1 } })
+		Assert.equal(run.players[1].x, 0)
 	end,
 }

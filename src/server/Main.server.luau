@@ -228,6 +228,7 @@ local function onHeartbeat(dt: number)
 		local core = current.players[id]
 		if core then
 			Characters.apply(player, core.state)
+			Characters.hold(player, core.x, core.z)
 		end
 	end
 

@@ -38,6 +38,14 @@ export type Config = {
 		-- How far from a player's centre an enemy touches them.
 		radius: number,
 		walkSpeed: number,
+		-- Movement the run accepts, as a multiple of walkSpeed, so lag is
+		-- forgiven and a teleport is not.
+		moveTolerance: number,
+		-- Seconds of movement a player may bank while their updates are late.
+		moveBurstSeconds: number,
+		-- How far a character may drift from the run's position before the
+		-- server puts it back.
+		correctionDistance: number,
 		maxHealth: number,
 		downedSeconds: number,
 		reviveSeconds: number,
@@ -131,6 +139,8 @@ export type Player = {
 	basicReadyAt: number,
 	activeSkillReadyAt: number,
 	kills: number,
+	-- Studs the player may still move before the run holds them back.
+	moveBudget: number,
 }
 
 export type Zone = {

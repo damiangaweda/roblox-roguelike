@@ -48,6 +48,7 @@ function Run.addPlayer(run: Types.Run, id: number, x: number, z: number): Types.
 		basicReadyAt = 0,
 		activeSkillReadyAt = 0,
 		kills = 0,
+		moveBudget = 0,
 	}
 	run.players[id] = player
 	return player
@@ -80,6 +81,34 @@ local function isFinite(value: number): boolean
 	return value == value and value ~= math.huge and value ~= -math.huge
 end
 
+-- Positions come from the client's character, so the run accepts only what
+-- walking could reach: anything not finite is dropped, the rest is held inside
+-- the arena and to the player's movement budget (rule 1). The budget refills
+-- at walking speed with a tolerance and banks a short burst, which absorbs
+-- late updates but not a teleport.
+local function move(run: Types.Run, player: Types.Player, input: Types.PlayerInput?, dt: number)
+	local config = run.config.player
+	local speed = config.walkSpeed * config.moveTolerance
+	player.moveBudget = math.min(player.moveBudget + speed * dt, speed * config.moveBurstSeconds)
+	if input == nil or not (isFinite(input.x) and isFinite(input.z)) then
+		return
+	end
+
+	local half = run.config.arena.halfSize
+	local dx = math.clamp(input.x, -half, half) - player.x
+	local dz = math.clamp(input.z, -half, half) - player.z
+	local distance = math.sqrt(dx * dx + dz * dz)
+	if distance > player.moveBudget then
+		local scale = player.moveBudget / distance
+		dx *= scale
+		dz *= scale
+		distance = player.moveBudget
+	end
+	player.x += dx
+	player.z += dz
+	player.moveBudget -= distance
+end
+
 local function checkEnded(run: Types.Run)
 	local any = false
 	for _, player in run.players do
@@ -102,14 +131,9 @@ function Run.step(run: Types.Run, dt: number, inputs: { [number]: Types.PlayerIn
 	end
 	run.time += dt
 
-	-- Positions come from the client's character, so anything not finite is
-	-- dropped and the rest is held inside the arena.
-	local half = run.config.arena.halfSize
-	for id, input in inputs do
-		local player = run.players[id]
-		if player and player.state == "alive" and isFinite(input.x) and isFinite(input.z) then
-			player.x = math.clamp(input.x, -half, half)
-			player.z = math.clamp(input.z, -half, half)
+	for id, player in run.players do
+		if player.state == "alive" then
+			move(run, player, inputs[id], dt)
 		end
 	end
 

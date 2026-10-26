@@ -24,6 +24,10 @@ _Avoid_: Mobs, wave (unless a wave is meant)
 A combat move of one class, either its basic attack or an active move on a cooldown; skills drop as loot, stay in the stash and are never lost.
 _Avoid_: Ability, spell, power
 
+**Active skill**:
+The skill a player fires by hand, on a cooldown; the class's other skill is its automatic basic attack.
+_Avoid_: Ability, special, ultimate
+
 **Perk**:
 An upgrade picked at a level-up during a run, which lasts until the run ends.
 _Avoid_: Skill, upgrade, talent, modifier
@@ -35,6 +39,14 @@ _Avoid_: Element, type, category
 **Synergy**:
 A bonus that triggers when skills or perks with matching tags meet, either in one player's build or between members of one alliance.
 _Avoid_: Combo, interaction
+
+**Status**:
+A temporary condition a tagged hit puts on an enemy: burning (from fire) or chilled (from ice).
+_Avoid_: Debuff, effect, condition
+
+**Shatter**:
+The synergy in which fire damage to a chilled enemy is multiplied.
+_Avoid_: Combo, crit, freeze-burn
 
 **Build**:
 The skills a player brought into a run together with the perks gathered during it.
