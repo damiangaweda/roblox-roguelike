@@ -75,6 +75,82 @@ export type World = {
 	bounds: Rect,
 }
 
+-- A hand-made point layout (ADR-0012): data the generator reads. Positions
+-- are relative to the point's centre.
+export type PointTemplate = {
+	id: string,
+	-- The footprint flattened on the terrain, in studs from the centre.
+	radius: number,
+	-- Where the camp gathers; nil for a template without a camp (entries).
+	camp: Point?,
+	chest: Point,
+	-- Where a clue can stand (stage 2d reads it).
+	clue: Point,
+	-- Cover spots; each hides a player within config.map.coverRadius.
+	cover: { Point },
+	-- Solid props (ruin walls, a well): axis-aligned rects relative to the
+	-- centre, which stop movement, shots and bursts.
+	props: { Rect },
+}
+
+export type MapPoint = {
+	id: number,
+	x: number,
+	z: number,
+	template: string,
+	radius: number,
+	-- Ids of the paths leaving the point and of the points they lead to, in
+	-- the same order.
+	paths: { number },
+	neighbours: { number },
+	-- Paths to the nearest entry; 0 for an entry.
+	distance: number,
+	-- 1 next to the entries, config.map.maxLevel farthest.
+	level: number,
+	isEntry: boolean,
+	hasZone: boolean,
+	-- Absolute positions resolved from the template; campX/campZ nil for an
+	-- entry.
+	campX: number?,
+	campZ: number?,
+	cover: { Point },
+	-- Absolute prop rects; a prop a path would cross is left out.
+	props: { Rect },
+}
+
+export type Path = {
+	id: number,
+	a: number,
+	b: number,
+	-- Straight: from point a's centre to point b's centre; halfWidth is the
+	-- band drawn on the ground and kept walkable.
+	halfWidth: number,
+}
+
+export type Map = {
+	-- The map is the square [-half, half] on both axes.
+	half: number,
+	points: { MapPoint },
+	paths: { Path },
+	entries: { number },
+	zonePoints: { number },
+	-- nextHop[from][to] is the neighbouring point to walk to on the way from
+	-- point `from` to point `to`; nextHop[p][p] is p. hops[from][to] is the
+	-- number of paths between the points.
+	nextHop: { { number } },
+	hops: { { number } },
+	-- Heights on a grid of heightCell studs: heights[row][col], row along z,
+	-- col along x, both from -half; a value below waterLevel is water.
+	heights: { { number } },
+	heightCell: number,
+	waterLevel: number,
+	-- Cover scattered between points (bushes), absolute.
+	fieldCover: { Point },
+	-- The ids of the points whose footprint overlaps a grid cell, keyed by
+	-- (row - 1) * columns + col of the cell's lower corner; absent when none.
+	pointCells: { [number]: { number } },
+}
+
 -- Where a point is: in a room, in a corridor, or outside the walkable world.
 export type Location = { kind: "room" | "corridor" | "outside", id: number }
 
@@ -245,6 +321,55 @@ export type PerkConfig = {
 	maxStacks: number,
 }
 
+export type MapConfig = {
+	-- The half side grows with the players: studsPerPlayer * players,
+	-- clamped to [minHalf, maxHalf].
+	studsPerPlayer: number,
+	minHalf: number,
+	maxHalf: number,
+	pointsPerPlayer: number,
+	minPoints: number,
+	maxPoints: number,
+	-- Centre to centre, at least.
+	pointSpacing: number,
+	-- No point centre closer than this to the edge.
+	edgeMargin: number,
+	-- Entries lie within this many studs inward of edgeMargin.
+	entryBand: number,
+	-- Candidates drawn for each point, entry or bush before it is given up.
+	placementAttempts: number,
+	-- Chance of each link beyond the spanning tree, from the neighbour graph.
+	extraLinkChance: number,
+	pathHalfWidth: number,
+	playersPerEntry: number,
+	maxEntries: number,
+	-- Entries at least this far apart, in studs.
+	minEntrySpacing: number,
+	maxLevel: number,
+	playersPerZone: number,
+	minZones: number,
+	maxZones: number,
+	zoneRadius: number,
+	-- How much a point's depth counts against its distance from other
+	-- zones when extraction zones are placed.
+	zoneDepthWeight: number,
+	coverRadius: number,
+	-- Bushes scattered between points, per point, and how far they keep
+	-- from footprints and path bands.
+	fieldCoverPerPoint: number,
+	fieldCoverClearance: number,
+	heightCell: number,
+	-- Hills from 0 to this.
+	maxHeight: number,
+	-- Below it water; points and paths stay at least one stud above it.
+	waterLevel: number,
+	-- Cycles per stud of the value noise.
+	hillFrequency: number,
+	campReturnMinutes: number,
+	templates: { PointTemplate },
+	entryTemplate: PointTemplate,
+}
+
 export type Config = {
 	run: {
 		durationSeconds: number,
@@ -281,6 +406,7 @@ export type Config = {
 		campsInZoneRooms: boolean,
 		templates: { RoomTemplate },
 	},
+	map: MapConfig,
 	player: {
 		-- How far from a player's centre an attack touches them.
 		radius: number,
@@ -454,6 +580,10 @@ export type Camp = {
 	-- How many players the camp has grown for.
 	scaledFor: number,
 	leaderId: number?,
+	-- Run time when its last member died; nil while it holds its point.
+	clearedAt: number?,
+	-- Whether the camp comes back after it is cleared (never at an entry).
+	returns: boolean?,
 }
 
 export type Patrol = {
