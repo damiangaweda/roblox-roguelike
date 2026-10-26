@@ -23,9 +23,55 @@ local DESIGN_HEIGHT = 720
 local MIN_SCALE = 0.55
 local MAX_SCALE = 1.25
 local BANNER_SECONDS = 4
-local CAMP_BANNER_SECONDS = 2
-local HURT_FLASH_SECONDS = 0.25
-local HURT_FLASH_TRANSPARENCY = 0.7
+-- A label's text stroke and a bar's track, as built.
+local STROKE_TRANSPARENCY = 0.6
+local TRACK_TRANSPARENCY = 0.15
+-- The vignette's rims reach this far in: a share of the screen's width at the
+-- sides and of its height at the top and the bottom.
+local VIGNETTE_SIDE_DEPTH = 0.16
+local VIGNETTE_END_DEPTH = 0.22
+-- Hurt flash: a red rim that pops on a hit and fades out over this long.
+local HURT_FLASH_SECONDS = 0.4
+-- The rim's opacity for the lightest hit, the opacity each share of max health
+-- a hit takes adds, and the most it reaches; a hit during a flash keeps the stronger.
+local HURT_FLASH_MIN = 0.3
+local HURT_FLASH_PER_SHARE = 2
+local HURT_FLASH_MAX = 0.85
+-- Low health: below this share of max health a slow pulse, below the second a fast one.
+local LOW_HEALTH_SHARE = 0.35
+local CRITICAL_HEALTH_SHARE = 0.15
+-- Seconds per pulse, slow and fast.
+local LOW_HEALTH_PERIOD = 1.4
+local CRITICAL_HEALTH_PERIOD = 0.7
+-- The dark rim's opacity at the bottom and the top of a pulse, slow and fast.
+local LOW_HEALTH_ALPHA_MIN = 0.2
+local LOW_HEALTH_ALPHA_MAX = 0.45
+local CRITICAL_HEALTH_ALPHA_MIN = 0.35
+local CRITICAL_HEALTH_ALPHA_MAX = 0.7
+-- How quickly (per second) the low-health state eases in and out, so healing does not snap it off.
+local LOW_HEALTH_EASE = 4
+-- The health number's text stroke at full low health, darker so it reads on the pulse.
+local LOW_HEALTH_STROKE_TRANSPARENCY = 0.1
+-- Drinking: the bar sits this far right of the potion hint, and flashes this long when
+-- a drink lands or is interrupted.
+local DRINK_BAR_GAP = 26
+local DRINK_BAR_WIDTH = 96
+local DRINK_FLASH_SECONDS = 0.5
+-- Level-up: the popup's life, how much it grows over it, the share of its life
+-- before it starts to fade, and how long the experience bar flashes gold.
+local LEVEL_POPUP_SECONDS = 1.2
+local LEVEL_POPUP_GROWTH = 0.5
+local LEVEL_POPUP_HOLD = 0.35
+local LEVEL_FLASH_SECONDS = 0.6
+-- Camp notices: how long a line stays, the fade at its end, and how many show at once.
+local NOTICE_SECONDS = 2
+local NOTICE_FADE_SECONDS = 0.5
+local MAX_NOTICES = 2
+-- Downed, dead and extracted screens fade in over this long, to these tint opacities.
+local STATE_FADE_SECONDS = 0.6
+local DOWNED_TINT_ALPHA = 0.15
+local DEAD_TINT_ALPHA = 0.1
+local STATE_PANEL_TRANSPARENCY = 0.3
 local COMPASS_RADIUS = 110
 -- A zone this close (edge to character) is on screen; its arrow is hidden.
 local COMPASS_HIDE_STUDS = 25
@@ -70,6 +116,13 @@ local DASH_COLOR = Color3.fromRGB(150, 210, 240)
 local EXTRACT_COLOR = Color3.fromRGB(240, 196, 70)
 local BLEED_COLOR = Color3.fromRGB(190, 60, 60)
 local REVIVE_COLOR = Color3.fromRGB(110, 210, 150)
+local HURT_COLOR = Color3.fromRGB(230, 40, 40)
+local LOW_HEALTH_COLOR = Color3.fromRGB(110, 0, 0)
+-- The health bar's fill at the top of a low-health pulse; dark enough for the white number.
+local HEALTH_PULSE_COLOR = Color3.fromRGB(255, 96, 86)
+local LEVEL_COLOR = Color3.fromRGB(255, 214, 90)
+local DRANK_COLOR = Color3.fromRGB(110, 220, 120)
+local NOTICE_COLOR = Color3.fromRGB(225, 225, 232)
 local FONT = Enum.Font.GothamMedium
 local FONT_BOLD = Enum.Font.GothamBold
 
@@ -102,6 +155,12 @@ type Arrow = {
 	root: Frame,
 	arrow: TextLabel,
 	distance: TextLabel,
+}
+
+-- A camp notice line and the os.clock() it was shown at.
+type Notice = {
+	text: string,
+	at: number,
 }
 
 local function round(parent: GuiObject, radius: number)
@@ -145,7 +204,7 @@ local function newLabel(
 	label.Font = font
 	label.TextSize = textSize
 	label.TextColor3 = WHITE
-	label.TextStrokeTransparency = 0.6
+	label.TextStrokeTransparency = STROKE_TRANSPARENCY
 	label.Text = ""
 	label.Parent = parent
 	return label
@@ -159,7 +218,7 @@ local function newBar(
 	color: Color3,
 	textSize: number
 ): Bar
-	local root = newFrame(parent, name, size, position, TRACK_COLOR, 0.15)
+	local root = newFrame(parent, name, size, position, TRACK_COLOR, TRACK_TRANSPARENCY)
 	round(root, 6)
 	local fill = newFrame(root, "Fill", UDim2.fromScale(1, 1), UDim2.new(), color, 0)
 	round(fill, 6)
@@ -170,6 +229,71 @@ end
 local function setBar(bar: Bar, fraction: number, text: string)
 	bar.fill.Size = UDim2.fromScale(math.clamp(fraction, 0, 1), 1)
 	bar.label.Text = text
+end
+
+-- Fades a bar as a whole; 1 is as built, 0 is gone.
+local function setBarAlpha(bar: Bar, alpha: number)
+	bar.root.BackgroundTransparency = 1 - (1 - TRACK_TRANSPARENCY) * alpha
+	bar.fill.BackgroundTransparency = 1 - alpha
+	bar.label.TextTransparency = 1 - alpha
+	bar.label.TextStrokeTransparency = 1 - (1 - STROKE_TRANSPARENCY) * alpha
+end
+
+-- Fades a label's text and stroke; 1 is as built.
+local function setTextAlpha(label: TextLabel, alpha: number)
+	label.TextTransparency = 1 - alpha
+	label.TextStrokeTransparency = 1 - (1 - STROKE_TRANSPARENCY) * alpha
+end
+
+-- A vignette: four rims along the screen's edges, each opaque at the edge and
+-- clear toward the centre; the corners, where two overlap, read darkest.
+local function newVignette(parent: Instance, name: string, color: Color3): { Frame }
+	local holder = newFrame(parent, name, UDim2.fromScale(1, 1), UDim2.new(), color, 1)
+	local falloff = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0),
+		NumberSequenceKeypoint.new(0.4, 0.55),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	local edges: { Frame } = {}
+	-- `rotation` turns the gradient so its opaque end lies on the screen's edge.
+	local function addEdge(edgeName: string, size: UDim2, position: UDim2, rotation: number)
+		local edge = newFrame(holder, edgeName, size, position, color, 1)
+		edge.Visible = false
+		local gradient = Instance.new("UIGradient")
+		gradient.Transparency = falloff
+		gradient.Rotation = rotation
+		gradient.Parent = edge
+		table.insert(edges, edge)
+	end
+	addEdge("Left", UDim2.fromScale(VIGNETTE_SIDE_DEPTH, 1), UDim2.new(), 0)
+	addEdge(
+		"Right",
+		UDim2.fromScale(VIGNETTE_SIDE_DEPTH, 1),
+		UDim2.fromScale(1 - VIGNETTE_SIDE_DEPTH, 0),
+		180
+	)
+	addEdge("Top", UDim2.fromScale(1, VIGNETTE_END_DEPTH), UDim2.new(), 90)
+	addEdge(
+		"Bottom",
+		UDim2.fromScale(1, VIGNETTE_END_DEPTH),
+		UDim2.fromScale(0, 1 - VIGNETTE_END_DEPTH),
+		-90
+	)
+	return edges
+end
+
+-- Sets a vignette's opacity, 0 hiding it.
+local function setVignette(edges: { Frame }, alpha: number)
+	local clamped = math.clamp(alpha, 0, 1)
+	for _, edge in edges do
+		edge.Visible = clamped > 0
+		edge.BackgroundTransparency = 1 - clamped
+	end
+end
+
+-- Quick at first, slowing to the end; for t in [0, 1].
+local function easeOut(t: number): number
+	return 1 - (1 - t) * (1 - t)
 end
 
 local function formatTime(seconds: number): string
@@ -223,9 +347,9 @@ function Hud.start()
 	local uiScale = Instance.new("UIScale")
 	uiScale.Parent = root
 
-	-- Hurt flash: a red wash that fades out; behind every panel.
-	local hurtFlash =
-		newFrame(root, "HurtFlash", UDim2.fromScale(1, 1), UDim2.new(), BLEED_COLOR, 1)
+	-- Low health and the hurt flash: rims at the screen's edges, behind every panel.
+	local lowHealthRim = newVignette(root, "LowHealth", LOW_HEALTH_COLOR)
+	local hurtRim = newVignette(root, "HurtFlash", HURT_COLOR)
 
 	-- Top left: health, potions, experience, kills.
 	local stats = newFrame(
@@ -238,6 +362,12 @@ function Hud.start()
 	)
 	local healthBar =
 		newBar(stats, "Health", UDim2.fromOffset(280, 28), UDim2.new(), HEALTH_COLOR, 18)
+	-- An outline that pulses with low health.
+	local healthStroke = Instance.new("UIStroke")
+	healthStroke.Color = HURT_COLOR
+	healthStroke.Thickness = 2
+	healthStroke.Transparency = 1
+	healthStroke.Parent = healthBar.root
 
 	local potionRow = newFrame(
 		stats,
@@ -257,11 +387,12 @@ function Hud.start()
 		FONT_BOLD
 	)
 	potionHint.Text = if touch then "" else "C"
+	-- Placed after the potion hint by setPotionCapacity.
 	local drinkBar = newBar(
 		potionRow,
 		"Drinking",
-		UDim2.fromOffset(120, POTION_SLOT_SIZE),
-		UDim2.fromOffset(160, 0),
+		UDim2.fromOffset(DRINK_BAR_WIDTH, POTION_SLOT_SIZE),
+		UDim2.new(),
 		POTION_COLOR,
 		13
 	)
@@ -306,11 +437,26 @@ function Hud.start()
 		16,
 		FONT
 	)
+	-- Camp notices: short lines under the flood note, the newest last.
+	local noticeLabels: { TextLabel } = {}
+	for index = 1, MAX_NOTICES do
+		local label = newLabel(
+			root,
+			"Notice" .. index,
+			UDim2.fromOffset(460, 20),
+			UDim2.new(0.5, -230, 0, 52 + (index - 1) * 20),
+			16,
+			FONT
+		)
+		label.TextColor3 = NOTICE_COLOR
+		label.Visible = false
+		noticeLabels[index] = label
+	end
 	local bannerLabel = newLabel(
 		root,
 		"Banner",
 		UDim2.fromOffset(560, 48),
-		UDim2.new(0.5, -280, 0, 84),
+		UDim2.new(0.5, -280, 0, 52 + MAX_NOTICES * 20),
 		28,
 		FONT_BOLD
 	)
@@ -356,6 +502,21 @@ function Hud.start()
 		16
 	)
 	extractBar.root.Visible = false
+
+	-- Level-up: "Level N" in the upper middle, growing as it fades.
+	local levelPopup = newLabel(
+		root,
+		"LevelUp",
+		UDim2.fromOffset(320, 56),
+		UDim2.fromScale(0.5, 0.22),
+		40,
+		FONT_BOLD
+	)
+	levelPopup.AnchorPoint = Vector2.new(0.5, 0.5)
+	levelPopup.TextColor3 = LEVEL_COLOR
+	levelPopup.Visible = false
+	local levelPopupScale = Instance.new("UIScale")
+	levelPopupScale.Parent = levelPopup
 
 	-- Bottom centre: the three active skills, then the dash.
 	local skillRow = newFrame(
@@ -538,7 +699,7 @@ function Hud.start()
 		UDim2.fromOffset(460, 160),
 		UDim2.new(0.5, -230, 0.38, 0),
 		PANEL_COLOR,
-		0.3
+		STATE_PANEL_TRANSPARENCY
 	)
 	round(statePanel, 10)
 	local stateTitle = newLabel(
@@ -591,6 +752,23 @@ function Hud.start()
 	local lastWorldTime = -1
 	local bannerUntil = 0
 	local hurtAt = -math.huge
+	-- The hurt flash's opacity when it popped.
+	local hurtStrength = 0
+	-- How far into the low-health state the HUD is, 0 to 1, and the pulse's phase in turns.
+	local lowLevel = 0
+	local pulsePhase = 0
+	-- os.clock() when the local player started drinking, by the event; nil when not.
+	local drinkStartedAt: number? = nil
+	-- The drink bar's last fill, and its flash when a drink lands or is interrupted.
+	local drinkFraction = 0
+	local drinkFlashAt = -math.huge
+	local drinkFlashColor = DRANK_COLOR
+	local drinkFlashText = ""
+	local levelUpAt = -math.huge
+	local notices: { Notice } = {}
+	-- The local player's state on screen and when it began, for the fade-in.
+	local shownState: Types.PlayerState = "alive"
+	local stateAt = -math.huge
 	local ended = false
 	-- The run time when the local player extracted or died, and which.
 	local finishedAt: number? = nil
@@ -615,6 +793,38 @@ function Hud.start()
 		bannerLabel.Visible = false
 		bannerUntil = 0
 		hurtAt = -math.huge
+		hurtStrength = 0
+		drinkStartedAt = nil
+		drinkFlashAt = -math.huge
+		levelUpAt = -math.huge
+		table.clear(notices)
+	end
+
+	-- Adds a camp notice line, dropping the oldest beyond MAX_NOTICES; the same
+	-- line again only refreshes the newest.
+	local function pushNotice(text: string)
+		local now = os.clock()
+		local newest = notices[#notices]
+		if newest and newest.text == text then
+			newest.at = now
+			return
+		end
+		table.insert(notices, { text = text, at = now })
+		while #notices > MAX_NOTICES do
+			table.remove(notices, 1)
+		end
+	end
+
+	local function hurtAlpha(now: number): number
+		local t = (now - hurtAt) / HURT_FLASH_SECONDS
+		return if t < 1 then hurtStrength * (1 - t) else 0
+	end
+
+	local function flashDrink(color: Color3, text: string)
+		drinkStartedAt = nil
+		drinkFlashAt = os.clock()
+		drinkFlashColor = color
+		drinkFlashText = text
 	end
 
 	local function localView(snapshot: Net.Snapshot?): Protocol.PlayerView?
@@ -670,11 +880,32 @@ function Hud.start()
 			if event.kind == "flood" then
 				showBanner("The horde floods the map", BANNER_SECONDS)
 			elseif event.kind == "campAlerted" then
-				showBanner("A camp notices you", CAMP_BANNER_SECONDS)
+				pushNotice("A camp has noticed you")
+			elseif event.kind == "campReturned" then
+				-- The client does not know where points are, so there is no "nearby" filter.
+				pushNotice("A camp has returned")
 			elseif event.kind == "levelUp" and event.player == userId then
-				showBanner("Level " .. event.level, BANNER_SECONDS)
+				levelUpAt = os.clock()
+				levelPopup.Text = "Level " .. event.level
 			elseif event.kind == "playerHurt" and event.player == userId then
-				hurtAt = os.clock()
+				-- Scaled by the hit's share of max health; a hit during a flash keeps the stronger.
+				local now = os.clock()
+				local view = localView(Net.latest)
+				local share = if view and view.maxHealth > 0
+					then event.amount / view.maxHealth
+					else 0
+				local strength =
+					math.min(HURT_FLASH_MAX, HURT_FLASH_MIN + share * HURT_FLASH_PER_SHARE)
+				hurtStrength = math.max(hurtAlpha(now), strength)
+				hurtAt = now
+			elseif event.kind == "drinking" and event.player == userId then
+				drinkStartedAt = os.clock()
+				drinkFlashAt = -math.huge
+			elseif event.kind == "drank" and event.player == userId then
+				drinkFraction = 1
+				flashDrink(DRANK_COLOR, string.format("+%d", math.floor(event.amount + 0.5)))
+			elseif event.kind == "drinkInterrupted" and event.player == userId then
+				flashDrink(SKILL_COOLDOWN_COLOR, "Interrupted")
 			elseif event.kind == "died" and event.player == userId then
 				finishedAt = finishedAt or worldTime()
 				outcome = "Died"
@@ -794,6 +1025,7 @@ function Hud.start()
 			slot.Visible = index <= capacity
 		end
 		potionHint.Position = UDim2.fromOffset(capacity * POTION_SLOT_STEP + 2, 0)
+		drinkBar.root.Position = UDim2.fromOffset(capacity * POTION_SLOT_STEP + DRINK_BAR_GAP, 0)
 	end
 
 	local function updatePotions(
@@ -807,14 +1039,36 @@ function Hud.start()
 		for index, slot in potionSlots do
 			slot.BackgroundColor3 = if index <= potions then POTION_COLOR else TRACK_COLOR
 		end
+		-- Seconds of the drink left, from the snapshot or, until one shows it, the event.
 		local snapshot = Net.latest
 		local drinking = 0
 		if view and snapshot and view.drinkingFor > 0 then
 			drinking = math.max(0, view.drinkingFor - (now - snapshot.receivedAt))
 		end
-		drinkBar.root.Visible = drinking > 0
-		if drinking > 0 then
-			setBar(drinkBar, 1 - drinking / Config.player.drinkSeconds, "Drinking…")
+		local startedAt = drinkStartedAt
+		if startedAt then
+			local left = Config.player.drinkSeconds - (now - startedAt)
+			if left > 0 then
+				drinking = math.max(drinking, left)
+			else
+				drinkStartedAt = nil
+			end
+		end
+		local sinceFlash = now - drinkFlashAt
+		if sinceFlash < DRINK_FLASH_SECONDS then
+			-- A landed or interrupted drink: the bar in green or grey, fading out.
+			drinkBar.root.Visible = true
+			drinkBar.fill.BackgroundColor3 = drinkFlashColor
+			setBar(drinkBar, drinkFraction, drinkFlashText)
+			setBarAlpha(drinkBar, 1 - sinceFlash / DRINK_FLASH_SECONDS)
+		elseif drinking > 0 then
+			drinkBar.root.Visible = true
+			drinkBar.fill.BackgroundColor3 = POTION_COLOR
+			drinkFraction = 1 - drinking / Config.player.drinkSeconds
+			setBar(drinkBar, drinkFraction, "Drinking…")
+			setBarAlpha(drinkBar, 1)
+		else
+			drinkBar.root.Visible = false
 		end
 		if potionButton then
 			potionButton.BackgroundColor3 = if potions > 0
@@ -950,7 +1204,7 @@ function Hud.start()
 		end
 	end
 
-	local function render()
+	local function render(deltaTime: number)
 		local now = os.clock()
 		local snapshot = Net.latest
 		local selfView = Net.self
@@ -970,6 +1224,30 @@ function Hud.start()
 		else
 			setBar(healthBar, 0, "")
 		end
+
+		-- Low health: a dark rim and the health bar pulsing, faster when critical;
+		-- the state eases in and out.
+		local healthShare = if view and view.maxHealth > 0 then view.health / view.maxHealth else 1
+		local alive = view ~= nil and view.state == "alive"
+		local lowTarget = if alive and healthShare < LOW_HEALTH_SHARE then 1 else 0
+		lowLevel += (lowTarget - lowLevel) * math.min(1, deltaTime * LOW_HEALTH_EASE)
+		local critical = healthShare < CRITICAL_HEALTH_SHARE
+		pulsePhase = (
+			pulsePhase
+			+ deltaTime / (if critical then CRITICAL_HEALTH_PERIOD else LOW_HEALTH_PERIOD)
+		) % 1
+		local wave = 0.5 - 0.5 * math.cos(pulsePhase * 2 * math.pi)
+		local rimMin = if critical then CRITICAL_HEALTH_ALPHA_MIN else LOW_HEALTH_ALPHA_MIN
+		local rimMax = if critical then CRITICAL_HEALTH_ALPHA_MAX else LOW_HEALTH_ALPHA_MAX
+		setVignette(lowHealthRim, lowLevel * (rimMin + (rimMax - rimMin) * wave))
+		healthBar.fill.BackgroundColor3 = HEALTH_COLOR:Lerp(HEALTH_PULSE_COLOR, lowLevel * wave)
+		healthStroke.Transparency = 1 - lowLevel * wave
+		healthBar.label.TextStrokeTransparency = STROKE_TRANSPARENCY
+			+ (LOW_HEALTH_STROKE_TRANSPARENCY - STROKE_TRANSPARENCY) * lowLevel
+
+		-- Hurt flash.
+		setVignette(hurtRim, hurtAlpha(now))
+
 		if selfView then
 			setBar(
 				xpBar,
@@ -986,14 +1264,25 @@ function Hud.start()
 			setBar(xpBar, 0, "")
 			killsLabel.Text = ""
 		end
+		-- Level-up: the experience bar flashes gold, and the popup grows and fades.
+		local sinceLevel = now - levelUpAt
+		local levelFlash = if sinceLevel < LEVEL_FLASH_SECONDS
+			then 1 - sinceLevel / LEVEL_FLASH_SECONDS
+			else 0
+		xpBar.fill.BackgroundColor3 = XP_COLOR:Lerp(LEVEL_COLOR, levelFlash)
+		xpBar.label.TextColor3 = WHITE:Lerp(LEVEL_COLOR, levelFlash)
+		local popupAge = sinceLevel / LEVEL_POPUP_SECONDS
+		levelPopup.Visible = popupAge < 1
+		if popupAge < 1 then
+			levelPopupScale.Scale = 1 + LEVEL_POPUP_GROWTH * easeOut(popupAge)
+			setTextAlpha(
+				levelPopup,
+				1 - math.clamp((popupAge - LEVEL_POPUP_HOLD) / (1 - LEVEL_POPUP_HOLD), 0, 1)
+			)
+		end
+
 		updatePotions(selfView, view, now)
 		updatePerkList(selfView)
-
-		-- Hurt flash.
-		local sinceHurt = now - hurtAt
-		hurtFlash.BackgroundTransparency = if sinceHurt < HURT_FLASH_SECONDS
-			then HURT_FLASH_TRANSPARENCY + (1 - HURT_FLASH_TRANSPARENCY) * sinceHurt / HURT_FLASH_SECONDS
-			else 1
 
 		-- Run clock and flood note; the clock runs on between snapshots and
 		-- freezes once the run has ended.
@@ -1013,6 +1302,22 @@ function Hud.start()
 			else ""
 		if bannerLabel.Visible and now >= bannerUntil then
 			bannerLabel.Visible = false
+		end
+
+		-- Camp notices, fading out at the end of their time.
+		for index = #notices, 1, -1 do
+			if now - notices[index].at >= NOTICE_SECONDS then
+				table.remove(notices, index)
+			end
+		end
+		for index, label in noticeLabels do
+			local notice = notices[index]
+			label.Visible = notice ~= nil
+			if notice then
+				label.Text = notice.text
+				local left = NOTICE_SECONDS - (now - notice.at)
+				setTextAlpha(label, math.clamp(left / NOTICE_FADE_SECONDS, 0, 1))
+			end
 		end
 
 		-- Skills and dash, counted down locally between event batches.
@@ -1068,13 +1373,23 @@ function Hud.start()
 			setBar(extractBar, view.extractProgress / Config.run.extractSeconds, "Extracting...")
 		end
 
-		-- Downed, dead, extracted.
-		local state = if view then view.state else "alive"
+		-- Downed, dead, extracted: the tint and the panel fade in when the state begins.
+		local state: Types.PlayerState = if view then view.state else "alive"
+		if state ~= shownState then
+			shownState = state
+			stateAt = now
+		end
+		local fadeIn = easeOut(math.clamp((now - stateAt) / STATE_FADE_SECONDS, 0, 1))
 		stateTint.Visible = state ~= "alive" and not summary.Visible
+		statePanel.BackgroundTransparency = 1 - (1 - STATE_PANEL_TRANSPARENCY) * fadeIn
+		setTextAlpha(stateTitle, fadeIn)
+		setTextAlpha(stateText, fadeIn)
+		setBarAlpha(bleedBar, fadeIn)
+		setBarAlpha(reviveBar, fadeIn)
 		bleedBar.root.Visible = false
 		reviveBar.root.Visible = false
 		if state == "downed" and view then
-			stateTint.BackgroundTransparency = 0.85
+			stateTint.BackgroundTransparency = 1 - DOWNED_TINT_ALPHA * fadeIn
 			stateTitle.Text = "Downed"
 			stateText.Text = "Another player can revive you"
 			bleedBar.root.Visible = true
@@ -1082,7 +1397,7 @@ function Hud.start()
 			setBar(bleedBar, 1 - view.downedFor / Config.player.downedSeconds, "Bleeding out")
 			setBar(reviveBar, view.reviveProgress / Config.player.reviveSeconds, "Being revived")
 		elseif state == "dead" then
-			stateTint.BackgroundTransparency = 0.9
+			stateTint.BackgroundTransparency = 1 - DEAD_TINT_ALPHA * fadeIn
 			stateTitle.Text = "You died"
 			stateText.Text = "Spectating the rest of the run"
 		elseif state == "extracted" then
