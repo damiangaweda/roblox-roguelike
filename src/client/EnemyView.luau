@@ -1,9 +1,11 @@
 --!strict
 -- Draws the enemies. The server owns them as data (ADR-0004); this keeps one
 -- pooled model of a few anchored parts per enemy id and glides it between
--- snapshots, every part moved by one bulk move per frame.
+-- snapshots, every part moved by one bulk move per frame. Enemies out of the
+-- local character's range are parked and cost nothing per frame.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 
 local Config = require(ReplicatedStorage.Shared.Config)
@@ -33,18 +35,18 @@ type Piece = {
 	offset: CFrame,
 	on: number?,
 	transparency: number?,
-	-- The pose at the end of the wind-up, reached over the telegraph.
-	telegraph: CFrame?,
+	-- The telegraph pose: reached at the end of the telegraph.
+	telegraphPose: CFrame?,
 	-- The pose right after the attack lands.
 	strike: CFrame?,
-	-- How many times bigger the piece is at the end of the wind-up.
+	-- How many times bigger the piece is at the end of the telegraph.
 	swell: number?,
-	-- Turning about its up axis, radians per second, at rest and in the wind-up.
+	-- Turning about its up axis, radians per second, at rest and in the telegraph.
 	spin: number?,
 	telegraphSpin: number?,
 	-- Floating up and down by this many studs.
 	bob: number?,
-	-- Turns neon during the wind-up.
+	-- Turns neon during the telegraph.
 	glowsOnTelegraph: boolean?,
 }
 
@@ -71,17 +73,17 @@ local GRUNT: Look = {
 			size = Vector3.new(2.6, 1.8, 2.6),
 			color = Color3.fromRGB(130, 72, 58),
 			offset = pose(0, 1, 0.3, 0.3),
-			telegraph = pose(0, 0.9, 0.5, 0.55),
+			telegraphPose = pose(0, 0.9, 0.5, 0.55),
 			strike = pose(0, 1, -0.5, 0.45),
 		},
-		-- A big head that ducks in the wind-up and lunges on the attack.
+		-- A big head that ducks in the telegraph and lunges on the attack.
 		{
 			role = "detail",
 			shape = BLOCK,
 			size = Vector3.new(2.2, 1.7, 2),
 			color = Color3.fromRGB(150, 84, 66),
 			offset = pose(0, 2.2, -1),
-			telegraph = pose(0, 1.8, -1.2, 0.25),
+			telegraphPose = pose(0, 1.8, -1.2, 0.25),
 			strike = pose(0, 1.7, -2.2, 0.35),
 		},
 	},
@@ -99,7 +101,7 @@ local LOOKS: { [string]: Look } = {
 				size = Vector3.new(4.2, 4.6, 3.2),
 				color = Color3.fromRGB(96, 116, 88),
 				offset = pose(0, 2.4, 0.2, 0.1),
-				telegraph = pose(0, 2.6, 0.5, -0.1),
+				telegraphPose = pose(0, 2.6, 0.5, -0.1),
 				strike = pose(0, 2.2, -0.4, 0.3),
 			},
 			{
@@ -108,18 +110,18 @@ local LOOKS: { [string]: Look } = {
 				size = Vector3.new(2, 1.5, 1.8),
 				color = Color3.fromRGB(110, 132, 100),
 				offset = pose(0, 5.2, -0.6, 0.1),
-				telegraph = pose(0, 5.4, 0.1, -0.1),
+				telegraphPose = pose(0, 5.4, 0.1, -0.1),
 				strike = pose(0, 4.6, -1.4, 0.3),
 			},
 			-- The hammer: hangs at its right side, rises overhead in the
-			-- wind-up and lies forward on the ground after the blow.
+			-- telegraph and lies forward on the ground after the blow.
 			{
 				role = "detail",
 				shape = BLOCK,
 				size = Vector3.new(1.2, 4.6, 1.2),
 				color = Color3.fromRGB(72, 76, 74),
 				offset = pose(2.9, 2.3, -0.4),
-				telegraph = pose(2.6, 6.4, 1, -0.5),
+				telegraphPose = pose(2.6, 6.4, 1, -0.5),
 				strike = pose(1.6, 1.4, -3.6, math.pi / 2),
 			},
 		},
@@ -134,10 +136,10 @@ local LOOKS: { [string]: Look } = {
 				size = Vector3.new(1.5, 3.2, 1.6),
 				color = Color3.fromRGB(150, 168, 62),
 				offset = pose(0, 1.6, 0.3),
-				telegraph = pose(0, 1.6, 0.5, -0.15),
+				telegraphPose = pose(0, 1.6, 0.5, -0.15),
 				strike = pose(0, 1.6, 0.1, 0.15),
 			},
-			-- A long neck and head that rears back in the wind-up and spits
+			-- A long neck and head that rears back in the telegraph and spits
 			-- forward.
 			{
 				role = "detail",
@@ -145,7 +147,7 @@ local LOOKS: { [string]: Look } = {
 				size = Vector3.new(1, 1, 2.8),
 				color = Color3.fromRGB(168, 186, 74),
 				offset = pose(0, 3.5, -0.9, -0.25),
-				telegraph = pose(0, 3.9, -0.1, -0.6),
+				telegraphPose = pose(0, 3.9, -0.1, -0.6),
 				strike = pose(0, 3.2, -1.6, 0.1),
 			},
 			-- The glowing mouth at the front of the head.
@@ -163,7 +165,7 @@ local LOOKS: { [string]: Look } = {
 	},
 	exploder = {
 		pieces = {
-			-- A round body that swells in the wind-up.
+			-- A round body that swells in the telegraph.
 			{
 				role = "body",
 				shape = BALL,
@@ -193,7 +195,7 @@ local LOOKS: { [string]: Look } = {
 				size = Vector3.new(3, 3.6, 2.2),
 				color = Color3.fromRGB(112, 118, 128),
 				offset = pose(0, 1.8, 0.4),
-				telegraph = pose(0, 1.8, 0.5, 0.1),
+				telegraphPose = pose(0, 1.8, 0.5, 0.1),
 				strike = pose(0, 1.8, -0.2, 0.2),
 			},
 			{
@@ -205,14 +207,14 @@ local LOOKS: { [string]: Look } = {
 				strike = pose(0, 4.1, -0.3),
 			},
 			-- The shield on its front, the blocking side: drawn in for the
-			-- wind-up, thrust out on the bash.
+			-- telegraph, thrust out on the bash.
 			{
 				role = "detail",
 				shape = BLOCK,
 				size = Vector3.new(4.2, 3.8, 0.45),
 				color = Color3.fromRGB(150, 156, 166),
 				offset = pose(0, 2.1, -1.35),
-				telegraph = pose(0, 2.6, -0.9, -0.25),
+				telegraphPose = pose(0, 2.6, -0.9, -0.25),
 				strike = pose(0, 2, -2.9, 0.15),
 			},
 			-- The bright rim: a slightly larger plate just behind the shield.
@@ -237,26 +239,26 @@ local LOOKS: { [string]: Look } = {
 				size = Vector3.new(1.6, 3.8, 1.6),
 				color = Color3.fromRGB(112, 62, 165),
 				offset = pose(0, 1.9, 0.1),
-				telegraph = pose(0, 2, 0.2, -0.1),
+				telegraphPose = pose(0, 2, 0.2, -0.1),
 			},
-			-- The staff: raised overhead in the wind-up, thrust forward on the cast.
+			-- The staff: raised overhead in the telegraph, thrust forward on the cast.
 			{
 				role = "detail",
 				shape = BLOCK,
 				size = Vector3.new(0.3, 4.8, 0.3),
 				color = Color3.fromRGB(72, 44, 104),
 				offset = pose(1.2, 2.4, -0.4, 0.1),
-				telegraph = pose(0.9, 4.2, -0.6, -0.15),
+				telegraphPose = pose(0.9, 4.2, -0.6, -0.15),
 				strike = pose(1, 2.6, -1.4, 0.6),
 			},
-			-- The orb floating above: rises and grows in the wind-up.
+			-- The orb floating above: rises and grows in the telegraph.
 			{
 				role = "glow",
 				shape = BALL,
 				size = Vector3.new(1.1, 1.1, 1.1),
 				color = Color3.fromRGB(205, 150, 255),
 				offset = pose(0, 4.9, -0.5),
-				telegraph = pose(0, 6.3, -0.5),
+				telegraphPose = pose(0, 6.3, -0.5),
 				swell = 1.5,
 				bob = 0.25,
 			},
@@ -265,14 +267,14 @@ local LOOKS: { [string]: Look } = {
 	},
 	campLeader = {
 		pieces = {
-			-- The biggest body, drawn up in the wind-up and slamming down.
+			-- The biggest body, drawn up in the telegraph and slamming down.
 			{
 				role = "body",
 				shape = BLOCK,
 				size = Vector3.new(5, 5.6, 3.6),
 				color = Color3.fromRGB(112, 22, 28),
 				offset = pose(0, 3, 0.3),
-				telegraph = pose(0, 3.4, 0.4, -0.08),
+				telegraphPose = pose(0, 3.4, 0.4, -0.08),
 				strike = pose(0, 2.6, 0, 0.15),
 			},
 			{
@@ -281,7 +283,7 @@ local LOOKS: { [string]: Look } = {
 				size = Vector3.new(2.4, 1.8, 2.2),
 				color = Color3.fromRGB(132, 28, 34),
 				offset = pose(0, 6.7, -0.5),
-				telegraph = pose(0, 7.2, -0.3),
+				telegraphPose = pose(0, 7.2, -0.3),
 				strike = pose(0, 6.1, -1),
 			},
 			-- The crown: a gold band on the head.
@@ -294,7 +296,7 @@ local LOOKS: { [string]: Look } = {
 				offset = pose(0, 1.3, 0),
 			},
 			-- The ring at its feet: a translucent gold plate turning slowly,
-			-- fast and wider in the wind-up.
+			-- fast and wider in the telegraph.
 			{
 				role = "glow",
 				shape = BLOCK,
@@ -338,7 +340,7 @@ local HIT_FLASH_SECONDS = 0.08
 local FLICKER_SPEED = 21
 local FLICKER_STEPS = 3
 local FLICKER_BLEND = 0.45
--- After a wind-up: a snap into the strike pose, a hold, then back to rest.
+-- After a telegraph: a snap into the strike pose, a hold, then back to rest.
 local STRIKE_SNAP = 0.08
 local STRIKE_HOLD = 0.25
 local SETTLE_SECONDS = 0.3
@@ -358,6 +360,14 @@ local DEPARTED_SECONDS = 1
 local PREWARM_BODIES = 40
 local PREWARM_DETAILS = 60
 local PREWARM_GLOWS = 80
+-- Enemies farther than this from the local character, on the ground plane, are
+-- not laid out or painted: their parts are parked once at `PARKED`, far below
+-- the map, until they come back in range. The same range as Effects.
+local VIEW_RANGE = 160
+local PARKED = CFrame.new(0, -10000, 0)
+-- Roblox draws at most 31 Highlights; the nearest buffed enemies in range get
+-- the green rim, the rest keep only their tint.
+local MAX_RIMS = 24
 
 -- Enemies are drawn one snapshot interval behind the newest data, so there is
 -- always a next position to glide to.
@@ -387,10 +397,10 @@ type Rig = {
 	state: Types.EnemyState,
 	colorKey: number,
 	level: number,
-	-- How long the archetype's shortest wind-up lasts.
-	windup: number,
+	-- How long the archetype's shortest telegraph lasts.
+	telegraphSeconds: number,
 	telegraphAt: number?,
-	-- When the last wind-up ended, how far it got and whether an attack landed.
+	-- When the last telegraph ended, how far it got and whether an attack landed.
 	endedAt: number?,
 	reached: number,
 	struck: boolean,
@@ -400,6 +410,14 @@ type Rig = {
 	stamp: number,
 	-- The green rim of a buffed enemy.
 	rim: Highlight?,
+	-- The latest snapshot's position.
+	x: number,
+	z: number,
+	-- Beyond `VIEW_RANGE` at the latest snapshot, and whether its parts are parked.
+	culled: boolean,
+	parked: boolean,
+	-- Squared distance to the local character at the latest snapshot, for the rims.
+	distance: number,
 }
 
 type Dying = { rig: Rig, at: number, locals: { CFrame } }
@@ -413,7 +431,7 @@ local freeModels: { Model } = {}
 local freeRims: { Highlight } = {}
 local rigs: { [number]: Rig } = {}
 local dying: { Dying } = {}
-local windups: { [string]: number } = {}
+local shortestTelegraphs: { [string]: number } = {}
 local generation = 0
 -- The previous snapshot's enemies by id.
 local previousById: { [number]: Protocol.EnemyView } = {}
@@ -422,6 +440,9 @@ local departedAt: { [number]: number } = {}
 -- Reused every frame for the bulk move.
 local moveParts: { BasePart } = {}
 local moveFrames: { CFrame } = {}
+-- Reused every snapshot: the buffed enemies in range, and those given a rim.
+local rimCandidates: { Rig } = {}
+local rimmed: { [Rig]: boolean } = {}
 
 local function newPart(role: Role): Part
 	local part = Instance.new("Part")
@@ -461,8 +482,8 @@ local function give(role: Role, part: Part)
 	table.insert(poolOf(role), part)
 end
 
-local function windupOf(archetype: string): number
-	local known = windups[archetype]
+local function telegraphOf(archetype: string): number
+	local known = shortestTelegraphs[archetype]
 	if known then
 		return known
 	end
@@ -473,9 +494,9 @@ local function windupOf(archetype: string): number
 			shortest = math.min(shortest, attack.telegraphSeconds)
 		end
 	end
-	local windup = if shortest < math.huge and shortest > 0 then shortest else 0.5
-	windups[archetype] = windup
-	return windup
+	local seconds = if shortest < math.huge and shortest > 0 then shortest else 0.5
+	shortestTelegraphs[archetype] = seconds
+	return seconds
 end
 
 local function rootFrame(x: number, z: number, facing: number): CFrame
@@ -507,7 +528,8 @@ local function setChevrons(rig: Rig, level: number)
 		local offset =
 			CFrame.new(chevrons.at - Vector3.new(0, 0, (step - 1) * CHEVRON_GAP * chevrons.scale))
 		local index = first + step - 1
-		part.CFrame = on * offset
+		-- A parked enemy's new chevrons wait with its other parts.
+		part.CFrame = if rig.parked then PARKED else on * offset
 		part.Parent = rig.model
 		rig.parts[index] = part
 		rig.roles[index] = "glow"
@@ -522,20 +544,20 @@ end
 
 -- Lays out every part of `rig` around its root into `rig.frames`.
 local function layout(rig: Rig, now: number, pulse: number, dt: number)
-	local windup = 0
+	local progress = 0
 	local telegraphAt = rig.telegraphAt
 	if telegraphAt then
-		windup = math.clamp((now - telegraphAt) / rig.windup, 0, 1)
+		progress = math.clamp((now - telegraphAt) / rig.telegraphSeconds, 0, 1)
 	end
 	local endedAt = rig.endedAt
 	local since = if endedAt then now - endedAt else math.huge
 	local pieces = rig.look.pieces
 	for index, piece in pieces do
 		local offset = piece.offset
-		local raised = piece.telegraph
+		local raised = piece.telegraphPose
 		if telegraphAt then
 			if raised then
-				offset = offset:Lerp(raised, windup)
+				offset = offset:Lerp(raised, progress)
 			end
 		elseif since < SETTLE_END then
 			local from = if raised then offset:Lerp(raised, rig.reached) else offset
@@ -557,7 +579,7 @@ local function layout(rig: Rig, now: number, pulse: number, dt: number)
 		local scale = 1
 		local swell = piece.swell
 		if swell and telegraphAt then
-			scale = 1 + (swell - 1) * windup * (1 - SWELL_PULSE + SWELL_PULSE * pulse)
+			scale = 1 + (swell - 1) * progress * (1 - SWELL_PULSE + SWELL_PULSE * pulse)
 		end
 		if scale ~= rig.scales[index] then
 			rig.scales[index] = scale
@@ -621,7 +643,7 @@ local function spawnRig(id: number, enemy: Protocol.EnemyView): Rig
 		state = enemy.state,
 		colorKey = -1,
 		level = enemy.level,
-		windup = windupOf(enemy.archetype),
+		telegraphSeconds = telegraphOf(enemy.archetype),
 		telegraphAt = if enemy.state == "telegraph" then os.clock() else nil,
 		endedAt = nil,
 		reached = 0,
@@ -630,6 +652,11 @@ local function spawnRig(id: number, enemy: Protocol.EnemyView): Rig
 		holdUntil = 0,
 		stamp = generation,
 		rim = nil,
+		x = enemy.x,
+		z = enemy.z,
+		culled = false,
+		parked = false,
+		distance = 0,
 	}
 	for index, piece in look.pieces do
 		local part = take(piece.role)
@@ -712,7 +739,7 @@ local function colorKey(enemy: Protocol.EnemyView): number
 end
 
 -- The material of a solid piece: icy when chilled, cracked when brittle (the
--- tint's order), neon when it glows in the wind-up.
+-- tint's order), neon when it glows in the telegraph.
 local function materialOf(piece: Piece, enemy: Protocol.EnemyView): Enum.Material
 	if piece.role == "glow" or (piece.glowsOnTelegraph and enemy.state == "telegraph") then
 		return Enum.Material.Neon
@@ -724,11 +751,31 @@ local function materialOf(piece: Piece, enemy: Protocol.EnemyView): Enum.Materia
 	return Enum.Material.SmoothPlastic
 end
 
+local function recycle(rig: Rig)
+	for index, part in rig.parts do
+		give(rig.roles[index], part)
+	end
+	rig.model.PrimaryPart = nil
+	rig.model.Parent = nil
+	table.insert(freeModels, rig.model)
+end
+
+-- Where a parked enemy is: its snapshot position on the ground.
+local function groundPosition(rig: Rig): Vector3
+	return Vector3.new(rig.x, Net.heightAt(rig.x, rig.z), rig.z)
+end
+
 local function kill(id: number, rig: Rig, now: number)
-	departed[id] = rig.parts[1].Position
 	departedAt[id] = now
 	rigs[id] = nil
 	setRim(rig, false)
+	if rig.parked then
+		-- Out of sight: no collapse to draw.
+		departed[id] = groundPosition(rig)
+		recycle(rig)
+		return
+	end
+	departed[id] = rig.parts[1].Position
 	-- Each part's place relative to the ground frame, for the collapse.
 	local locals: { CFrame } = {}
 	for index, part in rig.parts do
@@ -738,13 +785,34 @@ local function kill(id: number, rig: Rig, now: number)
 	table.insert(dying, { rig = rig, at = now, locals = locals })
 end
 
-local function recycle(rig: Rig)
-	for index, part in rig.parts do
-		give(rig.roles[index], part)
+-- Where the culling measures from: the local character, or the camera before
+-- it has one; nil when neither is there.
+local function viewCenter(): Vector3?
+	local character = Players.LocalPlayer.Character
+	local root = if character then character:FindFirstChild("HumanoidRootPart") else nil
+	if root and root:IsA("BasePart") then
+		return root.Position
 	end
-	rig.model.PrimaryPart = nil
-	rig.model.Parent = nil
-	table.insert(freeModels, rig.model)
+	local camera = workspace.CurrentCamera
+	return if camera then camera.CFrame.Position else nil
+end
+
+-- Gives the green rim to the nearest `MAX_RIMS` buffed enemies in range and
+-- takes it from every other.
+local function assignRims()
+	if #rimCandidates > MAX_RIMS then
+		table.sort(rimCandidates, function(a: Rig, b: Rig): boolean
+			return a.distance < b.distance
+		end)
+	end
+	for index = 1, math.min(#rimCandidates, MAX_RIMS) do
+		rimmed[rimCandidates[index]] = true
+	end
+	for _, rig in rigs do
+		setRim(rig, rimmed[rig] == true)
+	end
+	table.clear(rimmed)
+	table.clear(rimCandidates)
 end
 
 -- Runs once per snapshot: pairs models with enemies and sets how they look.
@@ -759,10 +827,24 @@ local function sync(snapshot: Net.Snapshot)
 	end
 
 	local now = os.clock()
+	local center = viewCenter()
+	local range = VIEW_RANGE * VIEW_RANGE
 	for _, enemy in snapshot.enemies do
 		local id = enemy.id
 		local rig = rigs[id] or spawnRig(id, enemy)
 		rig.stamp = generation
+		rig.x = enemy.x
+		rig.z = enemy.z
+		if center then
+			local dx, dz = enemy.x - center.X, enemy.z - center.Z
+			rig.distance = dx * dx + dz * dz
+		else
+			rig.distance = 0
+		end
+		rig.culled = rig.distance > range
+		if enemy.buffed and not rig.culled then
+			table.insert(rimCandidates, rig)
+		end
 
 		local state: Types.EnemyState = enemy.state
 		if state ~= rig.state then
@@ -771,10 +853,10 @@ local function sync(snapshot: Net.Snapshot)
 				rig.endedAt = nil
 			elseif rig.state == "telegraph" then
 				local telegraphAt = rig.telegraphAt or now
-				rig.reached = math.clamp((now - telegraphAt) / rig.windup, 0, 1)
+				rig.reached = math.clamp((now - telegraphAt) / rig.telegraphSeconds, 0, 1)
 				rig.telegraphAt = nil
 				rig.endedAt = now
-				-- A wind-up followed by a recovery is an attack that landed.
+				-- A telegraph followed by a recovery is an attack that landed.
 				rig.struck = state == "recover"
 			end
 			rig.state = state
@@ -797,7 +879,6 @@ local function sync(snapshot: Net.Snapshot)
 					rig.base[index] = baseColor(piece.color, enemy)
 				end
 			end
-			setRim(rig, enemy.buffed)
 		end
 		for index, piece in rig.look.pieces do
 			local material = materialOf(piece, enemy)
@@ -813,6 +894,7 @@ local function sync(snapshot: Net.Snapshot)
 			kill(id, rig, now)
 		end
 	end
+	assignRims()
 
 	for id, at in departedAt do
 		if now - at > DEPARTED_SECONDS then
@@ -842,7 +924,7 @@ local function angleDelta(from: number, to: number): number
 end
 
 -- Writes each part's colour for this frame: white in a hit flash, pulsing
--- toward white in a wind-up, flickering while burning.
+-- toward white in a telegraph, flickering while burning.
 local function paint(rig: Rig, enemy: Protocol.EnemyView, now: number, pulse: number)
 	local flash = rig.flashUntil > now
 	local telegraph = enemy.state == "telegraph"
@@ -908,9 +990,19 @@ local function render(dt: number)
 		for _, enemy in latest.enemies do
 			local id = enemy.id
 			local rig = rigs[id]
-			if rig then
-				-- The hit-stop: the enemy stays where it was drawn.
-				if rig.holdUntil <= now then
+			if rig and rig.culled then
+				if not rig.parked then
+					rig.parked = true
+					for _, part in rig.parts do
+						count += 1
+						moveParts[count] = part
+						moveFrames[count] = PARKED
+					end
+				end
+			elseif rig then
+				-- The hit-stop: the enemy stays where it was drawn; one coming
+				-- back from parking is placed anew.
+				if rig.holdUntil <= now or rig.parked then
 					local x, z, facing = enemy.x, enemy.z, enemy.facing
 					local before = previousById[id]
 					if before then
@@ -920,6 +1012,7 @@ local function render(dt: number)
 					end
 					rig.root = rootFrame(x, z, facing)
 				end
+				rig.parked = false
 				layout(rig, now, pulse, dt)
 				for index, part in rig.parts do
 					count += 1
@@ -957,11 +1050,12 @@ function EnemyView.hitStop(id: number, seconds: number)
 	end
 end
 
--- Where the enemy's body is drawn now, or was drawn just before it vanished.
+-- Where the enemy's body is drawn now, or was drawn just before it vanished;
+-- for an enemy out of range, its snapshot position on the ground.
 function EnemyView.position(id: number): Vector3?
 	local rig = rigs[id]
 	if rig then
-		return rig.parts[1].Position
+		return if rig.parked then groundPosition(rig) else rig.parts[1].Position
 	end
 	return departed[id]
 end

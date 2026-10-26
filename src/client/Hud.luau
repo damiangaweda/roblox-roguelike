@@ -67,6 +67,9 @@ local LEVEL_FLASH_SECONDS = 0.6
 local NOTICE_SECONDS = 2
 local NOTICE_FADE_SECONDS = 0.5
 local MAX_NOTICES = 2
+-- "A camp has noticed you" shows only when an enemy this close to the local
+-- character (on the ground plane) woke from idle to chase in the same snapshot.
+local NOTICED_RANGE = 40
 -- Downed, dead and extracted screens fade in over this long, to these tint opacities.
 local STATE_FADE_SECONDS = 0.6
 local DOWNED_TINT_ALPHA = 0.15
@@ -503,14 +506,18 @@ function Hud.start()
 	)
 	extractBar.root.Visible = false
 
-	-- Level-up: "Level N" in the upper middle, growing as it fades.
-	local levelPopup = newLabel(
-		root,
-		"LevelUp",
-		UDim2.fromOffset(320, 56),
-		UDim2.fromScale(0.5, 0.22),
-		40,
-		FONT_BOLD
+	-- Level-up: "Level N" in the upper middle, growing as it fades; below the
+	-- banner, clear of its full growth, while the banner shows.
+	local levelPopupPosition = UDim2.fromScale(0.5, 0.22)
+	local levelPopup =
+		newLabel(root, "LevelUp", UDim2.fromOffset(320, 56), levelPopupPosition, 40, FONT_BOLD)
+	local levelPopupBelowBanner = UDim2.new(
+		0.5,
+		0,
+		0,
+		bannerLabel.Position.Y.Offset
+			+ bannerLabel.Size.Y.Offset
+			+ levelPopup.Size.Y.Offset * (1 + LEVEL_POPUP_GROWTH) / 2
 	)
 	levelPopup.AnchorPoint = Vector2.new(0.5, 0.5)
 	levelPopup.TextColor3 = LEVEL_COLOR
@@ -827,6 +834,36 @@ function Hud.start()
 		drinkFlashText = text
 	end
 
+	-- Whether an enemy within `NOTICED_RANGE` of the local character went from
+	-- idle to chase between the previous and the latest snapshot. The server
+	-- sends a tick's snapshot before its events, so the latest one shows the
+	-- camp that woke.
+	local function nearbyEnemyWoke(): boolean
+		local latest = Net.latest
+		local previous = Net.previous
+		local character = Players.LocalPlayer.Character
+		local ownRoot = if character then character:FindFirstChild("HumanoidRootPart") else nil
+		if latest == nil or previous == nil or ownRoot == nil or not ownRoot:IsA("BasePart") then
+			return false
+		end
+		local here = ownRoot.Position
+		local idle: { [number]: boolean } = {}
+		for _, enemy in previous.enemies do
+			if enemy.state == "idle" then
+				idle[enemy.id] = true
+			end
+		end
+		for _, enemy in latest.enemies do
+			if enemy.state == "chase" and idle[enemy.id] then
+				local dx, dz = enemy.x - here.X, enemy.z - here.Z
+				if dx * dx + dz * dz <= NOTICED_RANGE * NOTICED_RANGE then
+					return true
+				end
+			end
+		end
+		return false
+	end
+
 	local function localView(snapshot: Net.Snapshot?): Protocol.PlayerView?
 		if snapshot == nil then
 			return nil
@@ -880,7 +917,11 @@ function Hud.start()
 			if event.kind == "flood" then
 				showBanner("The horde floods the map", BANNER_SECONDS)
 			elseif event.kind == "campAlerted" then
-				pushNotice("A camp has noticed you")
+				-- The event names no player; it is about the local one only when
+				-- an enemy close by has just woken.
+				if nearbyEnemyWoke() then
+					pushNotice("A camp has noticed you")
+				end
 			elseif event.kind == "campReturned" then
 				-- The client does not know where points are, so there is no "nearby" filter.
 				pushNotice("A camp has returned")
@@ -1274,6 +1315,9 @@ function Hud.start()
 		local popupAge = sinceLevel / LEVEL_POPUP_SECONDS
 		levelPopup.Visible = popupAge < 1
 		if popupAge < 1 then
+			levelPopup.Position = if bannerLabel.Visible
+				then levelPopupBelowBanner
+				else levelPopupPosition
 			levelPopupScale.Scale = 1 + LEVEL_POPUP_GROWTH * easeOut(popupAge)
 			setTextAlpha(
 				levelPopup,

@@ -96,6 +96,9 @@ local BOLT_SECONDS = 0.16
 local BOLT_CORE_WIDTH = 0.3
 local BOLT_SLEEVE_WIDTH = 0.9
 local BOLT_SLEEVE_FADE = 0.45
+-- A local bolt aimed with less than this along the ground is not drawn.
+local BOLT_MIN_DIRECTION = 1e-3
+
 local MUZZLE_SECONDS = 0.1
 local MUZZLE_DIAMETER = 1.4
 
@@ -192,7 +195,9 @@ local BLINK_SIDE_WIDTH = 0.2
 local BLINK_SPREAD = 0.9
 local BLINK_SHIMMER = 14
 local BLINK_FLASH_DIAMETER = 3
--- Where a player was this long ago is where a Blink streak starts.
+-- A Blink shorter than this along the ground draws no side streaks.
+local BLINK_SIDE_EPSILON = 1e-3
+-- Where another player was this long ago is where their Blink streak starts.
 local SAMPLE_SECONDS = 0.1
 
 -- Kills: motes in the killing skill's tint, a soft puff and a small flash.
@@ -235,6 +240,18 @@ local BURST_TINTS: { [string]: Tint } = { spitter = SPIT, campLeader = LEADER }
 -- Discs: flat neon cylinders on the ground. Heights here are above the
 -- ground, which Net.heightAt gives.
 local DISC_HEIGHT = 0.15
+-- Lays a cylinder flat: its axis (X) points up.
+local LIE = CFrame.Angles(0, 0, math.pi / 2)
+-- Flat ground effects tilt to the slope under their centre, measured this
+-- many studs either side, and stand this much higher per unit of slope (up to
+-- MAX_TILT_SLOPE) so their uphill edge stays above the ground.
+local TILT_SPAN = 1
+local SLOPE_LIFT = 0.5
+local MAX_TILT_SLOPE = 0.6
+-- Ground marks (scorch, frost) spread over this share of their life and hold
+-- until this share, then fade.
+local GROUND_SPREAD = 0.12
+local GROUND_HOLD = 0.45
 -- Rings: a thin line on a flat SurfaceGui, this many canvas pixels per stud.
 local RING_THICKNESS = 0.05
 local RING_PIXELS_PER_STUD = 16
@@ -260,8 +277,10 @@ local TELEGRAPH_RIM_STUDS = 0.3
 local TELEGRAPH_RIM_FADE = 0.5
 local TELEGRAPH_THICKNESS = 0.1
 local TELEGRAPH_MIN_FILL = 0.1
--- The brute's hammer arc: a wedge on the ground drawn from triangle slices.
-local WEDGE_ARCHETYPES: { [string]: boolean } = { brute = true }
+-- Studs between a telegraph's layers: the base below, the fill above, the rim on top.
+local TELEGRAPH_LAYER = 0.03
+-- An attack that hits an arc narrower than a full turn: a wedge on the ground
+-- drawn from triangle slices.
 local SECTOR_SLICES = 6
 local SECTOR_THICKNESS = 0.08
 local SECTOR_MIN_RADIUS = 0.3
@@ -747,6 +766,8 @@ type Slot = {
 	origin: Vector3,
 	-- A streak's end; a shard's direction.
 	target: Vector3,
+	-- Where a ring lies, tilted to the ground.
+	frame: CFrame,
 	-- The size at the start and at the end: a diameter, a width, a radius or
 	-- a brightness, by pool.
 	from: number,
@@ -801,6 +822,7 @@ local function start(pool: Pool, seconds: number, origin: Vector3): Slot
 			endsAt = 0,
 			origin = origin,
 			target = origin,
+			frame = CFrame.identity,
 			from = 0,
 			to = 0,
 			fade = 0,
@@ -818,6 +840,7 @@ local function start(pool: Pool, seconds: number, origin: Vector3): Slot
 	slot.endsAt = now + seconds
 	slot.origin = origin
 	slot.target = origin
+	slot.frame = CFrame.new(origin)
 	slot.from = 0
 	slot.to = 0
 	slot.fade = 0
@@ -905,7 +928,7 @@ end, function(slot, alpha)
 	local diameter = slot.from + (slot.to - slot.from) * easeOut(alpha)
 	ring.part.Size = Vector3.new(diameter, RING_THICKNESS, diameter)
 	if slot.drift ~= 0 then
-		ring.part.CFrame = CFrame.new(slot.origin + UP * (slot.drift * easeOut(alpha)))
+		ring.part.CFrame = slot.frame + UP * (slot.drift * easeOut(alpha))
 	end
 	ring.stroke.Transparency = slot.fade + (1 - slot.fade) * alpha
 end)
@@ -923,8 +946,6 @@ end)
 
 -- Ground marks (scorch, frost): a disc that spreads in the first part of its
 -- life, holds, then fades.
-local GROUND_SPREAD = 0.12
-local GROUND_HOLD = 0.45
 local grounds = newPool(GROUND_POOL, function()
 	local part = newEffectPart()
 	part.Shape = Enum.PartType.Cylinder
@@ -1107,6 +1128,20 @@ local function groundAt(x: number, z: number, rise: number): Vector3
 	return Vector3.new(x, Net.heightAt(x, z) + rise, z)
 end
 
+-- The ground at (x, z) as a frame whose up is the slope's normal and whose
+-- x and z follow the world's, lifted `rise` along the normal and more on a
+-- slope. A flat effect placed in it lies on a hill instead of sinking into it.
+local function groundFrame(x: number, z: number, rise: number): CFrame
+	local span = 2 * TILT_SPAN
+	local dx = (Net.heightAt(x + TILT_SPAN, z) - Net.heightAt(x - TILT_SPAN, z)) / span
+	local dz = (Net.heightAt(x, z + TILT_SPAN) - Net.heightAt(x, z - TILT_SPAN)) / span
+	local normal = Vector3.new(-dx, 1, -dz).Unit
+	local right = (Vector3.xAxis - normal * normal.X).Unit
+	local slope = math.min(math.sqrt(dx * dx + dz * dz), MAX_TILT_SLOPE)
+	local lift = rise + SLOPE_LIFT * slope
+	return CFrame.fromMatrix(Vector3.new(x, Net.heightAt(x, z), z) + normal * lift, right, normal)
+end
+
 local function showStreak(
 	pool: Pool,
 	from: Vector3,
@@ -1148,10 +1183,11 @@ local function showGlow(
 	glows.animate(slot, 0)
 end
 
--- A ring on the ground (or at `at`) widening from `from` to `to` studs, its
--- line `studs` thick, rising `rise` studs as it goes.
+-- A ring on the ground at (x, z) widening from `from` to `to` studs, its line
+-- `studs` thick, rising `rise` studs as it goes.
 local function showRing(
-	at: Vector3,
+	x: number,
+	z: number,
 	color: Color3,
 	from: number,
 	to: number,
@@ -1160,7 +1196,9 @@ local function showRing(
 	rise: number,
 	seconds: number
 )
-	local slot = start(rings, seconds, at)
+	local frame = groundFrame(x, z, DISC_HEIGHT)
+	local slot = start(rings, seconds, frame.Position)
+	slot.frame = frame
 	local ring = slot.ring
 	if ring == nil then
 		return
@@ -1171,7 +1209,7 @@ local function showRing(
 	slot.fade = fade
 	slot.drift = rise
 	setRingLine(ring, studs, color)
-	ring.part.CFrame = CFrame.new(at)
+	ring.part.CFrame = frame
 	rings.animate(slot, 0)
 end
 
@@ -1185,13 +1223,13 @@ local function showDisc(
 	color: Color3,
 	fade: number
 )
-	local at = groundAt(x, z, DISC_HEIGHT)
-	local slot = start(discs, seconds, at)
+	local frame = groundFrame(x, z, DISC_HEIGHT)
+	local slot = start(discs, seconds, frame.Position)
 	slot.from = from
 	slot.to = to
 	slot.fade = fade
 	slot.part.Color = color
-	slot.part.CFrame = CFrame.new(at) * CFrame.Angles(0, 0, math.pi / 2)
+	slot.part.CFrame = frame * LIE
 	discs.animate(slot, 0)
 end
 
@@ -1206,15 +1244,15 @@ local function showGround(
 	fade: number,
 	seconds: number
 )
-	local at = groundAt(x, z, DISC_HEIGHT * 0.5)
-	local slot = start(grounds, seconds, at)
+	local frame = groundFrame(x, z, DISC_HEIGHT * 0.5)
+	local slot = start(grounds, seconds, frame.Position)
 	slot.from = from
 	slot.to = to
 	slot.fade = fade
 	slot.part.Material = material
 	slot.part.Color = color
 	slot.part.Size = Vector3.new(0.1, from, from)
-	slot.part.CFrame = CFrame.new(at) * CFrame.Angles(0, 0, math.pi / 2)
+	slot.part.CFrame = frame * LIE
 	grounds.animate(slot, 0)
 end
 
@@ -1317,8 +1355,9 @@ end
 
 -- Telegraphs: the wind-up of an enemy attack, one per enemy so that a second
 -- telegraph replaces the first. The look follows the attack's config: a wedge
--- for the brute's arc, a swelling shell for the exploder, an orb at the mouth
--- for shooters, a green ring for the shaman's heal, a disc for the rest.
+-- for an attack that hits an arc, a swelling shell for a burst (the
+-- exploder), an orb at the mouth for shooters, a green ring for a heal (the
+-- shaman), a disc for the rest. Each lies on the slope under its centre.
 type Marker = {
 	look: string,
 	base: Part,
@@ -1328,7 +1367,8 @@ type Marker = {
 	-- The wedge's slices, two wedge parts each: the faint base and the fill.
 	sector: { WedgePart },
 	sectorFill: { WedgePart },
-	centre: Vector3,
+	-- The ground under the centre, tilted to its slope.
+	frame: CFrame,
 	radius: number,
 	-- The wedge's width in radians and the way it points.
 	arc: number,
@@ -1363,7 +1403,7 @@ local function newMarker(): Marker
 		orb = orb,
 		sector = {},
 		sectorFill = {},
-		centre = Vector3.zero,
+		frame = CFrame.identity,
 		radius = 0,
 		arc = 0,
 		facing = 0,
@@ -1415,22 +1455,29 @@ local function drawTriangle(a: Vector3, b: Vector3, c: Vector3, first: WedgePart
 	second.CFrame = CFrame.fromMatrix((a + c) / 2, -right, up, -back)
 end
 
--- A wedge of `arc` radians round `facing`, `radius` studs long, from slices.
+-- A wedge of `arc` radians round `facing`, `radius` studs long, from slices,
+-- lying in the plane of `frame` round its origin.
 local function drawSector(
 	wedges: { WedgePart },
-	centre: Vector3,
+	frame: CFrame,
 	facing: number,
 	arc: number,
 	radius: number
 )
 	radius = math.max(radius, SECTOR_MIN_RADIUS)
+	local centre = frame.Position
 	for slice = 0, SECTOR_SLICES - 1 do
 		local from = facing - arc / 2 + arc * slice / SECTOR_SLICES
 		local to = from + arc / SECTOR_SLICES
-		local p0 = centre + Vector3.new(math.cos(from), 0, math.sin(from)) * radius
-		local p1 = centre + Vector3.new(math.cos(to), 0, math.sin(to)) * radius
+		local p0 = frame:PointToWorldSpace(Vector3.new(math.cos(from), 0, math.sin(from)) * radius)
+		local p1 = frame:PointToWorldSpace(Vector3.new(math.cos(to), 0, math.sin(to)) * radius)
 		drawTriangle(centre, p0, p1, wedges[slice * 2 + 1], wedges[slice * 2 + 2])
 	end
+end
+
+-- A telegraph's layer: `frame` moved `offset` studs along its up.
+local function layer(frame: CFrame, offset: number): CFrame
+	return frame * CFrame.new(0, offset, 0)
 end
 
 local function showSector(wedges: { WedgePart }, color: Color3, transparency: number)
@@ -1446,7 +1493,9 @@ local function showSector(wedges: { WedgePart }, color: Color3, transparency: nu
 	end
 end
 
-local function telegraphLook(archetype: string?, attack: Types.AttackConfig?): string
+-- The look follows what the attack hits: an arc narrower than a full turn is
+-- a wedge whatever the archetype.
+local function telegraphLook(attack: Types.AttackConfig?): string
 	if attack == nil then
 		return "disc"
 	elseif attack.kind == "heal" then
@@ -1455,7 +1504,7 @@ local function telegraphLook(archetype: string?, attack: Types.AttackConfig?): s
 		return "swell"
 	elseif attack.kind == "projectile" then
 		return "spit"
-	elseif archetype and WEDGE_ARCHETYPES[archetype] and (attack.arcDegrees or 360) < 360 then
+	elseif (attack.arcDegrees or 360) < 360 then
 		return "wedge"
 	end
 	return "disc"
@@ -1473,7 +1522,7 @@ local function showTelegraph(
 	local archetype = enemyArchetype[enemyId]
 	local config = if archetype then Config.enemies.archetypes[archetype] else nil
 	local attack = if config then config.attacks[attackIndex] else nil
-	local look = telegraphLook(archetype, attack)
+	local look = telegraphLook(attack)
 
 	local marker = table.remove(freeMarkers) or newMarker()
 	local now = os.clock()
@@ -1482,7 +1531,7 @@ local function showTelegraph(
 	marker.startedAt = now
 	marker.endsAt = now + seconds
 	marker.motesAt = now
-	marker.centre = groundAt(x, z, DISC_HEIGHT)
+	marker.frame = groundFrame(x, z, DISC_HEIGHT)
 	marker.facing = enemyFacing[enemyId] or 0
 	marker.arc = math.rad(if attack then attack.arcDegrees or 360 else 360)
 	marker.orbTint = if archetype then ORB_TINTS[archetype] or SPIT else SPIT
@@ -1491,27 +1540,28 @@ local function showTelegraph(
 	if look == "wedge" then
 		showSector(marker.sector, TELEGRAPH_BASE_COLOR, TELEGRAPH_BASE_TRANSPARENCY)
 		showSector(marker.sectorFill, TELEGRAPH_FILL_COLOR, TELEGRAPH_FILL_TRANSPARENCY)
-		drawSector(marker.sector, marker.centre - UP * 0.03, marker.facing, marker.arc, radius)
-		drawSector(marker.sectorFill, marker.centre + UP * 0.03, marker.facing, marker.arc, 0)
+		local below = layer(marker.frame, -TELEGRAPH_LAYER)
+		drawSector(marker.sector, below, marker.facing, marker.arc, radius)
+		local above = layer(marker.frame, TELEGRAPH_LAYER)
+		drawSector(marker.sectorFill, above, marker.facing, marker.arc, 0)
 		return
 	end
 
-	-- The cylinders' axis (X) points up; the fill sits a hair above the base.
+	-- The fill sits a hair above the base, the rim above both.
 	local heal = look == "heal"
 	local diameter = radius * 2
-	local lie = CFrame.Angles(0, 0, math.pi / 2)
 	marker.base.Color = if heal then HEAL.color else TELEGRAPH_BASE_COLOR
 	marker.base.Transparency = if heal then HEAL_BASE_TRANSPARENCY else TELEGRAPH_BASE_TRANSPARENCY
 	marker.base.Size = Vector3.new(TELEGRAPH_THICKNESS, diameter, diameter)
-	marker.base.CFrame = CFrame.new(marker.centre - UP * 0.03) * lie
+	marker.base.CFrame = layer(marker.frame, -TELEGRAPH_LAYER) * LIE
 	marker.fill.Color = if heal then HEAL.color else TELEGRAPH_FILL_COLOR
 	marker.fill.Transparency = if heal then HEAL_FILL_TRANSPARENCY else TELEGRAPH_FILL_TRANSPARENCY
 	marker.fill.Size = Vector3.new(TELEGRAPH_THICKNESS, TELEGRAPH_MIN_FILL, TELEGRAPH_MIN_FILL)
-	marker.fill.CFrame = CFrame.new(marker.centre + UP * 0.03) * lie
+	marker.fill.CFrame = layer(marker.frame, TELEGRAPH_LAYER) * LIE
 	setRingLine(marker.rim, TELEGRAPH_RIM_STUDS, if heal then HEAL.core else TELEGRAPH_RIM_COLOR)
 	marker.rim.stroke.Transparency = TELEGRAPH_RIM_FADE
 	marker.rim.part.Size = Vector3.new(diameter, RING_THICKNESS, diameter)
-	marker.rim.part.CFrame = CFrame.new(marker.centre + UP * 0.06)
+	marker.rim.part.CFrame = layer(marker.frame, 2 * TELEGRAPH_LAYER)
 	marker.base.Parent = folder
 	marker.fill.Parent = folder
 	marker.rim.part.Parent = folder
@@ -1550,11 +1600,12 @@ local function stepMarkers()
 			local facing = enemyFacing[enemyId]
 			if facing and facing ~= marker.facing then
 				marker.facing = facing
-				local below = marker.centre - UP * 0.03
+				local below = layer(marker.frame, -TELEGRAPH_LAYER)
 				drawSector(marker.sector, below, facing, marker.arc, marker.radius)
 			end
-			local above = marker.centre + UP * 0.03
+			local above = layer(marker.frame, TELEGRAPH_LAYER)
 			drawSector(marker.sectorFill, above, marker.facing, marker.arc, marker.radius * alpha)
+
 			continue
 		end
 
@@ -1804,8 +1855,9 @@ local function renderTracked()
 	end
 end
 
--- Blink streaks start where the player was a moment ago: each player's
--- position is sampled every SAMPLE_SECONDS, keeping the sample before the latest.
+-- Another player's Blink streak starts where they were a moment ago: each
+-- player's position is sampled every SAMPLE_SECONDS, keeping the sample before
+-- the latest. The local player's Blink comes from Input as the dash starts.
 type Sample = { current: Vector3, previous: Vector3?, at: number }
 local samples: { [number]: Sample } = {}
 
@@ -1837,14 +1889,9 @@ local function nearLocal(x: number, z: number): boolean
 	return dx * dx + dz * dz <= SHAKE_RANGE * SHAKE_RANGE
 end
 
-local function showBlink(userId: number)
-	local root = characterRoot(userId)
-	local sample = samples[userId]
-	local from = if sample then sample.previous else nil
-	if root == nil or from == nil then
-		return
-	end
-	local to = root.Position
+-- A Blink from `from` to `to`: a travelling streak, a side streak either side
+-- and a shimmer at both ends.
+local function drawBlink(from: Vector3, to: Vector3)
 	local along = to - from
 	if along.Magnitude < 0.5 or not onScreen(to) then
 		return
@@ -1860,24 +1907,48 @@ local function showBlink(userId: number)
 		BLINK_SECONDS,
 		"travel"
 	)
-	local side = Vector3.new(-along.Z, 0, along.X).Unit * BLINK_SPREAD
-	for _, offset in { -side, side } do
-		showStreak(
-			streaks,
-			from + offset,
-			to + offset,
-			ARCANE.color,
-			BLINK_SIDE_WIDTH,
-			0,
-			BLINK_SECONDS,
-			"fade"
-		)
+	-- A nearly vertical Blink has no sideways on the ground: no side streaks.
+	local side = Vector3.new(-along.Z, 0, along.X)
+	if side.Magnitude >= BLINK_SIDE_EPSILON then
+		side = side.Unit * BLINK_SPREAD
+		for _, offset in { -side, side } do
+			showStreak(
+				streaks,
+				from + offset,
+				to + offset,
+				ARCANE.color,
+				BLINK_SIDE_WIDTH,
+				0,
+				BLINK_SECONDS,
+				"fade"
+			)
+		end
 	end
 	local body = Vector3.new(2, 4, 2)
 	emit("shimmer", ARCANE.color, from, BLINK_SHIMMER, body)
 	emit("shimmer", ARCANE.core, to, BLINK_SHIMMER, body)
 	emit("implosion", ARCANE.color, to, 1)
 	showGlow(to, ARCANE.core, 0.5, BLINK_FLASH_DIAMETER, 0.4, BLINK_SECONDS)
+end
+
+-- Another player's Blink, from the `dashed` event: from their sampled
+-- position a moment ago to where they are.
+local function showBlink(userId: number)
+	local root = characterRoot(userId)
+	local sample = samples[userId]
+	local from = if sample then sample.previous else nil
+	if root == nil or from == nil then
+		return
+	end
+	drawBlink(from, root.Position)
+end
+
+-- The local player's Blink, drawn by Input the moment the dash's shift starts:
+-- from where the character stands to `to`, which is lifted or lowered with
+-- the ground so the streak ends where the character will stand.
+function Effects.showLocalBlink(from: Vector3, to: Vector3)
+	local climb = Net.heightAt(to.X, to.Z) - Net.heightAt(from.X, from.Z)
+	drawBlink(from, to + UP * climb)
 end
 
 -- A jagged bolt: segments with kinks pushed off the straight line, a white
@@ -1961,11 +2032,8 @@ local function showLightning(from: Vector3, to: Vector3)
 	table.clear(boltPoints)
 end
 
-local function showArcaneBolt(source: number, at: Vector3)
-	local hand = handOf(source, at)
-	if hand == nil then
-		return
-	end
+-- An Arcane Bolt from `hand` to `at`, with a flash at the hand.
+local function drawBolt(hand: Vector3, at: Vector3)
 	showStreak(streaks, hand, at, ARCANE.core, BOLT_CORE_WIDTH, 0, BOLT_SECONDS, "travel")
 	showStreak(
 		streaks,
@@ -1978,6 +2046,30 @@ local function showArcaneBolt(source: number, at: Vector3)
 		"travel"
 	)
 	showGlow(hand, ARCANE.core, 0.3, MUZZLE_DIAMETER, 0.2, MUZZLE_SECONDS)
+end
+
+-- Another player's Arcane Bolt, drawn from its hit.
+local function showArcaneBolt(source: number, at: Vector3)
+	local hand = handOf(source, at)
+	if hand then
+		drawBolt(hand, at)
+	end
+end
+
+-- The local player's Arcane Bolt, drawn by Input each time the basic attack
+-- fires, hit or miss: from the hand of the character standing at `from`
+-- along `direction` on the ground, `range` studs from the character, keeping
+-- its height above the ground. A hit adds its own flash at the enemy.
+function Effects.showLocalBolt(from: Vector3, direction: Vector3, range: number)
+	local flat = Vector3.new(direction.X, 0, direction.Z)
+	if flat.Magnitude < BOLT_MIN_DIRECTION then
+		return
+	end
+	flat = flat.Unit
+	local hand = from + UP * HAND_RISE + flat * HAND_REACH
+	local far = from + flat * range
+	local rise = hand.Y - Net.heightAt(hand.X, hand.Z)
+	drawBolt(hand, Vector3.new(far.X, Net.heightAt(far.X, far.Z) + rise, far.Z))
 end
 
 -- An explosion of `radius` studs in `tint`, its counts `scale` times the full.
@@ -1997,7 +2089,8 @@ local function showExplosion(x: number, z: number, radius: number, tint: Tint, s
 		EXPLOSION_GLOW_SECONDS
 	)
 	showRing(
-		groundAt(x, z, DISC_HEIGHT),
+		x,
+		z,
 		tint.color,
 		1,
 		diameter * 1.15,
@@ -2036,7 +2129,7 @@ local function showFrostNova(x: number, z: number, radius: number)
 		return
 	end
 	local diameter = radius * 2
-	showRing(ground, ICE.color, 1, diameter, NOVA_RING_STUDS, 0, 0, NOVA_RING_SECONDS)
+	showRing(x, z, ICE.color, 1, diameter, NOVA_RING_STUDS, 0, 0, NOVA_RING_SECONDS)
 	showDisc(x, z, 1, diameter, NOVA_SWEEP_SECONDS, ICE.core, NOVA_SWEEP_FADE)
 	showShards(ground + UP * 1, NOVA_SHARDS, radius, ICE, 1, NOVA_SHARD_SECONDS)
 	local area = Vector3.new(diameter * 0.9, 1, diameter * 0.9)
@@ -2052,16 +2145,16 @@ local function showSynergy(synergy: string, at: Vector3)
 	if tint == nil then
 		return
 	end
-	local ground = groundAt(at.X, at.Z, DISC_HEIGHT)
 	if synergy == "conduct" then
 		-- The burn spreads this far: a fire ring as wide as the reach.
 		local reach = Config.statuses.conductRadius * 2
-		showRing(ground, tint.color, 1, reach, SYNERGY_RING_STUDS, 0, 0, SYNERGY_RING_SECONDS)
+		showRing(at.X, at.Z, tint.color, 1, reach, SYNERGY_RING_STUDS, 0, 0, SYNERGY_RING_SECONDS)
 		emit("embers", tint.color, at, SYNERGY_SPARKS)
 		return
 	end
 	showRing(
-		ground,
+		at.X,
+		at.Z,
 		tint.color,
 		1,
 		SYNERGY_RING_DIAMETER,
@@ -2155,7 +2248,10 @@ local function onHit(
 			end
 		end
 		chainEnds[source] = at
-	elseif skill == BASIC_SKILL and visible then
+	elseif skill == BASIC_SKILL and visible and source ~= Players.LocalPlayer.UserId then
+		-- The local player's bolts are drawn by Input as they fire, misses
+		-- included. Another player's bolt is drawn only from its hits: their
+		-- misses send nothing, so they stay invisible.
 		showArcaneBolt(source, at)
 	end
 
@@ -2180,7 +2276,7 @@ local function onBurst(x: number, z: number, radius: number, skill: string)
 		local ground = groundAt(x, z, DISC_HEIGHT)
 		if onScreen(ground) then
 			local tint = BURST_TINTS[skill] or tintOf(skill)
-			showRing(ground, tint.color, 1, radius * 2, SLAM_STUDS, 0, 0, SPLASH_SECONDS)
+			showRing(x, z, tint.color, 1, radius * 2, SLAM_STUDS, 0, 0, SPLASH_SECONDS)
 			showDisc(x, z, 1, radius * 2, SPLASH_SECONDS, tint.color, 0.5)
 			emit("sparks", tint.color, ground + UP, SPLASH_SPARKS)
 		end
@@ -2236,7 +2332,7 @@ local function onEnemyAttack(
 			showSlash(at, enemyFacing[enemyId] or 0, attack.radius, math.rad(arc))
 		else
 			local ground = groundAt(x, z, DISC_HEIGHT)
-			showRing(ground, WHITE, 1, attack.radius * 2, SLAM_STUDS, 0, 0, SLAM_SECONDS)
+			showRing(x, z, WHITE, 1, attack.radius * 2, SLAM_STUDS, 0, 0, SLAM_SECONDS)
 			emit(
 				"puff",
 				PUFF_COLOR,
@@ -2274,8 +2370,17 @@ local function onDrank(userId: number)
 	if not onScreen(position) then
 		return
 	end
-	local ground = groundAt(position.X, position.Z, DISC_HEIGHT)
-	showRing(ground, HEAL.color, DRANK_FROM, DRANK_TO, 0.35, 0, DRANK_RISE, DRANK_SECONDS)
+	showRing(
+		position.X,
+		position.Z,
+		HEAL.color,
+		DRANK_FROM,
+		DRANK_TO,
+		0.35,
+		0,
+		DRANK_RISE,
+		DRANK_SECONDS
+	)
 	emit("motes", HEAL.color, position, DRANK_MOTES, Vector3.new(2, 3, 2))
 end
 
@@ -2325,7 +2430,10 @@ local function onEvents(events: { Types.Event })
 			removeMarker(event.enemyId)
 			onKill(event.enemyId)
 		elseif event.kind == "dashed" then
-			showBlink(event.player)
+			-- The local player's Blink was drawn when the dash started.
+			if event.player ~= localId then
+				showBlink(event.player)
+			end
 		elseif event.kind == "drank" then
 			onDrank(event.player)
 		elseif event.kind == "playerHurt" then
