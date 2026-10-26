@@ -2,6 +2,7 @@
 -- Whole runs through Run.step, the way the server adapter drives them.
 local Assert = require("./Assert")
 local Fixtures = require("./Fixtures")
+local Life = require("../src/shared/Core/Life")
 local Run = require("../src/shared/Core/Run")
 local Types = require("../src/shared/Core/Types")
 local World = require("../src/shared/Core/World")
@@ -71,11 +72,11 @@ local function walkTo(run: Types.Run, player: Types.Player, x: number, z: number
 			continue
 		end
 		local step = math.min(distance, speed * STEP)
+		Run.setAim(run, player.id, math.atan2(dz, dx))
 		local input = {
 			[player.id] = {
 				x = player.x + dx / distance * step,
 				z = player.z + dz / distance * step,
-				facing = math.atan2(dz, dx),
 			},
 		}
 		Run.step(run, STEP, input)
@@ -197,7 +198,7 @@ return {
 		run.ended = true
 		Run.step(run, STEP, {})
 		Assert.equal(run.time, 0)
-		Assert.falsy(Run.useSkill(run, 1, 1, nil))
+		Assert.falsy(Run.useSkill(run, 1, 1, nil, nil))
 		Assert.falsy(Run.dash(run, 1))
 		Assert.falsy(Run.drink(run, 1))
 	end,
@@ -207,10 +208,9 @@ return {
 		local player = run.players[1]
 		local x, z = player.x, player.z
 		Run.step(run, STEP, { [1] = { x = 0 / 0, z = z } })
-		Run.step(run, STEP, { [1] = { x = math.huge, z = z, facing = 0 / 0 } })
+		Run.step(run, STEP, { [1] = { x = math.huge, z = z } })
 		Assert.equal(player.x, x)
 		Assert.equal(player.z, z)
-		Assert.equal(player.facing, 0)
 	end,
 
 	["positions are held inside the walkable world"] = function()
@@ -224,10 +224,14 @@ return {
 		Assert.truthy(player.x < farX - 400)
 	end,
 
-	["the facing is taken from the input"] = function()
+	["the aim is an intent and a skill may carry its own"] = function()
 		local run = quiet(1)
-		Run.step(run, STEP, { [1] = { x = run.players[1].x, z = run.players[1].z, facing = 1.5 } })
+		Run.setAim(run, 1, 1.5)
 		Assert.equal(run.players[1].facing, 1.5)
+		Run.setAim(run, 1, 0 / 0)
+		Assert.equal(run.players[1].facing, 1.5)
+		Run.useSkill(run, 1, 1, 2.5, 20)
+		Assert.equal(run.players[1].facing, 2.5)
 	end,
 
 	["walking at walking speed is accepted"] = function()
@@ -267,17 +271,16 @@ return {
 		Assert.truthy(player.x - x <= most + 1e-6, "moved " .. player.x - x .. " studs")
 	end,
 
-	["a dash spends a charge and raises the budget by its distance"] = function()
+	["a dash spends a charge and grants its distance as a boost"] = function()
 		local run = quiet(1)
 		local player = run.players[1]
 		local room = Fixtures.roomOf(run, player)
 		Fixtures.place(run, player, room.x - 15, room.z)
 		local dash = run.config.classes.elementalist.dash
 		advance(run, 1)
-		local budget = player.moveBudget
 		Assert.truthy(Run.dash(run, 1))
 		Assert.equal(player.dashCharges, dash.charges - 1)
-		Assert.near(player.moveBudget, budget + dash.distance, 1e-9)
+		Assert.near(player.boost, dash.distance, 1e-9)
 		Assert.truthy(Assert.findEvent(Run.drainEvents(run), "dashed"))
 		-- The dashed-to position is accepted in one step.
 		Run.step(run, STEP, { [1] = { x = room.x - 15 + dash.distance, z = room.z } })
@@ -300,14 +303,72 @@ return {
 		Assert.equal(player.dashCharges, 2)
 	end,
 
-	["Long Blink raises the budget a dash grants"] = function()
+	["Long Blink raises the boost a dash grants"] = function()
 		local run = quiet(1)
 		local player = run.players[1]
 		player.perks.longBlink = 1
 		local dash = run.config.classes.elementalist.dash
-		local budget = player.moveBudget
 		Run.dash(run, 1)
-		Assert.near(player.moveBudget, budget + dash.distance * 1.3, 1e-9)
+		Assert.near(player.boost, dash.distance * 1.3, 1e-9)
+		Assert.near(Run.dashDistance(run, player), dash.distance * 1.3, 1e-9)
+	end,
+
+	["a dash not taken lapses: boosts cannot be banked into a teleport"] = function()
+		local run = quiet(1)
+		local player = run.players[1]
+		local room = Fixtures.roomOf(run, player)
+		Fixtures.place(run, player, room.x - 15, room.z)
+		local dash = run.config.classes.elementalist.dash
+		-- Two dashes while standing still, then a long wait.
+		Run.dash(run, 1)
+		Run.dash(run, 1)
+		advance(run, dash.seconds + run.config.player.moveBurstSeconds + 1)
+		local settings = run.config.player
+		Run.step(run, STEP, { [1] = { x = room.x - 15 + 100, z = room.z } })
+		local most = settings.walkSpeed * settings.moveTolerance * settings.moveBurstSeconds
+		Assert.truthy(player.x - (room.x - 15) <= most + 1e-6, "moved " .. player.x - (room.x - 15))
+	end,
+
+	["a move stops at the first wall on its way"] = function()
+		local run = quiet(1)
+		local player = run.players[1]
+		local room = Fixtures.roomOf(run, player)
+		-- Beside the north wall, off any corridor's line; the report is beyond it.
+		Fixtures.place(run, player, room.x + 3, room.z - room.halfDepth + 1)
+		advance(run, 1)
+		Run.step(run, STEP, { [1] = { x = room.x + 3, z = room.z - room.halfDepth - 6 } })
+		Assert.truthy(player.z >= room.z - room.halfDepth - 1e-6)
+		Assert.truthy(World.locate(run.world, player.x, player.z).kind == "room")
+	end,
+
+	["a knocked player is carried by the knockback, not by the client"] = function()
+		local run = quiet(1)
+		local player = run.players[1]
+		local room = Fixtures.roomOf(run, player)
+		Fixtures.place(run, player, room.x, room.z)
+		Life.knockPlayer(run, player, room.x - 5, room.z, 10)
+		-- The client keeps reporting the old spot.
+		advance(run, run.config.player.knockbackSeconds, { [1] = { x = room.x, z = room.z } })
+		Assert.truthy(player.x > room.x + 8, "carried " .. player.x - room.x)
+	end,
+
+	["firing backwards is slower"] = function()
+		local run = quiet(1)
+		local player = run.players[1]
+		local room = Fixtures.roomOf(run, player)
+		Fixtures.place(run, player, room.x, room.z)
+		player.moveBudget = 0
+		Run.setAim(run, 1, 0)
+		Run.setFiring(run, 1, true)
+		local speed = run.config.player.walkSpeed * run.config.player.moveTolerance
+		-- Away from the aim (+x): only the backpedal share of a step is accepted.
+		Run.step(run, STEP, { [1] = { x = room.x - 10, z = room.z } })
+		Assert.near(room.x - player.x, speed * run.config.player.backpedalFactor * STEP, 1e-6)
+		-- Along the aim: a full step.
+		Fixtures.place(run, player, room.x, room.z)
+		player.moveBudget = 0
+		Run.step(run, STEP, { [1] = { x = room.x + 10, z = room.z } })
+		Assert.near(player.x - room.x, speed * STEP, 1e-6)
 	end,
 
 	["Fleet Footed adds a dash charge"] = function()
@@ -334,7 +395,7 @@ return {
 		Run.step(run, STEP, { [1] = { x = x + 1, z = player.z + 1 } })
 		Assert.equal(player.x, x)
 		Assert.falsy(Run.dash(run, 1))
-		Assert.falsy(Run.useSkill(run, 1, 2, nil))
+		Assert.falsy(Run.useSkill(run, 1, 2, nil, nil))
 	end,
 
 	["the player's room and cover are refreshed each step"] = function()

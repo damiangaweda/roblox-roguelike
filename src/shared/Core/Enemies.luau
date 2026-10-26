@@ -76,6 +76,28 @@ function Enemies.alertCamp(run: Types.Run, camp: Types.Camp, targetId: number)
 	end
 end
 
+-- A hit wakes the enemy against whoever dealt it, and its camp with it: an
+-- enemy shot from beyond its detection range still reacts. A returning enemy
+-- turns back; a telegraph or recovery in progress is not interrupted.
+function Enemies.provoke(run: Types.Run, enemy: Types.Enemy, playerId: number)
+	local player = run.players[playerId]
+	if player == nil or player.state ~= "alive" then
+		return
+	end
+	local state = enemy.state
+	if state == "idle" or state == "patrol" or state == "return" then
+		if state ~= "return" and enemy.patrolId then
+			enemy.homeX, enemy.homeZ = enemy.x, enemy.z
+		end
+		enemy.state = "chase"
+		enemy.target = playerId
+	end
+	local camp = if enemy.campId then State.campById(run, enemy.campId) else nil
+	if camp and run.config.enemies.campAlerts then
+		Enemies.alertCamp(run, camp, playerId)
+	end
+end
+
 -- The camp is quiet again once every living member stands idle at home.
 local function calmCamp(run: Types.Run, enemy: Types.Enemy, context: Context)
 	local camp = if enemy.campId then State.campById(run, enemy.campId) else nil
@@ -137,7 +159,7 @@ local function walkToward(
 	enemy.x, enemy.z = World.clamp(run.world, x, z)
 end
 
--- Starts the wind-up of the current attack: the aim is locked now, so a
+-- Starts the telegraph of the current attack: the aim is locked now, so a
 -- player can leave the marked area before the attack lands.
 local function beginTelegraph(
 	run: Types.Run,
@@ -233,7 +255,7 @@ local function land(run: Types.Run, enemy: Types.Enemy, context: Context): boole
 				dirZ = math.sin(angle),
 				speed = attack.projectileSpeed or 0,
 				-- Flies on past a miss, then lands.
-				remaining = attack.range * 1.5,
+				remaining = attack.range * config.projectiles.overshoot,
 				damage = damage,
 				radius = attack.radius,
 				knockback = attack.knockback,
@@ -280,7 +302,7 @@ local function land(run: Types.Run, enemy: Types.Enemy, context: Context): boole
 	return false
 end
 
--- The wind-up is over: land the attack, then start the cooldown and recovery.
+-- The telegraph is over: land the attack, then start the cooldown and recovery.
 local function finishTelegraph(run: Types.Run, enemy: Types.Enemy, context: Context)
 	local archetype = State.archetype(run, enemy)
 	local attack = archetype.attacks[enemy.attack]
@@ -343,7 +365,7 @@ local function chase(
 	if archetype.preferredRange and distance < archetype.preferredRange then
 		local nx, nz = Geometry.normalize(enemy.x - target.x, enemy.z - target.z)
 		enemy.x, enemy.z = World.clamp(run.world, enemy.x + nx * step, enemy.z + nz * step)
-	elseif distance > attack.range * 0.9 then
+	elseif distance > attack.range * run.config.enemies.approachFactor then
 		-- Never closer than touching.
 		local gap = archetype.radius + run.config.player.radius
 		local allowed = math.min(step, math.max(0, distance - gap))
@@ -433,7 +455,7 @@ local function stepEnemy(run: Types.Run, enemy: Types.Enemy, dt: number, context
 			enemy.x + enemy.knockX * knockLeft,
 			enemy.z + enemy.knockZ * knockLeft
 		)
-		-- A wind-up in progress still lands on time; nothing else is decided.
+		-- A telegraph in progress still lands on time; nothing else is decided.
 		if enemy.state == "telegraph" and run.time >= enemy.stateUntil then
 			finishTelegraph(run, enemy, context)
 		end

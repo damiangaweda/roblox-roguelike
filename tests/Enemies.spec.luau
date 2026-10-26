@@ -277,7 +277,7 @@ return {
 		Assert.equal(behind.health, behind.maxHealth)
 		Assert.truthy(front.knockX > 0)
 		Assert.near(front.knockZ, 0)
-		local knocked = Assert.findEvent(run.events, "knocked")
+		local knocked = Assert.findEvent(run.events, "knockback")
 		Assert.truthy(knocked)
 		Assert.equal(knocked.player, front.id)
 		Assert.near(knocked.dx, 12)

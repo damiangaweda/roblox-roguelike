@@ -95,6 +95,8 @@ local colorKeys: { [number]: number } = {}
 -- The colour last written to the part.
 local shown: { [number]: Color3 } = {}
 local flashUntil: { [number]: number } = {}
+-- Enemies held still for a moment by a skill hit (the hit-stop), by id.
+local holdUntil: { [number]: number } = {}
 local generation = 0
 -- The previous snapshot's enemies by id.
 local previousById: { [number]: Protocol.EnemyView } = {}
@@ -133,6 +135,7 @@ local function release(id: number, part: Part)
 	colorKeys[id] = nil
 	shown[id] = nil
 	flashUntil[id] = nil
+	holdUntil[id] = nil
 end
 
 local function shade(color: Color3, factor: number): Color3
@@ -262,9 +265,14 @@ local function render()
 			end
 			count += 1
 			moveParts[count] = part
-			-- The part's front is -Z; the facing is measured from +X toward +Z.
-			moveFrames[count] = CFrame.new(x, heights[id], z)
-				* CFrame.Angles(0, -facing - math.pi / 2, 0)
+			if (holdUntil[id] or 0) > now then
+				-- The hit-stop: the enemy freezes where it was drawn.
+				moveFrames[count] = part.CFrame
+			else
+				-- The part's front is -Z; the facing is measured from +X toward +Z.
+				moveFrames[count] = CFrame.new(x, heights[id], z)
+					* CFrame.Angles(0, -facing - math.pi / 2, 0)
+			end
 
 			local color = baseColors[id]
 			if (flashUntil[id] or 0) > now then
@@ -291,6 +299,13 @@ end
 function EnemyView.flash(id: number)
 	if parts[id] then
 		flashUntil[id] = os.clock() + HIT_FLASH_SECONDS
+	end
+end
+
+-- Holds the enemy still for `seconds`: the hit-stop of a skill.
+function EnemyView.hitStop(id: number, seconds: number)
+	if parts[id] then
+		holdUntil[id] = math.max(holdUntil[id] or 0, os.clock() + seconds)
 	end
 end
 

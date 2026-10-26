@@ -104,6 +104,19 @@ local function templateById(config: Types.Config, id: string): Types.RoomTemplat
 end
 
 return {
+
+	["reach stops at the first wall and clearPath says whether there is one"] = function()
+		local world = World.generate(Fixtures.config(), Rng.new(3), 4)
+		local room = world.rooms[world.startRooms[1]]
+		local x, z = room.x + 3, room.z - room.halfDepth + 2
+		-- North through the wall: the reach ends inside the room.
+		local reach = World.reach(world, x, z, x, z - 20)
+		Assert.truthy(reach >= 1 and reach <= 2 + 1e-9, "reach " .. reach)
+		Assert.falsy(World.clearPath(world, x, z, x, z - 20))
+		-- Across the room: clear.
+		Assert.truthy(World.clearPath(world, x, z, room.x - 3, room.z + room.halfDepth - 2))
+		Assert.near(World.reach(world, x, z, x, z + 10), 10)
+	end,
 	["every room is reachable from every other"] = function()
 		eachWorld(function(world, _, label)
 			for _, room in world.rooms do

@@ -81,7 +81,7 @@ function Life.knockPlayer(
 	player.knockUntil = run.time + seconds
 	table.insert(
 		run.events,
-		{ kind = "knocked", player = player.id, dx = dx * studs, dz = dz * studs }
+		{ kind = "knockback", player = player.id, dx = dx * studs, dz = dz * studs }
 	)
 end
 
@@ -124,8 +124,8 @@ local function updateBodies(run: Types.Run, dt: number)
 				player.x + player.knockX * knockLeft,
 				player.z + player.knockZ * knockLeft
 			)
-			-- The character is pushed too, so its next report is within budget.
-			player.moveBudget += Geometry.distance(player.x, player.z, x, z)
+			-- The run carries the player; the character is pulled along by the
+			-- server if the client does not move it itself.
 			player.x, player.z = x, z
 		end
 

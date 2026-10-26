@@ -6,7 +6,6 @@ local Camps = require("./Camps")
 local Combat = require("./Combat")
 local Enemies = require("./Enemies")
 local Extraction = require("./Extraction")
-local Geometry = require("./Geometry")
 local Life = require("./Life")
 local Perks = require("./Perks")
 local Projectiles = require("./Projectiles")
@@ -76,21 +75,35 @@ function Run.setAssist(run: Types.Run, playerId: number, enabled: boolean)
 	end
 end
 
+-- The aim: the direction the player's skills fire in (ADR-0009).
+function Run.setAim(run: Types.Run, playerId: number, angle: number)
+	local player = run.players[playerId]
+	if player and angle == angle and angle ~= math.huge and angle ~= -math.huge then
+		player.facing = angle
+	end
+end
+
+-- Uses active skill `index` along `aim` (the player's current aim when nil).
 function Run.useSkill(
 	run: Types.Run,
 	playerId: number,
 	index: number,
+	aim: number?,
 	aimDistance: number?
 ): boolean
 	if run.ended then
 		return false
 	end
+	if aim then
+		Run.setAim(run, playerId, aim)
+	end
 	return Combat.useActive(run, playerId, index, aimDistance)
 end
 
 -- The dash: the client moves the character; the run only spends a charge and
--- raises the movement budget by the dash distance (ADR-0007), so the next
--- position report is accepted and a dash on cooldown is pulled back.
+-- grants the dash distance as a boost to the movement budget (ADR-0007),
+-- usable for the dash's duration plus a grace for lag. A dash not taken lapses,
+-- so boosts cannot be banked into a teleport.
 function Run.dash(run: Types.Run, playerId: number): boolean
 	local player = alivePlayer(run, playerId)
 	if player == nil or player.dashCharges <= 0 then
@@ -101,9 +114,23 @@ function Run.dash(run: Types.Run, playerId: number): boolean
 		player.dashRechargeAt = run.time + dash.rechargeSeconds
 	end
 	player.dashCharges -= 1
-	player.moveBudget += Perks.playerValue(run.config, player, "dashDistance", dash.distance)
+	if run.time >= player.boostUntil then
+		player.boost = 0
+	end
+	player.boost += Run.dashDistance(run, player)
+	player.boostUntil = run.time + dash.seconds + run.config.player.moveBurstSeconds
 	table.insert(run.events, { kind = "dashed", player = player.id })
 	return true
+end
+
+-- How far the player's dash carries, after perks.
+function Run.dashDistance(run: Types.Run, player: Types.Player): number
+	return Perks.playerValue(
+		run.config,
+		player,
+		"dashDistance",
+		Run.class(run, player).dash.distance
+	)
 end
 
 function Run.drink(run: Types.Run, playerId: number): boolean
@@ -134,38 +161,56 @@ end
 
 -- Positions come from the client's character, so the run accepts only what
 -- walking could reach: anything not finite is dropped, the rest is held inside
--- the walkable world and to the player's movement budget (rule 1). The budget
--- refills at walking speed with a tolerance and banks a short burst, which
--- absorbs late updates but not a teleport; a dash raises it.
+-- the walkable world, behind the first wall on its way, and to the player's
+-- movement budget (rule 1). The budget refills at walking speed with a
+-- tolerance (slower while firing backwards) and banks a short burst, which
+-- absorbs late updates but not a teleport; a dash adds a boost that lapses.
+-- A knocked player is carried by the knockback, not by the client.
 local function move(run: Types.Run, player: Types.Player, input: Types.PlayerInput?, dt: number)
 	local config = run.config.player
-	local speed = Run.walkSpeed(run, player) * config.moveTolerance
-	player.moveBudget = math.min(
-		math.max(player.moveBudget, 0) + speed * dt,
-		math.max(player.moveBudget, speed * config.moveBurstSeconds)
-	)
-	if input == nil then
+	if input == nil or not (isFinite(input.x) and isFinite(input.z)) then
+		player.moveBudget = math.min(
+			player.moveBudget + Run.walkSpeed(run, player) * config.moveTolerance * dt,
+			Run.walkSpeed(run, player) * config.moveTolerance * config.moveBurstSeconds
+		)
 		return
 	end
-	if input.facing and isFinite(input.facing) then
-		player.facing = input.facing
-	end
-	if not (isFinite(input.x) and isFinite(input.z)) then
+	if run.time < player.knockUntil then
 		return
 	end
 
 	local targetX, targetZ = World.clamp(run.world, input.x, input.z)
 	local dx, dz = targetX - player.x, targetZ - player.z
 	local distance = math.sqrt(dx * dx + dz * dz)
-	if distance > player.moveBudget then
-		local scale = player.moveBudget / distance
+
+	-- Walking away from the aim while firing is slower.
+	local speed = Run.walkSpeed(run, player) * config.moveTolerance
+	if player.firing and distance > 1e-6 then
+		local dot = (dx * math.cos(player.facing) + dz * math.sin(player.facing)) / distance
+		if dot < config.backpedalDot then
+			speed *= config.backpedalFactor
+		end
+	end
+	player.moveBudget = math.min(player.moveBudget + speed * dt, speed * config.moveBurstSeconds)
+	if run.time >= player.boostUntil then
+		player.boost = 0
+	end
+
+	-- A wall on the way stops the move there.
+	local reach = World.reach(run.world, player.x, player.z, targetX, targetZ)
+	local allowed = math.min(distance, reach, player.moveBudget + player.boost)
+	if distance > 1e-9 and allowed < distance then
+		local scale = allowed / distance
 		dx *= scale
 		dz *= scale
-		distance = player.moveBudget
+		distance = allowed
 	end
 	player.x += dx
 	player.z += dz
-	player.moveBudget -= distance
+	-- The boost is spent first; it is the part that lapses.
+	local fromBoost = math.min(distance, player.boost)
+	player.boost -= fromBoost
+	player.moveBudget -= distance - fromBoost
 end
 
 -- Refreshes where the player stands and gives dash charges back.
@@ -228,12 +273,6 @@ function Run.drainEvents(run: Types.Run): { Types.Event }
 	local events = run.events
 	run.events = {}
 	return events
-end
-
--- Where (x, z) is relative to the player: the distance along the aim. Used by
--- the adapter for nothing yet; kept for the HUD's aim marker.
-function Run.distanceAlongAim(player: Types.Player, x: number, z: number): number
-	return Geometry.distance(player.x, player.z, x, z)
 end
 
 return Run

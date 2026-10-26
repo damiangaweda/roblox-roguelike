@@ -17,8 +17,9 @@ Protocol.remotes = {
 }
 
 export type Intent =
-	{ kind: "fire", held: boolean }
-	| { kind: "skill", index: number, aimDistance: number? }
+	{ kind: "aim", angle: number }
+	| { kind: "fire", held: boolean }
+	| { kind: "skill", index: number, aim: number?, aimDistance: number? }
 	| { kind: "dash" }
 	| { kind: "drink" }
 	| { kind: "interact", held: boolean }
@@ -39,40 +40,52 @@ local function isSmallIndex(value: any, max: number): boolean
 	return isFiniteNumber(value) and value == math.floor(value) and value >= 1 and value <= max
 end
 
+-- An aim angle: radians from +x toward +z (ADR-0009).
+local function isAngle(value: any): boolean
+	return isFiniteNumber(value) and math.abs(value) <= 2 * math.pi
+end
+
 -- Parses the arguments of an Intent remote. Returns nil for anything malformed;
 -- range, cooldowns and state are the run's to check.
-function Protocol.parseIntent(kind: any, a: any, b: any): Intent?
-	if kind == "fire" then
-		if type(a) == "boolean" and b == nil then
+function Protocol.parseIntent(kind: any, a: any, b: any, c: any): Intent?
+	-- Only a skill takes a third argument.
+	local trailing = c ~= nil
+	if kind == "aim" then
+		if isAngle(a) and b == nil and not trailing then
+			return { kind = "aim", angle = a }
+		end
+	elseif kind == "fire" then
+		if type(a) == "boolean" and b == nil and not trailing then
 			return { kind = "fire", held = a }
 		end
 	elseif kind == "skill" then
-		if isSmallIndex(a, MAX_SKILLS) then
-			if b == nil then
-				return { kind = "skill", index = a, aimDistance = nil }
+		-- The index, then an optional aim angle and an optional aim distance.
+		if isSmallIndex(a, MAX_SKILLS) and (b == nil or isAngle(b)) then
+			if c == nil then
+				return { kind = "skill", index = a, aim = b, aimDistance = nil }
 			end
-			if isFiniteNumber(b) and b > 0 and b <= MAX_AIM_DISTANCE then
-				return { kind = "skill", index = a, aimDistance = b }
+			if isFiniteNumber(c) and c > 0 and c <= MAX_AIM_DISTANCE then
+				return { kind = "skill", index = a, aim = b, aimDistance = c }
 			end
 		end
 	elseif kind == "dash" then
-		if a == nil and b == nil then
+		if a == nil and b == nil and not trailing then
 			return { kind = "dash" }
 		end
 	elseif kind == "drink" then
-		if a == nil and b == nil then
+		if a == nil and b == nil and not trailing then
 			return { kind = "drink" }
 		end
 	elseif kind == "interact" then
-		if type(a) == "boolean" and b == nil then
+		if type(a) == "boolean" and b == nil and not trailing then
 			return { kind = "interact", held = a }
 		end
 	elseif kind == "perk" then
-		if isSmallIndex(a, MAX_PERK_INDEX) and b == nil then
+		if isSmallIndex(a, MAX_PERK_INDEX) and b == nil and not trailing then
 			return { kind = "perk", index = a }
 		end
 	elseif kind == "assist" then
-		if type(a) == "boolean" and b == nil then
+		if type(a) == "boolean" and b == nil and not trailing then
 			return { kind = "assist", enabled = a }
 		end
 	end
@@ -341,6 +354,8 @@ export type SelfView = {
 	dashCharges: number,
 	dashMaxCharges: number,
 	dashRechargeIn: number,
+	-- How far a dash carries, after perks: the client moves the character by it.
+	dashDistance: number,
 	potions: number,
 	potionCapacity: number,
 }
@@ -352,7 +367,7 @@ function Protocol.isPrivate(event: Types.Event): boolean
 		or kind == "perkTaken"
 		or kind == "levelUp"
 		or kind == "playerHurt"
-		or kind == "knocked"
+		or kind == "knockback"
 		or kind == "drinking"
 		or kind == "drank"
 		or kind == "drinkInterrupted"

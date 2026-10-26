@@ -23,6 +23,7 @@ local function skill(
 		pierce = 0,
 		jumps = 0,
 		jumpRange = 0,
+		coneDegrees = 0,
 		speed = 0,
 		knockback = 0,
 		tags = {},
@@ -71,6 +72,7 @@ local Config: Types.Config = {
 		minZones = 2,
 		maxZones = 3,
 		zoneRadius = 8,
+		zoneDepthWeight = 2,
 		coverRadius = 3.5,
 		campsInZoneRooms = false,
 		templates = Templates,
@@ -92,10 +94,15 @@ local Config: Types.Config = {
 		pickupRadius = 3,
 		knockbackSeconds = 0.25,
 		backpedalFactor = 0.6,
+		backpedalDot = -0.3,
 	},
 	aim = {
 		assistConeDegrees = 24,
 		assistRange = 40,
+	},
+	projectiles = {
+		touchMargin = 0.5,
+		overshoot = 1.5,
 	},
 	classes = {
 		elementalist = {
@@ -130,11 +137,13 @@ local Config: Types.Config = {
 					range = 35,
 					jumps = 4,
 					jumpRange = 14,
+					coneDegrees = 30,
 					tags = { "lightning" },
 				}),
 			},
 			dash = {
 				distance = 10,
+				seconds = 0.12,
 				charges = 2,
 				rechargeSeconds = 4,
 			},
@@ -147,6 +156,7 @@ local Config: Types.Config = {
 		campAlerts = true,
 		returnHealFraction = 1,
 		arriveDistance = 2,
+		approachFactor = 0.9,
 		buffSpeedFactor = 1.3,
 		buffDamageFactor = 1.3,
 		archetypes = {

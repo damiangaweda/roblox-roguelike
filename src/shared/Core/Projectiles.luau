@@ -13,8 +13,6 @@ local Projectiles = {}
 
 -- The longest a projectile moves between two collision checks.
 local SUBSTEP = 1
--- How far beyond a body's own radius a projectile still counts as touching it.
-local TOUCH_MARGIN = 0.5
 
 -- An enemy projectile lands at (x, z): with a radius it hurts every alive
 -- player in reach, otherwise it vanishes.
@@ -40,7 +38,7 @@ end
 
 -- The alive player nearest to the projectile within touching distance.
 local function touchedPlayer(run: Types.Run, x: number, z: number): Types.Player?
-	local reach = run.config.player.radius + TOUCH_MARGIN
+	local reach = run.config.player.radius + run.config.projectiles.touchMargin
 	local best: Types.Player? = nil
 	local bestDistance = math.huge
 	for _, player in State.sortedPlayers(run) do
@@ -58,7 +56,10 @@ local function touchedEnemy(run: Types.Run, x: number, z: number): Types.Enemy?
 	local bestDistance = math.huge
 	for _, enemy in run.enemies do
 		local d = Geometry.distance(x, z, enemy.x, enemy.z)
-		if d <= State.archetype(run, enemy).radius + TOUCH_MARGIN and d < bestDistance then
+		if
+			d <= State.archetype(run, enemy).radius + run.config.projectiles.touchMargin
+			and d < bestDistance
+		then
 			best = enemy
 			bestDistance = d
 		end
@@ -70,7 +71,8 @@ end
 -- did what landing does); the caller removes it.
 local function collide(run: Types.Run, projectile: Types.Projectile): boolean
 	local x, z = projectile.x, projectile.z
-	local outside = World.locate(run.world, x, z).kind == "outside"
+	-- Stopped at a wall: the flight was cut short by the step.
+	local outside = projectile.remaining <= 1e-9
 
 	if projectile.owner == "player" then
 		if outside then
@@ -122,9 +124,16 @@ function Projectiles.step(run: Types.Run, dt: number)
 
 		local landed = false
 		for _ = 1, steps do
+			local lastX, lastZ = projectile.x, projectile.z
 			projectile.x += projectile.dirX * length
 			projectile.z += projectile.dirZ * length
 			projectile.remaining -= length
+			-- A wall is hit at the last point before it, so the burst stays on
+			-- this side of the wall.
+			if World.locate(run.world, projectile.x, projectile.z).kind == "outside" then
+				projectile.x, projectile.z = lastX, lastZ
+				projectile.remaining = 0
+			end
 			if collide(run, projectile) then
 				landed = true
 				break

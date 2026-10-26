@@ -16,6 +16,8 @@ local Types = require(ReplicatedStorage.Shared.Core.Types)
 
 local Effects = {}
 
+-- How long a skill hit holds the enemy still (the hit-stop).
+local HIT_STOP_SECONDS = 0.07
 local TRACER_SECONDS = 0.08
 local TRACER_WIDTH = 0.25
 local TRACER_COLOR = Color3.fromRGB(255, 240, 160)
@@ -616,6 +618,9 @@ local function onHit(event: Types.Event)
 	end
 	if not event.blocked then
 		EnemyView.flash(event.enemyId)
+		if event.skill ~= BASIC_SKILL then
+			EnemyView.hitStop(event.enemyId, HIT_STOP_SECONDS)
+		end
 	end
 	if event.skill == BASIC_SKILL then
 		local root = characterRoot(event.source)

@@ -2,12 +2,14 @@
 -- Damage to enemies and the player's skills (ADR-0009): every shape a skill
 -- can fire, burning, the synergies and kills. Enemies lose health only here.
 
+local Enemies = require("./Enemies")
 local Geometry = require("./Geometry")
 local Perks = require("./Perks")
 local Progression = require("./Progression")
 local Skills = require("./Skills")
 local State = require("./State")
 local Types = require("./Types")
+local World = require("./World")
 
 local Combat = {}
 
@@ -100,6 +102,9 @@ function Combat.damageEnemy(
 			skill = skill,
 			blocked = true,
 		})
+		if source then
+			Enemies.provoke(run, enemy, source)
+		end
 		return false
 	end
 
@@ -165,6 +170,9 @@ function Combat.damageEnemy(
 	if enemy.health <= 0 then
 		kill(run, enemy, source)
 		return true
+	end
+	if source then
+		Enemies.provoke(run, enemy, source)
 	end
 	return false
 end
@@ -271,7 +279,10 @@ function Combat.burst(
 	if projectile.radius > 0 then
 		for _, enemy in run.enemies do
 			local reach = projectile.radius + State.archetype(run, enemy).radius
-			if Geometry.distance(x, z, enemy.x, enemy.z) <= reach then
+			if
+				Geometry.distance(x, z, enemy.x, enemy.z) <= reach
+				and World.clearPath(run.world, x, z, enemy.x, enemy.z)
+			then
 				table.insert(victims, enemy)
 			end
 		end
@@ -295,8 +306,7 @@ function Combat.burst(
 	end
 end
 
--- Arcane Bolt: a burst along the ray. Walls do not stop it (a simplification:
--- the ray is short and the shot would otherwise need a wall query).
+-- Arcane Bolt: a burst along the ray, as far as the first wall.
 local function fireLine(
 	run: Types.Run,
 	player: Types.Player,
@@ -304,6 +314,13 @@ local function fireLine(
 	aim: number
 )
 	local dx, dz = math.cos(aim), math.sin(aim)
+	local range = World.reach(
+		run.world,
+		player.x,
+		player.z,
+		player.x + dx * skill.range,
+		player.z + dz * skill.range
+	)
 	local hits: { { enemy: Types.Enemy, along: number } } = {}
 	for _, enemy in run.enemies do
 		local relX, relZ = enemy.x - player.x, enemy.z - player.z
@@ -311,7 +328,7 @@ local function fireLine(
 		local across = math.abs(relX * dz - relZ * dx)
 		if
 			along >= 0
-			and along <= skill.range
+			and along <= range
 			and across <= skill.width / 2 + State.archetype(run, enemy).radius
 		then
 			table.insert(hits, { enemy = enemy, along = along })
@@ -393,7 +410,10 @@ local function fireRing(run: Types.Run, player: Types.Player, skill: Types.Effec
 	local victims: { Types.Enemy } = {}
 	for _, enemy in run.enemies do
 		local reach = skill.radius + State.archetype(run, enemy).radius
-		if Geometry.distance(player.x, player.z, enemy.x, enemy.z) <= reach then
+		if
+			Geometry.distance(player.x, player.z, enemy.x, enemy.z) <= reach
+			and World.clearPath(run.world, player.x, player.z, enemy.x, enemy.z)
+		then
 			table.insert(victims, enemy)
 		end
 	end
@@ -422,9 +442,10 @@ local function fireChain(
 	skill: Types.EffectiveSkill,
 	aim: number
 ): boolean
-	local cone = run.config.aim.assistConeDegrees
+	local cone = skill.coneDegrees
 	local target = nearest(run, player.x, player.z, skill.range, function(enemy)
 		return Geometry.inArc(player.x, player.z, aim, cone, enemy.x, enemy.z)
+			and World.clearPath(run.world, player.x, player.z, enemy.x, enemy.z)
 	end)
 	if target == nil then
 		return false
@@ -453,7 +474,7 @@ local function fireChain(
 		)
 		fromX, fromZ = x, z
 		target = nearest(run, x, z, skill.jumpRange, function(enemy)
-			return not struck[enemy.id]
+			return not struck[enemy.id] and World.clearPath(run.world, x, z, enemy.x, enemy.z)
 		end)
 	end
 	return true

@@ -108,7 +108,8 @@ return {
 		Projectiles.step(run, 1)
 		Assert.equal(#run.projectiles, 0)
 		local burst = Assert.findEvent(run.events, "burst")
-		Assert.truthy(burst.x > edge and burst.x <= edge + 1.01)
+		-- It lands on this side of the wall, within a step of it.
+		Assert.truthy(burst.x <= edge and burst.x >= edge - 1.01, "burst at " .. burst.x)
 		-- The enemy was not struck on the way but is inside the burst.
 		Assert.equal(enemy.health, 90)
 	end,
@@ -205,7 +206,7 @@ return {
 		local hurt = Assert.findEvent(run.events, "playerHurt")
 		Assert.equal(hurt.amount, 12)
 		Assert.equal(hurt.enemyId, 7)
-		Assert.equal(Assert.findEvent(run.events, "knocked"), nil)
+		Assert.equal(Assert.findEvent(run.events, "knockback"), nil)
 	end,
 
 	["an enemy projectile with knockback pushes the player"] = function()
@@ -222,7 +223,7 @@ return {
 		Projectiles.step(run, 1)
 		Assert.equal(player.health, 88)
 		Assert.truthy(player.knockX > 0)
-		Assert.truthy(Assert.findEvent(run.events, "knocked"))
+		Assert.truthy(Assert.findEvent(run.events, "knockback"))
 	end,
 
 	["an enemy projectile misses a player off to the side and ends its flight silently"] = function()

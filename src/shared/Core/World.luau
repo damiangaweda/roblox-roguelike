@@ -173,6 +173,7 @@ end
 
 -- Deep rooms far from each other, none a start room.
 local function chooseZoneRooms(
+	config: Types.Config,
 	rooms: { Types.Room },
 	hops: { { number } },
 	count: number
@@ -191,7 +192,7 @@ local function chooseZoneRooms(
 			if apart == math.huge then
 				apart = 0
 			end
-			local score = room.distance * 2 + apart
+			local score = room.distance * config.world.zoneDepthWeight + apart
 			if score > bestScore then
 				best, bestScore = room.id, score
 			end
@@ -332,7 +333,8 @@ function World.generate(config: Types.Config, rng: Types.Rng, playerCount: numbe
 		settings.minZones,
 		settings.maxZones
 	)
-	local zoneRooms = chooseZoneRooms(rooms, hops, math.min(zoneCount, #rooms - #startRooms))
+	local zoneRooms =
+		chooseZoneRooms(config, rooms, hops, math.min(zoneCount, #rooms - #startRooms))
 	for _, id in zoneRooms do
 		rooms[id].hasZone = true
 	end
@@ -423,6 +425,48 @@ function World.inCover(world: Types.World, config: Types.Config, x: number, z: n
 		end
 	end
 	return false
+end
+
+-- How far apart the points are that a path is checked at.
+local PATH_SAMPLE = 1
+
+-- How far from (fromX, fromZ) toward (toX, toZ) the walkable world reaches, up
+-- to the full distance: the first wall stops it.
+function World.reach(
+	world: Types.World,
+	fromX: number,
+	fromZ: number,
+	toX: number,
+	toZ: number
+): number
+	local dx, dz = toX - fromX, toZ - fromZ
+	local distance = math.sqrt(dx * dx + dz * dz)
+	if distance < 1e-9 then
+		return 0
+	end
+	local steps = math.ceil(distance / PATH_SAMPLE)
+	for step = 1, steps do
+		local t = math.min(step * PATH_SAMPLE, distance)
+		if
+			World.locate(world, fromX + dx / distance * t, fromZ + dz / distance * t).kind
+			== "outside"
+		then
+			return math.max(0, t - PATH_SAMPLE)
+		end
+	end
+	return distance
+end
+
+-- Whether no wall lies between the two points.
+function World.clearPath(
+	world: Types.World,
+	fromX: number,
+	fromZ: number,
+	toX: number,
+	toZ: number
+): boolean
+	local dx, dz = toX - fromX, toZ - fromZ
+	return World.reach(world, fromX, fromZ, toX, toZ) >= math.sqrt(dx * dx + dz * dz) - 1e-9
 end
 
 function World.corridorBetween(world: Types.World, a: number, b: number): Types.Corridor?

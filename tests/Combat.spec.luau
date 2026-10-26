@@ -48,6 +48,75 @@ local function hitCount(run: Types.Run): number
 end
 
 return {
+
+	["a hit provokes an idle enemy and its camp"] = function()
+		local run = Fixtures.run(1)
+		local player = run.players[1]
+		local room = Fixtures.roomOf(run, player)
+		Fixtures.place(run, player, room.x - 12, room.z)
+		player.facing = 0
+		local first = Fixtures.enemy(run, "grunt", room.x + 10, room.z)
+		local second = Fixtures.enemy(run, "grunt", room.x + 10, room.z + 10)
+		local camp: Types.Camp = {
+			id = 1,
+			roomId = room.id,
+			x = room.x + 10,
+			z = room.z,
+			level = 1,
+			members = { first.id, second.id },
+			alerted = false,
+			scaledFor = 0,
+			leaderId = nil,
+		}
+		table.insert(run.camps, camp)
+		first.campId, second.campId = 1, 1
+		Combat.damageEnemy(run, first, 1, 1, {}, "arcaneBolt", player.x, player.z)
+		Assert.equal(first.state, "chase")
+		Assert.equal(first.target, 1)
+		Assert.equal(second.state, "chase")
+		Assert.truthy(camp.alerted)
+		Assert.truthy(Assert.findEvent(run.events, "campAlerted"))
+	end,
+
+	["a blocked hit still provokes the shieldbearer"] = function()
+		local run = Fixtures.run(1)
+		local player = run.players[1]
+		local room = Fixtures.roomOf(run, player)
+		Fixtures.place(run, player, room.x - 10, room.z)
+		local bearer = Fixtures.enemy(run, "shieldbearer", room.x, room.z)
+		bearer.facing = math.pi
+		Combat.damageEnemy(run, bearer, 1, 10, {}, "arcaneBolt", player.x, player.z)
+		Assert.equal(bearer.health, bearer.maxHealth)
+		Assert.equal(bearer.state, "chase")
+	end,
+
+	["a wall stops Arcane Bolt"] = function()
+		local run = Fixtures.run(1)
+		local player = run.players[1]
+		local room = Fixtures.roomOf(run, player)
+		-- Beside the north wall, off any corridor's line, firing north.
+		Fixtures.place(run, player, room.x + 3, room.z - room.halfDepth + 2)
+		player.facing = -math.pi / 2
+		player.firing = true
+		-- Behind the wall; an enemy may not stand there, but a bolt that ignored
+		-- walls would hit it.
+		local behind = Fixtures.enemy(run, "grunt", room.x + 3, room.z - room.halfDepth - 4)
+		Combat.fireBasic(run, player)
+		Assert.equal(behind.health, behind.maxHealth)
+		Assert.equal(Assert.findEvent(run.events, "hit"), nil)
+	end,
+
+	["a wall keeps Frost Nova out"] = function()
+		local run = Fixtures.run(1)
+		local player = run.players[1]
+		local room = Fixtures.roomOf(run, player)
+		Fixtures.place(run, player, room.x + 3, room.z - room.halfDepth + 1)
+		local behind = Fixtures.enemy(run, "grunt", room.x + 3, room.z - room.halfDepth - 3)
+		local inside = Fixtures.enemy(run, "grunt", room.x + 3, room.z - room.halfDepth + 6)
+		Assert.truthy(Combat.useActive(run, 1, 2))
+		Assert.equal(behind.health, behind.maxHealth)
+		Assert.truthy(inside.health < inside.maxHealth)
+	end,
 	-- Arcane Bolt and the basic attack
 
 	["Arcane Bolt hits the nearest enemy on the ray and pierces one more"] = function()

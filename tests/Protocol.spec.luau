@@ -12,23 +12,40 @@ return {
 		Assert.equal(Protocol.parseIntent("fire", true, 1), nil)
 	end,
 
-	["skill intent takes a small index and an optional aim distance"] = function()
+	["aim intent takes an angle"] = function()
+		local intent = Protocol.parseIntent("aim", -1.25) :: any
+		Assert.equal(intent.kind, "aim")
+		Assert.equal(intent.angle, -1.25)
+		Assert.equal(Protocol.parseIntent("aim", 7), nil)
+		Assert.equal(Protocol.parseIntent("aim", 0 / 0), nil)
+		Assert.equal(Protocol.parseIntent("aim", "1"), nil)
+		Assert.equal(Protocol.parseIntent("aim", 1, 2), nil)
+	end,
+
+	["skill intent takes a small index, an optional aim and an optional distance"] = function()
 		local plain = Protocol.parseIntent("skill", 2) :: any
 		Assert.equal(plain.kind, "skill")
 		Assert.equal(plain.index, 2)
+		Assert.equal(plain.aim, nil)
 		Assert.equal(plain.aimDistance, nil)
-		local aimed = Protocol.parseIntent("skill", 1, 17.5) :: any
+		local aimed = Protocol.parseIntent("skill", 1, 0.5, 17.5) :: any
+		Assert.equal(aimed.aim, 0.5)
 		Assert.equal(aimed.aimDistance, 17.5)
+		local angled = Protocol.parseIntent("skill", 1, 3) :: any
+		Assert.equal(angled.aim, 3)
+		Assert.equal(angled.aimDistance, nil)
 		Assert.equal(Protocol.parseIntent("skill", 0), nil)
 		Assert.equal(Protocol.parseIntent("skill", 1.5), nil)
 		Assert.equal(Protocol.parseIntent("skill", 9), nil)
 		Assert.equal(Protocol.parseIntent("skill", "1"), nil)
-		Assert.equal(Protocol.parseIntent("skill", 1, 0), nil)
-		Assert.equal(Protocol.parseIntent("skill", 1, -5), nil)
+		Assert.equal(Protocol.parseIntent("skill", 1, 7), nil)
 		Assert.equal(Protocol.parseIntent("skill", 1, 0 / 0), nil)
-		Assert.equal(Protocol.parseIntent("skill", 1, math.huge), nil)
-		Assert.equal(Protocol.parseIntent("skill", 1, 5000), nil)
-		Assert.equal(Protocol.parseIntent("skill", 1, "5"), nil)
+		Assert.equal(Protocol.parseIntent("skill", 1, 0, 0), nil)
+		Assert.equal(Protocol.parseIntent("skill", 1, 0, -5), nil)
+		Assert.equal(Protocol.parseIntent("skill", 1, 0, math.huge), nil)
+		Assert.equal(Protocol.parseIntent("skill", 1, 0, 5000), nil)
+		Assert.equal(Protocol.parseIntent("skill", 1, 0, "5"), nil)
+		Assert.equal(Protocol.parseIntent("fire", true, nil, 1), nil)
 	end,
 
 	["dash and drink take no arguments"] = function()
@@ -185,7 +202,7 @@ return {
 	["private events name their player"] = function()
 		Assert.truthy(Protocol.isPrivate({ kind = "offer", player = 4, perks = {} }))
 		Assert.truthy(Protocol.isPrivate({ kind = "pickedUp", player = 4, pickup = "potion" }))
-		Assert.truthy(Protocol.isPrivate({ kind = "knocked", player = 4, dx = 1, dz = 0 }))
+		Assert.truthy(Protocol.isPrivate({ kind = "knockback", player = 4, dx = 1, dz = 0 }))
 		Assert.falsy(Protocol.isPrivate({ kind = "died", player = 4 }))
 		Assert.falsy(Protocol.isPrivate({ kind = "flood" }))
 		Assert.equal(Protocol.eventPlayer({ kind = "levelUp", player = 9, level = 2 }), 9)

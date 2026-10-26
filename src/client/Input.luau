@@ -16,10 +16,11 @@ local Net = require(script.Parent.Net)
 
 local Input = {}
 
--- How long a dash or a knockback takes to carry the character over its distance.
-local DASH_SECONDS = 0.12
 -- A dash or knockback stops this far before a wall.
 local WALL_MARGIN = 1.5
+-- The aim is sent at most this often, and only once it has turned this much.
+local AIM_INTERVAL = 0.1
+local AIM_EPSILON = math.rad(2)
 -- The aim pad is the right part of the screen; a drag longer than this aims and fires.
 local PAD_REGION = 0.45
 local PAD_DEADZONE = 12
@@ -27,8 +28,6 @@ local PAD_DEADZONE = 12
 local STICK_DEADZONE = 0.25
 -- Below this the move direction counts as standing still.
 local MOVE_EPSILON = 0.1
--- Walking away from the aim at least this much (dot product) counts as backpedaling.
-local BACKPEDAL_DOT = -0.3
 
 local SKILL_KEYS: { [Enum.KeyCode]: number } = {
 	[Enum.KeyCode.Q] = 1,
@@ -81,7 +80,11 @@ local padStart = Vector2.zero
 local padAim: Vector3? = nil
 
 local firing = false
-local backpedaling = false
+-- The walk speed the server set, restored after a backpedal; nil while not backpedaling.
+local speedBeforeBackpedal: number? = nil
+-- The last aim angle sent to the server and when.
+local sentAim: number? = nil
+local sentAimAt = 0
 local shifts: { Shift } = {}
 local dashShift: Shift? = nil
 local trackedCharacter: Model? = nil
@@ -144,6 +147,32 @@ function Input.aimDirection(): Vector3?
 	return lastAim
 end
 
+-- The aim as the core's angle: radians from +x toward +z.
+local function aimAngle(): number?
+	local aim = lastAim
+	if aim == nil then
+		return nil
+	end
+	return math.atan2(aim.Z, aim.X)
+end
+
+-- Tells the server the aim, throttled, once it has turned enough. Every skill
+-- carries its own aim, so this only has to keep the basic attack honest.
+local function sendAim(force: boolean)
+	local angle = aimAngle()
+	if angle == nil then
+		return
+	end
+	local now = os.clock()
+	local turned = sentAim == nil
+		or math.abs((angle - sentAim + math.pi) % (2 * math.pi) - math.pi) > AIM_EPSILON
+	if force or (turned and now - sentAimAt >= AIM_INTERVAL) then
+		sentAim = angle
+		sentAimAt = now
+		Net.setAim(angle)
+	end
+end
+
 -- How far the mouse's ground point is from the character: only a mouse aims at a point.
 local function aimDistance(): number?
 	if not mouseAim then
@@ -167,7 +196,7 @@ end
 
 -- Fires active skill `index` (1..3) along the current aim.
 function Input.useSkill(index: number)
-	Net.useSkill(index, aimDistance())
+	Net.useSkill(index, aimAngle(), aimDistance())
 end
 
 function Input.drink()
@@ -231,10 +260,8 @@ local function stepShifts(character: Model, deltaTime: number)
 	end
 end
 
--- Asks for a dash and moves the character along the move direction (or the facing).
--- The client moves the base distance only: a Long Blink perk's extra distance is in
--- the server's budget, which keeps the run's position, so the character is pulled
--- onto it by the next snapshot of the position.
+-- Asks for a dash and moves the character along the move direction (or the facing)
+-- by the distance the server last said a dash carries, over the dash's time.
 function Input.dash()
 	if dashShift ~= nil then
 		return
@@ -255,8 +282,9 @@ function Input.dash()
 	if direction == nil then
 		return
 	end
-	local distance = Config.classes.elementalist.dash.distance
-	dashShift = addShift(character, root, direction * distance, DASH_SECONDS)
+	local dash = Config.classes.elementalist.dash
+	local distance = if dashSelf then dashSelf.dashDistance else dash.distance
+	dashShift = addShift(character, root, direction * distance, dash.seconds)
 end
 
 local function knocked(dx: number, dz: number)
@@ -291,21 +319,23 @@ local function face(root: BasePart)
 	root.CFrame = CFrame.lookAt(position, position + aim)
 end
 
--- Walking away from the aim while firing is slower. A Swift perk's speed is not
--- reflected here: this restores the configured base speed.
+-- Walking away from the aim while firing is slower. The server holds the budget
+-- to the same rule; this only keeps the character from running ahead of it. The
+-- speed the server set (perks included) comes back afterwards.
 local function updateBackpedal(humanoid: Humanoid)
 	local move = humanoid.MoveDirection
 	local aim = lastAim
 	local backwards = firing
 		and aim ~= nil
 		and move.Magnitude > MOVE_EPSILON
-		and move.Unit:Dot(aim) < BACKPEDAL_DOT
-	if backwards then
-		humanoid.WalkSpeed = Config.player.walkSpeed * Config.player.backpedalFactor
-		backpedaling = true
-	elseif backpedaling then
-		humanoid.WalkSpeed = Config.player.walkSpeed
-		backpedaling = false
+		and move.Unit:Dot(aim) < Config.player.backpedalDot
+	local before = speedBeforeBackpedal
+	if backwards and before == nil then
+		speedBeforeBackpedal = humanoid.WalkSpeed
+		humanoid.WalkSpeed = humanoid.WalkSpeed * Config.player.backpedalFactor
+	elseif not backwards and before ~= nil then
+		humanoid.WalkSpeed = before
+		speedBeforeBackpedal = nil
 	end
 end
 
@@ -316,7 +346,7 @@ local function update(deltaTime: number)
 	end
 	if character ~= trackedCharacter then
 		trackedCharacter = character
-		backpedaling = false
+		speedBeforeBackpedal = nil
 		humanoid.AutoRotate = false
 	end
 	if humanoid.Health <= 0 then
@@ -325,12 +355,19 @@ local function update(deltaTime: number)
 	stepShifts(character, deltaTime)
 	updateAim(root)
 	face(root)
+	sendAim(false)
 	updateBackpedal(humanoid)
 end
 
+-- Assist follows what the player last aimed with: a stick or a touch gets the
+-- cone, a mouse does not, so a controller merely plugged in changes nothing.
+local assisting: boolean? = nil
 local function refreshAssist()
-	local touchOnly = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
-	Net.setAssist(touchOnly or UserInputService.GamepadEnabled)
+	local wanted = not mouseAim
+	if wanted ~= assisting then
+		assisting = wanted
+		Net.setAssist(wanted)
+	end
 end
 
 local function onInputBegan(input: InputObject, _gameProcessed: boolean)
@@ -351,12 +388,14 @@ local function onInputBegan(input: InputObject, _gameProcessed: boolean)
 	end
 	if input.UserInputType == Enum.UserInputType.MouseButton1 then
 		if not overButton(input.Position) then
+			sendAim(true)
 			setFiring(true)
 		end
 		return
 	end
 	local key = input.KeyCode
 	if key == Enum.KeyCode.ButtonR2 then
+		sendAim(true)
 		setFiring(true)
 	elseif SKILL_KEYS[key] then
 		Input.useSkill(SKILL_KEYS[key])
@@ -377,6 +416,8 @@ local function onInputChanged(input: InputObject, _gameProcessed: boolean)
 		local drag = Vector2.new(input.Position.X, input.Position.Y) - padStart
 		if drag.Magnitude > PAD_DEADZONE then
 			padAim = flat(Vector3.new(drag.X, 0, drag.Y))
+			lastAim = padAim or lastAim
+			sendAim(not firing)
 			setFiring(true)
 		end
 	end
@@ -400,14 +441,13 @@ end
 
 function Input.start()
 	refreshAssist()
-	UserInputService.GamepadConnected:Connect(refreshAssist)
-	UserInputService.GamepadDisconnected:Connect(refreshAssist)
 	UserInputService.LastInputTypeChanged:Connect(function(inputType: Enum.UserInputType)
 		if MOUSE_TYPES[inputType] then
 			mouseAim = UserInputService.MouseEnabled
 		elseif inputType == Enum.UserInputType.Touch or inputType.Name:sub(1, 7) == "Gamepad" then
 			mouseAim = false
 		end
+		refreshAssist()
 	end)
 	UserInputService.InputBegan:Connect(onInputBegan)
 	UserInputService.InputChanged:Connect(onInputChanged)
@@ -420,7 +460,7 @@ function Input.start()
 	end)
 	Net.onEvents(function(events)
 		for _, event in events do
-			if event.kind == "knocked" and event.player == Players.LocalPlayer.UserId then
+			if event.kind == "knockback" and event.player == Players.LocalPlayer.UserId then
 				knocked(event.dx, event.dz)
 			end
 		end

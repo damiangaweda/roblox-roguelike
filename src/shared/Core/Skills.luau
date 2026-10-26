@@ -65,6 +65,7 @@ function Skills.effective(
 		count = value("projectileSplit", 1),
 		jumps = value("chainJumps", skill.jumps),
 		jumpRange = skill.jumpRange,
+		coneDegrees = skill.coneDegrees,
 		speed = skill.speed,
 		knockback = value("knockback", skill.knockback),
 		tags = skill.tags,

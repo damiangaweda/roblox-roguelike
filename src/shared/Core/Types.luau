@@ -158,9 +158,11 @@ export type SkillConfig = {
 	width: number,
 	-- line: how many enemies beyond the first it passes through.
 	pierce: number,
-	-- chain: how many enemies it jumps between, and how far one jump reaches.
+	-- chain: how many enemies it jumps between, how far one jump reaches, and
+	-- the cone around the aim the first target is picked from.
 	jumps: number,
 	jumpRange: number,
+	coneDegrees: number,
 	-- projectile: studs per second.
 	speed: number,
 	-- Studs enemies hit are pushed.
@@ -170,6 +172,8 @@ export type SkillConfig = {
 
 export type DashConfig = {
 	distance: number,
+	-- How long the burst takes; with the distance, the dash's speed.
+	seconds: number,
 	charges: number,
 	-- Seconds for one charge to come back.
 	rechargeSeconds: number,
@@ -220,6 +224,7 @@ export type EffectiveSkill = {
 	count: number,
 	jumps: number,
 	jumpRange: number,
+	coneDegrees: number,
 	speed: number,
 	knockback: number,
 	tags: { Tag },
@@ -268,6 +273,9 @@ export type Config = {
 		minZones: number,
 		maxZones: number,
 		zoneRadius: number,
+		-- How much a room's depth counts against its distance from other zones
+		-- when extraction zones are placed.
+		zoneDepthWeight: number,
 		coverRadius: number,
 		-- A camp in a room with a zone, or none.
 		campsInZoneRooms: boolean,
@@ -298,13 +306,21 @@ export type Config = {
 		pickupRadius: number,
 		-- Over how long a knockback moves its target.
 		knockbackSeconds: number,
-		-- Walk speed multiplier while firing and moving against the aim.
+		-- Walk speed multiplier while firing and moving against the aim, and the
+		-- dot product of the move and the aim below which a move is backwards.
 		backpedalFactor: number,
+		backpedalDot: number,
 	},
 	aim: {
 		-- Touch and gamepad: the aim snaps to an enemy within this cone and range.
 		assistConeDegrees: number,
 		assistRange: number,
+	},
+	projectiles: {
+		-- How far beyond a body's radius a projectile still touches it.
+		touchMargin: number,
+		-- An enemy projectile flies this many times its attack's range.
+		overshoot: number,
 	},
 	classes: { [string]: ClassConfig },
 	enemies: {
@@ -318,6 +334,8 @@ export type Config = {
 		returnHealFraction: number,
 		-- An enemy counts as home or at a waypoint within this distance.
 		arriveDistance: number,
+		-- An enemy stops closing in at this share of its attack's range.
+		approachFactor: number,
 		-- Speed multiplier of a buffed enemy.
 		buffSpeedFactor: number,
 		-- Damage multiplier of a buffed enemy.
@@ -513,6 +531,10 @@ export type Player = {
 	kills: number,
 	-- Studs the player may still move before the run holds them back.
 	moveBudget: number,
+	-- Extra studs a dash grants, usable until boostUntil; then they lapse, so a
+	-- dash not taken cannot be banked.
+	boost: number,
+	boostUntil: number,
 	-- Whether the player holds the interact button, which revives a downed
 	-- player nearby or extracts in a zone.
 	interacting: boolean,
@@ -546,7 +568,7 @@ export type Event =
 	}
 	| { kind: "kill", source: number, enemyId: number, archetype: string }
 	| { kind: "playerHurt", player: number, amount: number, enemyId: number? }
-	| { kind: "knocked", player: number, dx: number, dz: number }
+	| { kind: "knockback", player: number, dx: number, dz: number }
 	| { kind: "levelUp", player: number, level: number }
 	| { kind: "offer", player: number, perks: { string } }
 	| { kind: "perkTaken", player: number, perk: string }
@@ -616,11 +638,10 @@ export type Run = {
 }
 
 -- What the adapter tells the core about one player in one step: where the
--- character stands and which way it faces.
+-- character stands. The aim arrives as an intent (ADR-0009).
 export type PlayerInput = {
 	x: number,
 	z: number,
-	facing: number?,
 }
 
 return nil

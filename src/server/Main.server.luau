@@ -1,7 +1,7 @@
 --!strict
 -- The server adapter (ADR-0002): builds the world, owns the run lifecycle and
 -- drives the pure core in fixed steps. The only things it reads from the world
--- are character positions and facings, and parsed intents (AGENTS.md rule 1).
+-- are character positions and parsed intents (AGENTS.md rule 1).
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -186,6 +186,7 @@ local function selfViews(current: Types.Run): { [number]: Protocol.SelfView }
 			dashRechargeIn = if player.dashCharges < maxCharges
 				then math.max(0, player.dashRechargeAt - current.time)
 				else 0,
+			dashDistance = Run.dashDistance(current, player),
 			potions = player.potions,
 			potionCapacity = Life.potionCapacity(current, player),
 		}
@@ -210,10 +211,12 @@ local function onIntent(player: Player, intent: Protocol.Intent)
 		return
 	end
 	local id = player.UserId
-	if intent.kind == "fire" then
+	if intent.kind == "aim" then
+		Run.setAim(current, id, intent.angle)
+	elseif intent.kind == "fire" then
 		Run.setFiring(current, id, intent.held)
 	elseif intent.kind == "skill" then
-		Run.useSkill(current, id, intent.index, intent.aimDistance)
+		Run.useSkill(current, id, intent.index, intent.aim, intent.aimDistance)
 	elseif intent.kind == "dash" then
 		Run.dash(current, id)
 	elseif intent.kind == "drink" then

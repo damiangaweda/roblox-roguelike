@@ -2,8 +2,8 @@
 -- Keeps each player's character in line with the player the core tracks. The
 -- core's health is the truth: the Humanoid's own health never kills anyone
 -- (AGENTS.md rule 1), and the character only shows what the core decided. The
--- server reads two things from a character: where it stands and which way it
--- faces, which is the aim (ADR-0009).
+-- server reads one thing from a character: where it stands. The aim is an
+-- intent (ADR-0009); the character's facing is the client's own drawing of it.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -71,15 +71,13 @@ local function root(player: Player): BasePart?
 	return part
 end
 
--- The character's position on the ground plane and its facing, or nil while it
--- has no body.
+-- The character's position on the ground plane, or nil while it has no body.
 function Characters.input(player: Player): Types.PlayerInput?
 	local part = root(player)
 	if part == nil then
 		return nil
 	end
-	local look = part.CFrame.LookVector
-	return { x = part.Position.X, z = part.Position.Z, facing = math.atan2(look.Z, look.X) }
+	return { x = part.Position.X, z = part.Position.Z }
 end
 
 -- Puts the character where the run says the player is, keeping its facing.

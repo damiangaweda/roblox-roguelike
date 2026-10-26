@@ -125,6 +125,8 @@ function State.newPlayer(run: Types.Run, id: number, class: string?): Types.Play
 		drinkingUntil = nil,
 		kills = 0,
 		moveBudget = 0,
+		boost = 0,
+		boostUntil = 0,
 		interacting = false,
 		hurtAt = -math.huge,
 		knockX = 0,

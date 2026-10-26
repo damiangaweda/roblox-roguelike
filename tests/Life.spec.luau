@@ -154,7 +154,7 @@ return {
 		Assert.near(player.knockX, 6 / seconds)
 		Assert.near(player.knockZ, 8 / seconds)
 		Assert.equal(player.knockUntil, run.time + seconds)
-		local event = Assert.findEvent(run.events, "knocked")
+		local event = Assert.findEvent(run.events, "knockback")
 		Assert.truthy(event)
 		Assert.equal(event.player, 1)
 		Assert.near(event.dx, 6)
@@ -192,14 +192,15 @@ return {
 		Assert.equal(player.x, x)
 	end,
 
-	["a knock raises the movement budget by the distance moved"] = function()
+	["a knock leaves the movement budget alone"] = function()
 		local run, player = aloneInRoom()
 		local startX, startZ = player.x, player.z
 		player.moveBudget = 2
 		Life.knockPlayer(run, player, startX, startZ - 5, 6)
 		advance(run, 1, 1 / 30)
-		Assert.near(player.moveBudget - 2, Geometry.distance(startX, startZ, player.x, player.z))
-		Assert.truthy(player.moveBudget > 2)
+		-- The run carries the player; the client is pulled along, not paid for.
+		Assert.equal(player.moveBudget, 2)
+		Assert.truthy(player.z > startZ)
 	end,
 
 	["a knock does not push the player through a wall"] = function()
@@ -215,7 +216,7 @@ return {
 		end
 		Assert.near(player.x, room.x + room.halfWidth)
 		Assert.near(player.z, room.z + 7)
-		Assert.near(player.moveBudget - budget, 0.5)
+		Assert.equal(player.moveBudget, budget)
 	end,
 
 	["a knock keeps the player in the walkable world from any wall"] = function()

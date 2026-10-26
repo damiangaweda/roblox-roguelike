@@ -58,11 +58,11 @@ end
 -- Calls `handler` for every well-formed intent within the rate limit; the
 -- rest are dropped silently.
 function Network.onIntent(handler: (player: Player, intent: Protocol.Intent) -> ())
-	intentRemote.OnServerEvent:Connect(function(player, kind, a, b)
+	intentRemote.OnServerEvent:Connect(function(player, kind, a, b, c)
 		if not allow(player) then
 			return
 		end
-		local intent = Protocol.parseIntent(kind, a, b)
+		local intent = Protocol.parseIntent(kind, a, b, c)
 		if intent then
 			handler(player, intent)
 		end

@@ -49,11 +49,19 @@ function Net.setFiring(held: boolean)
 	intentRemote:FireServer("fire", held)
 end
 
--- Fires active skill `index` (1..3). `aimDistance` is how far the aim point is
--- from the character, which shortens a projectile's flight; nil for full range.
-function Net.useSkill(index: number, aimDistance: number?)
+-- The aim: radians from +x toward +z on the ground plane (ADR-0009).
+function Net.setAim(angle: number)
+	intentRemote:FireServer("aim", angle)
+end
+
+-- Fires active skill `index` (1..3) along `aim` (the last aim sent when nil).
+-- `aimDistance` is how far the aim point is from the character, which shortens
+-- a projectile's flight; nil for full range.
+function Net.useSkill(index: number, aim: number?, aimDistance: number?)
 	if aimDistance then
-		intentRemote:FireServer("skill", index, aimDistance)
+		intentRemote:FireServer("skill", index, aim, aimDistance)
+	elseif aim then
+		intentRemote:FireServer("skill", index, aim)
 	else
 		intentRemote:FireServer("skill", index)
 	end
