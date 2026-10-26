@@ -229,7 +229,7 @@ function Hud.start()
 		button.Parent = root
 		round(button, 65)
 		button.Activated:Connect(function()
-			Net.useSkill(nil)
+			Net.useActiveSkill(nil)
 		end)
 		skillButton = button
 	end
@@ -556,12 +556,12 @@ function Hud.start()
 		local skillFraction = 1
 		local remaining = 0
 		if selfView then
-			remaining = selfView.skillReadyIn - (now - selfAt)
+			remaining = selfView.activeSkillReadyIn - (now - selfAt)
 			if remaining > 0 then
 				ready = false
 				skillText = string.format("Skill %.1f s", remaining)
-				skillFraction = if selfView.skillCooldown > 0
-					then 1 - remaining / selfView.skillCooldown
+				skillFraction = if selfView.activeSkillCooldown > 0
+					then 1 - remaining / selfView.activeSkillCooldown
 					else 0
 			end
 		end

@@ -33,6 +33,9 @@ local summaryLeft = 0
 local perfRun = false
 -- The players in the current run, by core id.
 local members: { [number]: Player } = {}
+-- Everyone who has been in the current run, so leaving and rejoining does not
+-- bring a dead or extracted player back.
+local seen: { [number]: boolean } = {}
 -- Events drained from the run and not yet sent.
 local pending: { Types.Event } = {}
 local stepAccumulator = 0
@@ -70,6 +73,7 @@ local function joinRun(current: Types.Run, player: Player)
 		if position then position.z else 0
 	)
 	members[player.UserId] = player
+	seen[player.UserId] = true
 end
 
 -- Starts a run with everyone present, respawning them first if asked to.
@@ -80,6 +84,7 @@ local function startRun(respawn: boolean)
 	starting = true
 	run = nil
 	members = {}
+	seen = {}
 	pending = {}
 
 	if respawn then
@@ -117,10 +122,14 @@ local function onPlayerAdded(player: Player)
 	local current = run
 	if current == nil then
 		startRun(false)
-	elseif not current.ended then
+	elseif
+		not current.ended
+		and not seen[player.UserId]
+		and current.time <= current.config.run.lateJoinSeconds
+	then
 		joinRun(current, player)
 	end
-	-- After the end of a run the player joins the next one.
+	-- Anyone else waits for the next run.
 end
 
 local function onPlayerRemoving(player: Player)
@@ -143,8 +152,8 @@ local function selfViews(current: Types.Run): { [number]: Protocol.SelfView }
 			level = player.level,
 			xp = player.xp,
 			xpToNext = Progression.xpToNext(current.config, player.level),
-			skillReadyIn = math.max(0, player.skillReadyAt - current.time),
-			skillCooldown = current.config.skill.cooldownSeconds,
+			activeSkillReadyIn = math.max(0, player.activeSkillReadyAt - current.time),
+			activeSkillCooldown = current.config.activeSkill.cooldownSeconds,
 			kills = player.kills,
 			offer = player.offers[1],
 		}
@@ -168,8 +177,8 @@ local function onIntent(player: Player, intent: Protocol.Intent)
 	if current == nil then
 		return
 	end
-	if intent.kind == "skill" then
-		Run.useSkill(current, player.UserId, intent.aim)
+	if intent.kind == "activeSkill" then
+		Run.useActiveSkill(current, player.UserId, intent.aim)
 	elseif intent.kind == "perk" then
 		Run.choosePerk(current, player.UserId, intent.index)
 	end

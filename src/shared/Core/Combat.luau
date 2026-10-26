@@ -52,7 +52,7 @@ local function damage(
 	source: number?,
 	amount: number,
 	tags: { Types.Tag },
-	isSkill: boolean,
+	isActiveSkill: boolean,
 	isBurn: boolean
 )
 	local config = run.config
@@ -73,7 +73,7 @@ local function damage(
 				enemyId = enemy.id,
 				amount = amount,
 				synergy = synergy,
-				skill = isSkill,
+				activeSkill = isActiveSkill,
 			})
 		end
 		if hasTag(tags, "fire") then
@@ -136,24 +136,28 @@ end
 
 -- Fires a player's skill at `aim`, or at the nearest enemy in range when
 -- `aim` is nil. Returns false when the player cannot use it now.
-function Combat.useSkill(run: Types.Run, playerId: number, aim: { x: number, z: number }?): boolean
+function Combat.useActiveSkill(
+	run: Types.Run,
+	playerId: number,
+	aim: { x: number, z: number }?
+): boolean
 	local player = run.players[playerId]
-	if player == nil or player.state ~= "alive" or run.time < player.skillReadyAt then
+	if player == nil or player.state ~= "alive" or run.time < player.activeSkillReadyAt then
 		return false
 	end
-	local skill = run.config.skill
+	local activeSkill = run.config.activeSkill
 
 	local aimX, aimZ
 	if aim then
 		aimX, aimZ = aim.x, aim.z
 		local d = distance(player.x, player.z, aimX, aimZ)
-		if d > skill.range then
-			local scale = skill.range / d
+		if d > activeSkill.range then
+			local scale = activeSkill.range / d
 			aimX = player.x + (aimX - player.x) * scale
 			aimZ = player.z + (aimZ - player.z) * scale
 		end
 	else
-		local target = nearestEnemy(run, player.x, player.z, skill.range)
+		local target = nearestEnemy(run, player.x, player.z, activeSkill.range)
 		if target == nil then
 			return false
 		end
@@ -163,11 +167,11 @@ function Combat.useSkill(run: Types.Run, playerId: number, aim: { x: number, z: 
 	local tags = tagsFor(player, "fireBlast", "iceBlast")
 	-- Damage can remove enemies, so walk a snapshot.
 	for _, enemy in table.clone(run.enemies) do
-		if distance(aimX, aimZ, enemy.x, enemy.z) <= skill.radius then
-			damage(run, enemy, playerId, skill.damage, tags, true, false)
+		if distance(aimX, aimZ, enemy.x, enemy.z) <= activeSkill.radius then
+			damage(run, enemy, playerId, activeSkill.damage, tags, true, false)
 		end
 	end
-	player.skillReadyAt = run.time + skill.cooldownSeconds
+	player.activeSkillReadyAt = run.time + activeSkill.cooldownSeconds
 	return true
 end
 

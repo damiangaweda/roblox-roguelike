@@ -56,7 +56,7 @@ local function onInputBegan(input: InputObject, _gameProcessed: boolean)
 	end
 	local point = groundPoint()
 	if point then
-		Net.useSkill(point)
+		Net.useActiveSkill(point)
 	end
 end
 

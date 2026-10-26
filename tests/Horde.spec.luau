@@ -384,4 +384,21 @@ return {
 		Horde.contact(run, 1)
 		Assert.equal(run.players[1].health, run.players[1].maxHealth)
 	end,
+
+	["a player in a corner is never spawned on"] = function()
+		local run = Fixtures.run(1)
+		local half = run.config.arena.halfSize
+		local player = run.players[1]
+		player.x, player.z = half - 1, half - 1
+		run.config.horde.spawnPerSecondAtStart = 150
+		Horde.spawn(run, 1)
+		Assert.truthy(#run.enemies > 100)
+		for _, enemy in run.enemies do
+			local d = math.sqrt((enemy.x - player.x) ^ 2 + (enemy.z - player.z) ^ 2)
+			Assert.truthy(
+				d >= run.config.horde.spawnRingMin - 1e-6,
+				"spawned " .. d .. " studs away"
+			)
+		end
+	end,
 }

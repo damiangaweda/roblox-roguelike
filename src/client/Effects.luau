@@ -227,7 +227,7 @@ local function onEvents(events: { Types.Event })
 		if event.kind == "hit" then
 			local at = EnemyView.position(event.enemyId)
 			if at then
-				if event.skill then
+				if event.activeSkill then
 					showRing(at)
 				else
 					local root = characterRoot(event.source)

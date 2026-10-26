@@ -46,7 +46,7 @@ function Run.addPlayer(run: Types.Run, id: number, x: number, z: number): Types.
 		perks = {},
 		offers = {},
 		basicReadyAt = 0,
-		skillReadyAt = 0,
+		activeSkillReadyAt = 0,
 		kills = 0,
 	}
 	run.players[id] = player
@@ -58,11 +58,15 @@ function Run.removePlayer(run: Types.Run, id: number)
 	run.players[id] = nil
 end
 
-function Run.useSkill(run: Types.Run, playerId: number, aim: { x: number, z: number }?): boolean
+function Run.useActiveSkill(
+	run: Types.Run,
+	playerId: number,
+	aim: { x: number, z: number }?
+): boolean
 	if run.ended then
 		return false
 	end
-	return Combat.useSkill(run, playerId, aim)
+	return Combat.useActiveSkill(run, playerId, aim)
 end
 
 function Run.choosePerk(run: Types.Run, playerId: number, index: number): boolean
@@ -70,6 +74,10 @@ function Run.choosePerk(run: Types.Run, playerId: number, index: number): boolea
 		return false
 	end
 	return Perks.choose(run, playerId, index)
+end
+
+local function isFinite(value: number): boolean
+	return value == value and value ~= math.huge and value ~= -math.huge
 end
 
 local function checkEnded(run: Types.Run)
@@ -94,11 +102,14 @@ function Run.step(run: Types.Run, dt: number, inputs: { [number]: Types.PlayerIn
 	end
 	run.time += dt
 
+	-- Positions come from the client's character, so anything not finite is
+	-- dropped and the rest is held inside the arena.
+	local half = run.config.arena.halfSize
 	for id, input in inputs do
 		local player = run.players[id]
-		if player and player.state == "alive" then
-			player.x = input.x
-			player.z = input.z
+		if player and player.state == "alive" and isFinite(input.x) and isFinite(input.z) then
+			player.x = math.clamp(input.x, -half, half)
+			player.z = math.clamp(input.z, -half, half)
 		end
 	end
 

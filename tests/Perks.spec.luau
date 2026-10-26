@@ -163,4 +163,42 @@ return {
 		Assert.equal(player.health, 50 + bonus)
 		Assert.equal(player.perks.toughness, 1)
 	end,
+
+	["a queued offer is drawn again when a choice maxes out one of its perks"] = function()
+		local run = Fixtures.run(1)
+		local player = run.players[1]
+		local max = run.config.perks.pool.quickHands.maxStacks
+		player.perks.quickHands = max - 1
+		player.offers = { { "quickHands", "toughness" }, { "quickHands", "toughness" } }
+		Assert.truthy(Perks.choose(run, 1, 1))
+		Assert.equal(player.perks.quickHands, max)
+		Assert.falsy(
+			table.find(player.offers[1], "quickHands"),
+			"the stale offer still holds the maxed perk"
+		)
+		for index = 1, #player.offers[1] do
+			Assert.truthy(player.offers[1][index] ~= "quickHands")
+		end
+		Assert.truthy(Perks.choose(run, 1, 1))
+		Assert.equal(player.perks.quickHands, max)
+	end,
+
+	["perks never exceed their stacks across many seeds"] = function()
+		for seed = 1, 200 do
+			local run = Fixtures.run(1, nil, seed)
+			local player = run.players[1]
+			for _ = 1, 30 do
+				Perks.offer(run, player)
+			end
+			while #player.offers > 0 do
+				Perks.choose(run, 1, 1)
+			end
+			for id, stacks in player.perks do
+				Assert.truthy(
+					stacks <= run.config.perks.pool[id].maxStacks,
+					id .. " over its cap with seed " .. seed
+				)
+			end
+		end
+	end,
 }

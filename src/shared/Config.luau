@@ -20,12 +20,14 @@ local Config: Types.Config = {
 			{ x = 0, z = 105 },
 		},
 		summarySeconds = 10,
+		lateJoinSeconds = 60,
 	},
 	arena = {
 		halfSize = 120,
 	},
 	player = {
 		radius = 1.5,
+		walkSpeed = 16,
 		maxHealth = 100,
 		downedSeconds = 15,
 		reviveSeconds = 3,
@@ -37,7 +39,7 @@ local Config: Types.Config = {
 		intervalSeconds = 0.6,
 		range = 40,
 	},
-	skill = {
+	activeSkill = {
 		damage = 40,
 		cooldownSeconds = 6,
 		range = 40,

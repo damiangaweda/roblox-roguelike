@@ -5,24 +5,24 @@ local Protocol = require("../src/shared/Protocol")
 
 return {
 	["skill intent with an aim point"] = function()
-		local intent = Protocol.parseIntent("skill", 3.5, -2) :: any
-		Assert.equal(intent.kind, "skill")
+		local intent = Protocol.parseIntent("activeSkill", 3.5, -2) :: any
+		Assert.equal(intent.kind, "activeSkill")
 		Assert.equal(intent.aim.x, 3.5)
 		Assert.equal(intent.aim.z, -2)
 	end,
 
 	["skill intent without an aim auto-aims"] = function()
-		local intent = Protocol.parseIntent("skill", nil, nil) :: any
-		Assert.equal(intent.kind, "skill")
+		local intent = Protocol.parseIntent("activeSkill", nil, nil) :: any
+		Assert.equal(intent.kind, "activeSkill")
 		Assert.equal(intent.aim, nil)
 	end,
 
 	["malformed skill intents are rejected"] = function()
-		Assert.equal(Protocol.parseIntent("skill", 1, nil), nil)
-		Assert.equal(Protocol.parseIntent("skill", "1", 2), nil)
-		Assert.equal(Protocol.parseIntent("skill", 0 / 0, 2), nil)
-		Assert.equal(Protocol.parseIntent("skill", math.huge, 2), nil)
-		Assert.equal(Protocol.parseIntent("skill", {}, 2), nil)
+		Assert.equal(Protocol.parseIntent("activeSkill", 1, nil), nil)
+		Assert.equal(Protocol.parseIntent("activeSkill", "1", 2), nil)
+		Assert.equal(Protocol.parseIntent("activeSkill", 0 / 0, 2), nil)
+		Assert.equal(Protocol.parseIntent("activeSkill", math.huge, 2), nil)
+		Assert.equal(Protocol.parseIntent("activeSkill", {}, 2), nil)
 	end,
 
 	["perk intent takes a small whole index"] = function()
@@ -86,5 +86,14 @@ return {
 		Assert.falsy(Protocol.isPrivate({ kind = "downed", player = 1 }))
 		Assert.equal(Protocol.eventPlayer({ kind = "levelUp", player = 4, level = 2 }), 4)
 		Assert.equal(Protocol.eventPlayer({ kind = "flood" }), nil)
+	end,
+
+	["the arena fits the position encoding"] = function()
+		-- Positions travel as int16 hundredths of a stud; a bigger arena would wrap.
+		local config = Fixtures.config()
+		Assert.truthy(
+			config.arena.halfSize * 100 <= 32767,
+			"arena.halfSize is too big for the encoding"
+		)
 	end,
 }

@@ -43,11 +43,11 @@ end
 
 -- Fires the skill at a ground point, or lets the server pick the nearest
 -- enemy when `aim` is nil (touch).
-function Net.useSkill(aim: Vector3?)
+function Net.useActiveSkill(aim: Vector3?)
 	if aim then
-		intentRemote:FireServer("skill", aim.X, aim.Z)
+		intentRemote:FireServer("activeSkill", aim.X, aim.Z)
 	else
-		intentRemote:FireServer("skill")
+		intentRemote:FireServer("activeSkill")
 	end
 end
 

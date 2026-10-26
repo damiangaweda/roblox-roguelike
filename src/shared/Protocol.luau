@@ -17,7 +17,7 @@ Protocol.remotes = {
 }
 
 export type Intent =
-	{ kind: "skill", aim: { x: number, z: number }? }
+	{ kind: "activeSkill", aim: { x: number, z: number }? }
 	| { kind: "perk", index: number }
 
 local function isFiniteNumber(value: any): boolean
@@ -27,12 +27,12 @@ end
 -- Parses the arguments of an Intent remote. Returns nil for anything malformed;
 -- range, cooldowns and state are the run's to check.
 function Protocol.parseIntent(kind: any, a: any, b: any): Intent?
-	if kind == "skill" then
+	if kind == "activeSkill" then
 		if a == nil and b == nil then
-			return { kind = "skill", aim = nil }
+			return { kind = "activeSkill", aim = nil }
 		end
 		if isFiniteNumber(a) and isFiniteNumber(b) then
-			return { kind = "skill", aim = { x = a, z = b } }
+			return { kind = "activeSkill", aim = { x = a, z = b } }
 		end
 		return nil
 	elseif kind == "perk" then
@@ -167,8 +167,8 @@ export type SelfView = {
 	level: number,
 	xp: number,
 	xpToNext: number,
-	skillReadyIn: number,
-	skillCooldown: number,
+	activeSkillReadyIn: number,
+	activeSkillCooldown: number,
 	kills: number,
 	-- The oldest perk offer waiting for a choice.
 	offer: { string }?,

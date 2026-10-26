@@ -29,7 +29,7 @@ return {
 		Assert.equal(hit.source, 1)
 		Assert.equal(hit.amount, run.config.basicAttack.damage)
 		Assert.falsy(hit.synergy)
-		Assert.falsy(hit.skill)
+		Assert.falsy(hit.activeSkill)
 	end,
 
 	["the basic attack ignores enemies out of range and stays ready"] = function()
@@ -186,71 +186,71 @@ return {
 
 	["the skill hits every enemy within its radius of the aim point"] = function()
 		local run = Fixtures.run()
-		local skill = run.config.skill
+		local activeSkill = run.config.activeSkill
 		local a = Fixtures.enemy(run, "brute", 20, 0)
-		local b = Fixtures.enemy(run, "brute", 20 + skill.radius, 0)
-		local c = Fixtures.enemy(run, "brute", 20 + skill.radius + 1, 0)
-		Assert.truthy(Combat.useSkill(run, 1, { x = 20, z = 0 }))
-		Assert.equal(a.health, 80 - skill.damage)
-		Assert.equal(b.health, 80 - skill.damage)
+		local b = Fixtures.enemy(run, "brute", 20 + activeSkill.radius, 0)
+		local c = Fixtures.enemy(run, "brute", 20 + activeSkill.radius + 1, 0)
+		Assert.truthy(Combat.useActiveSkill(run, 1, { x = 20, z = 0 }))
+		Assert.equal(a.health, 80 - activeSkill.damage)
+		Assert.equal(b.health, 80 - activeSkill.damage)
 		Assert.equal(c.health, 80)
 		local hit = Assert.findEvent(run.events, "hit")
-		Assert.truthy(hit.skill)
+		Assert.truthy(hit.activeSkill)
 		Assert.equal(count(run.events, "hit"), 2)
 	end,
 
 	["the skill goes on cooldown"] = function()
 		local run = Fixtures.run()
-		local skill = run.config.skill
+		local activeSkill = run.config.activeSkill
 		Fixtures.enemy(run, "brute", 5, 0)
-		Assert.truthy(Combat.useSkill(run, 1, { x = 5, z = 0 }))
-		Assert.near(run.players[1].skillReadyAt, skill.cooldownSeconds)
-		run.time = skill.cooldownSeconds - 0.01
-		Assert.falsy(Combat.useSkill(run, 1, { x = 5, z = 0 }))
-		run.time = skill.cooldownSeconds
-		Assert.truthy(Combat.useSkill(run, 1, { x = 5, z = 0 }))
+		Assert.truthy(Combat.useActiveSkill(run, 1, { x = 5, z = 0 }))
+		Assert.near(run.players[1].activeSkillReadyAt, activeSkill.cooldownSeconds)
+		run.time = activeSkill.cooldownSeconds - 0.01
+		Assert.falsy(Combat.useActiveSkill(run, 1, { x = 5, z = 0 }))
+		run.time = activeSkill.cooldownSeconds
+		Assert.truthy(Combat.useActiveSkill(run, 1, { x = 5, z = 0 }))
 	end,
 
 	["an aim beyond range is pulled back onto the range circle"] = function()
 		local run = Fixtures.run()
-		local skill = run.config.skill
-		local onCircle = Fixtures.enemy(run, "brute", skill.range + skill.radius - 1, 0)
-		local pastIt = Fixtures.enemy(run, "brute", skill.range + skill.radius + 1, 0)
-		Assert.truthy(Combat.useSkill(run, 1, { x = 500, z = 0 }))
-		Assert.equal(onCircle.health, 80 - skill.damage)
+		local activeSkill = run.config.activeSkill
+		local onCircle = Fixtures.enemy(run, "brute", activeSkill.range + activeSkill.radius - 1, 0)
+		local pastIt = Fixtures.enemy(run, "brute", activeSkill.range + activeSkill.radius + 1, 0)
+		Assert.truthy(Combat.useActiveSkill(run, 1, { x = 500, z = 0 }))
+		Assert.equal(onCircle.health, 80 - activeSkill.damage)
 		Assert.equal(pastIt.health, 80, "the blast is centred at the range, not at the aim")
 	end,
 
 	["the skill auto-aims at the nearest enemy in range"] = function()
 		local run = Fixtures.run()
-		local skill = run.config.skill
+		local activeSkill = run.config.activeSkill
 		local target = Fixtures.enemy(run, "brute", 15, 0)
 		Fixtures.enemy(run, "brute", 30, 0)
-		Assert.truthy(Combat.useSkill(run, 1, nil))
-		Assert.equal(target.health, 80 - skill.damage)
+		Assert.truthy(Combat.useActiveSkill(run, 1, nil))
+		Assert.equal(target.health, 80 - activeSkill.damage)
 	end,
 
 	["the skill without a target in range fails and keeps its cooldown"] = function()
 		local run = Fixtures.run()
-		Fixtures.enemy(run, "brute", run.config.skill.range + 1, 0)
-		Assert.falsy(Combat.useSkill(run, 1, nil))
-		Assert.equal(run.players[1].skillReadyAt, 0)
+		Fixtures.enemy(run, "brute", run.config.activeSkill.range + 1, 0)
+		Assert.falsy(Combat.useActiveSkill(run, 1, nil))
+		Assert.equal(run.players[1].activeSkillReadyAt, 0)
 		Assert.equal(#run.events, 0)
 	end,
 
 	["the skill with an aim succeeds even when it hits nothing"] = function()
 		local run = Fixtures.run()
-		Assert.truthy(Combat.useSkill(run, 1, { x = 0, z = 10 }))
-		Assert.near(run.players[1].skillReadyAt, run.config.skill.cooldownSeconds)
+		Assert.truthy(Combat.useActiveSkill(run, 1, { x = 0, z = 10 }))
+		Assert.near(run.players[1].activeSkillReadyAt, run.config.activeSkill.cooldownSeconds)
 	end,
 
 	["the skill needs an alive player"] = function()
 		local run = Fixtures.run()
 		Fixtures.enemy(run, "brute", 5, 0)
-		Assert.falsy(Combat.useSkill(run, 7, nil))
+		Assert.falsy(Combat.useActiveSkill(run, 7, nil))
 		run.players[1].state = "downed"
-		Assert.falsy(Combat.useSkill(run, 1, nil))
-		Assert.falsy(Combat.useSkill(run, 1, { x = 5, z = 0 }))
+		Assert.falsy(Combat.useActiveSkill(run, 1, nil))
+		Assert.falsy(Combat.useActiveSkill(run, 1, { x = 5, z = 0 }))
 	end,
 
 	["blast perks tag the skill"] = function()
@@ -258,7 +258,7 @@ return {
 		run.players[1].perks.fireBlast = 1
 		run.players[1].perks.iceBlast = 1
 		local enemy = Fixtures.enemy(run, "brute", 5, 0)
-		Assert.truthy(Combat.useSkill(run, 1, nil))
+		Assert.truthy(Combat.useActiveSkill(run, 1, nil))
 		Assert.truthy(enemy.burningUntil > 0)
 		Assert.truthy(enemy.chilledUntil > 0)
 		Assert.falsy(Assert.findEvent(run.events, "hit").synergy)
@@ -269,10 +269,10 @@ return {
 		run.players[1].perks.fireBlast = 1
 		local enemy = Fixtures.enemy(run, "brute", 5, 0)
 		enemy.chilledUntil = 5
-		Assert.truthy(Combat.useSkill(run, 1, nil))
+		Assert.truthy(Combat.useActiveSkill(run, 1, nil))
 		Assert.equal(
 			enemy.health,
-			80 - run.config.skill.damage * run.config.synergy.shatterMultiplier
+			80 - run.config.activeSkill.damage * run.config.synergy.shatterMultiplier
 		)
 		Assert.truthy(Assert.findEvent(run.events, "hit").synergy)
 	end,
@@ -282,7 +282,7 @@ return {
 		for i = 1, 3 do
 			Fixtures.enemy(run, "grunt", i, 0)
 		end
-		Assert.truthy(Combat.useSkill(run, 1, { x = 2, z = 0 }))
+		Assert.truthy(Combat.useActiveSkill(run, 1, { x = 2, z = 0 }))
 		Assert.equal(#run.enemies, 0)
 		Assert.equal(count(run.events, "kill"), 3)
 		Assert.equal(run.players[1].kills, 3)

@@ -22,6 +22,18 @@ local function clampToArena(run: Types.Run, value: number): number
 	return math.clamp(value, -half, half)
 end
 
+-- One coordinate of a spawn point `offset` away from a player. A point beyond
+-- the wall is mirrored to the player's other side, so a player in a corner is
+-- not spawned on: clamping would put the enemy on the wall next to them.
+local function ringCoordinate(run: Types.Run, centre: number, offset: number): number
+	local half = run.config.arena.halfSize
+	local value = centre + offset
+	if math.abs(value) > half then
+		value = centre - offset
+	end
+	return clampToArena(run, value)
+end
+
 -- Spawns enemies for `dt` seconds of the run's spawn rate, up to the alive cap.
 function Horde.spawn(run: Types.Run, dt: number)
 	local config = run.config.horde
@@ -59,8 +71,8 @@ function Horde.spawn(run: Types.Run, dt: number)
 		table.insert(run.enemies, {
 			id = id,
 			kind = kind,
-			x = clampToArena(run, target.x + math.cos(angle) * distance),
-			z = clampToArena(run, target.z + math.sin(angle) * distance),
+			x = ringCoordinate(run, target.x, math.cos(angle) * distance),
+			z = ringCoordinate(run, target.z, math.sin(angle) * distance),
 			health = config.kinds[kind].health,
 			chilledUntil = 0,
 			burningUntil = 0,

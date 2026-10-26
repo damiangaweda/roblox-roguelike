@@ -101,6 +101,24 @@ return {
 		run.ended = true
 		Run.step(run, STEP, {})
 		Assert.equal(run.time, 0)
-		Assert.falsy(Run.useSkill(run, 1, nil))
+		Assert.falsy(Run.useActiveSkill(run, 1, nil))
+	end,
+
+	["positions that are not finite are ignored"] = function()
+		local run = Fixtures.run(1)
+		run.players[1].x, run.players[1].z = 5, 6
+		Run.step(run, STEP, { [1] = { x = 0 / 0, z = 1 } })
+		Run.step(run, STEP, { [1] = { x = math.huge, z = 1 } })
+		Assert.equal(run.players[1].x, 5)
+		Assert.equal(run.players[1].z, 6)
+		advance(run, 30)
+	end,
+
+	["positions are held inside the arena"] = function()
+		local run = Fixtures.run(1)
+		local half = run.config.arena.halfSize
+		Run.step(run, STEP, { [1] = { x = half + 500, z = -half - 500 } })
+		Assert.equal(run.players[1].x, half)
+		Assert.equal(run.players[1].z, -half)
 	end,
 }

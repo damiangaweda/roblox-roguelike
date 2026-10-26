@@ -28,6 +28,8 @@ export type Config = {
 		extractSeconds: number,
 		zonePoints: { { x: number, z: number } },
 		summarySeconds: number,
+		-- How long after the start a newcomer may still join the run.
+		lateJoinSeconds: number,
 	},
 	arena: {
 		halfSize: number,
@@ -35,6 +37,7 @@ export type Config = {
 	player: {
 		-- How far from a player's centre an enemy touches them.
 		radius: number,
+		walkSpeed: number,
 		maxHealth: number,
 		downedSeconds: number,
 		reviveSeconds: number,
@@ -47,7 +50,7 @@ export type Config = {
 		intervalSeconds: number,
 		range: number,
 	},
-	skill: {
+	activeSkill: {
 		damage: number,
 		cooldownSeconds: number,
 		range: number,
@@ -126,7 +129,7 @@ export type Player = {
 	-- Offers waiting for a choice, oldest first; each lists perk ids.
 	offers: { { string } },
 	basicReadyAt: number,
-	skillReadyAt: number,
+	activeSkillReadyAt: number,
 	kills: number,
 }
 
@@ -137,7 +140,14 @@ export type Zone = {
 }
 
 export type Event =
-	{ kind: "hit", source: number, enemyId: number, amount: number, synergy: boolean, skill: boolean }
+	{
+		kind: "hit",
+		source: number,
+		enemyId: number,
+		amount: number,
+		synergy: boolean,
+		activeSkill: boolean,
+	}
 	| { kind: "kill", source: number, enemyId: number }
 	| { kind: "playerHurt", player: number, amount: number }
 	| { kind: "levelUp", player: number, level: number }

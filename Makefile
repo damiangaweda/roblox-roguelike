@@ -48,7 +48,7 @@ types:
 
 ## The rules core must not touch the Roblox API (ADR-0002).
 purity:
-	scripts/check-core-purity.sh
+	scripts/check-core-purity.sh $(TOOLS)/luau-lsp
 
 ## Core tests under Lune; `make test FILTER=perk` runs the matching ones.
 test:

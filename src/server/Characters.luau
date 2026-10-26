@@ -5,12 +5,12 @@
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+local Config = require(ReplicatedStorage.Shared.Config)
 local Types = require(ReplicatedStorage.Shared.Core.Types)
 
 local Characters = {}
 
 -- Presentation constants, not gameplay numbers.
-local WALK_SPEED = 16
 local DEAD_TRANSPARENCY = 0.7
 local EXTRACTED_TRANSPARENCY = 1
 
@@ -104,7 +104,7 @@ function Characters.apply(player: Player, state: Types.PlayerState)
 	entry.state = state
 
 	if state == "alive" then
-		humanoid.WalkSpeed = WALK_SPEED
+		humanoid.WalkSpeed = Config.player.walkSpeed
 		setJumping(entry, true)
 		return
 	end
