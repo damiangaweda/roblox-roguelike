@@ -47,8 +47,9 @@ function Life.damage(run: Types.Run, player: Types.Player, amount: number)
 		return
 	end
 	player.health -= amount
-	-- Damage interrupts extraction.
+	-- Damage interrupts extraction, and reviving (see Life.update).
 	player.extractProgress = 0
+	player.hurtAt = run.time
 	table.insert(run.events, { kind = "playerHurt", player = player.id, amount = amount })
 
 	if player.health <= 0 then
@@ -67,7 +68,8 @@ function Life.update(run: Types.Run, dt: number)
 		local downedAt = player.downedAt
 		if player.state == "downed" and downedAt then
 			local reviver = findReviver(run, player)
-			if reviver then
+			-- A reviver hit this step starts the revive over.
+			if reviver and reviver.hurtAt < run.time then
 				player.reviveProgress += dt
 				-- Bleeding out pauses while someone is reviving.
 				player.downedAt = downedAt + dt

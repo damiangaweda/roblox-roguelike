@@ -189,4 +189,15 @@ return {
 		advance(run, 0.5, 0.5)
 		Assert.equal(downed.reviveProgress, 0)
 	end,
+
+	["a hit on the reviver resets revive progress"] = function()
+		local run, downed, helper = downedPair()
+		advance(run, run.config.player.reviveSeconds / 2, 0.5)
+		Assert.truthy(downed.reviveProgress > 0)
+		run.time += 0.5
+		Life.damage(run, helper, 1)
+		Life.update(run, 0.5)
+		Assert.equal(downed.reviveProgress, 0)
+		Assert.equal(downed.state, "downed")
+	end,
 }

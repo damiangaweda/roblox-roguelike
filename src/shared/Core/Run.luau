@@ -50,6 +50,7 @@ function Run.addPlayer(run: Types.Run, id: number, x: number, z: number): Types.
 		kills = 0,
 		moveBudget = 0,
 		interacting = false,
+		hurtAt = -math.huge,
 	}
 	run.players[id] = player
 	return player

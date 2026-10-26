@@ -22,7 +22,7 @@ The public release happens when the user judges the game ready; it needs every m
 - One ranged class: a basic attack that fires automatically at the nearest enemy in range, and one active area skill on a cooldown, aimed with the mouse on PC and at the nearest enemy on touch.
 - The horde as lightweight enemies ([ADR-0004](adr/0004-lightweight-enemies.md)), two enemy types, spawning faster as the run goes on, up to 150 alive.
 - Experience from kills; each level-up offers 3 random perks out of about 6, carrying two tags (fire, ice), with one synergy between them.
-- Downed for 15 s; any player can revive by holding the interact button next to the downed player for 3 s.
+- Downed for 15 s; any player can revive by holding the interact button next to the downed player for 3 s; a hit on the reviver or letting go starts it over.
 - From minute 10, 2 extraction zones open at random among fixed points; extracting takes holding the interact button for 5 s in a zone, and damage or letting go interrupts it. At minute 15 the horde floods the map and everyone left dies.
 - A short summary at the end of a run (extracted or died, time, level), then a new run on the same server.
 

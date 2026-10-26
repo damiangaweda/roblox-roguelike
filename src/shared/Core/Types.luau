@@ -144,6 +144,8 @@ export type Player = {
 	-- Whether the player holds the interact button, which revives a downed
 	-- player nearby or extracts in a zone.
 	interacting: boolean,
+	-- Run time of the last damage taken; a hit interrupts reviving.
+	hurtAt: number,
 }
 
 export type Zone = {
