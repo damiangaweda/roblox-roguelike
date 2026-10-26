@@ -25,6 +25,7 @@ local Config: Types.Config = {
 		halfSize = 120,
 	},
 	player = {
+		radius = 1.5,
 		maxHealth = 100,
 		downedSeconds = 15,
 		reviveSeconds = 3,
@@ -53,7 +54,7 @@ local Config: Types.Config = {
 		bruteShareMax = 0.3,
 		separationRadius = 2.5,
 		kinds = {
-			grunt = { health = 20, speed = 10, contactDps = 8, xp = 1, radius = 1.5 },
+			grunt = { health = 20, speed = 10, contactDps = 6, xp = 1, radius = 1.5 },
 			brute = { health = 80, speed = 7, contactDps = 20, xp = 4, radius = 2.5 },
 		},
 	},
@@ -82,6 +83,11 @@ local Config: Types.Config = {
 	progression = {
 		xpToSecondLevel = 5,
 		xpGrowth = 1.3,
+	},
+	net = {
+		stepHz = 30,
+		snapshotHz = 10,
+		intentsPerSecond = 20,
 	},
 }
 

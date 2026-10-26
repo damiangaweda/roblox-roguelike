@@ -33,6 +33,8 @@ export type Config = {
 		halfSize: number,
 	},
 	player: {
+		-- How far from a player's centre an enemy touches them.
+		radius: number,
 		maxHealth: number,
 		downedSeconds: number,
 		reviveSeconds: number,
@@ -82,6 +84,14 @@ export type Config = {
 	progression: {
 		xpToSecondLevel: number,
 		xpGrowth: number,
+	},
+	net: {
+		-- The server advances the run this many times per second.
+		stepHz: number,
+		-- World snapshots and event batches sent to clients per second.
+		snapshotHz: number,
+		-- Intents a client may send per second before extras are dropped.
+		intentsPerSecond: number,
 	},
 }
 
