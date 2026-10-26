@@ -1,0 +1,22 @@
+#!/bin/sh
+branch="$(git symbolic-ref --short -q HEAD)"
+
+if [ -z "$branch" ]; then
+  exit 0
+fi
+
+# The first commit creates main; every later one goes through a branch.
+if [ "$branch" = "main" ] && git rev-parse -q --verify HEAD >/dev/null; then
+  echo "commit blocked: never commit directly to main (see AGENTS.md)" >&2
+  exit 1
+fi
+
+if [ "$branch" = "main" ]; then
+  exit 0
+fi
+
+pattern='^[a-z0-9]+(-[a-z0-9]+)*/[a-z0-9]+([a-z0-9-]*[a-z0-9])?$'
+if ! printf '%s' "$branch" | grep -Eq "$pattern"; then
+  echo "commit blocked: branch '$branch' must match <type>/<short-kebab-case-description> (see docs/agent/workflow.md)" >&2
+  exit 1
+fi
