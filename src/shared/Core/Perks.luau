@@ -1,5 +1,7 @@
 --!strict
--- Perk offers at level-up and taking a perk.
+-- Perk offers at level-up, taking a perk, and the modifiers a player's perks
+-- add up to. A perk changes one property; Skills applies it to the skills that
+-- carry the property, the player's own numbers read it through Perks.value.
 
 local Types = require("./Types")
 
@@ -59,6 +61,44 @@ function Perks.offer(run: Types.Run, player: Types.Player)
 	end
 end
 
+-- The multiplier and addend the player's perks give every property.
+function Perks.modifiers(config: Types.Config, player: Types.Player): Types.Modifiers
+	local modifiers: Types.Modifiers = {}
+	for id, stacks in player.perks do
+		local perk = config.perks.pool[id]
+		if perk == nil or stacks <= 0 then
+			continue
+		end
+		local entry = modifiers[perk.property]
+		if entry == nil then
+			entry = { mul = 1, add = 0 }
+			modifiers[perk.property] = entry
+		end
+		entry.mul *= (perk.mul or 1) ^ stacks
+		entry.add += (perk.add or 0) * stacks
+	end
+	return modifiers
+end
+
+-- `base` with the property's modifiers applied: multiplied, then added to.
+function Perks.value(modifiers: Types.Modifiers, property: Types.Property, base: number): number
+	local entry = modifiers[property]
+	if entry == nil then
+		return base
+	end
+	return base * entry.mul + entry.add
+end
+
+-- A player's number for `property` after their perks.
+function Perks.playerValue(
+	config: Types.Config,
+	player: Types.Player,
+	property: Types.Property,
+	base: number
+): number
+	return Perks.value(Perks.modifiers(config, player), property, base)
+end
+
 -- Takes perk number `index` of the player's oldest offer. Returns false when
 -- there is no such offer or the player cannot choose now.
 function Perks.choose(run: Types.Run, playerId: number, index: number): boolean
@@ -73,10 +113,15 @@ function Perks.choose(run: Types.Run, playerId: number, index: number): boolean
 
 	local perk = offer[index]
 	player.perks[perk] = (player.perks[perk] or 0) + 1
-	if perk == "toughness" then
-		local bonus = run.config.perks.toughnessHealth
-		player.maxHealth += bonus
-		player.health += bonus
+	local perkConfig = run.config.perks.pool[perk]
+	if perkConfig.property == "maxHealth" then
+		-- Health grows with the maximum at once, so the perk heals by its bonus.
+		local before = player.maxHealth
+		player.maxHealth =
+			Perks.playerValue(run.config, player, "maxHealth", run.config.player.maxHealth)
+		player.health += player.maxHealth - before
+	elseif perkConfig.property == "dashCharges" then
+		player.dashCharges += perkConfig.add or 0
 	end
 	table.insert(run.events, { kind = "perkTaken", player = player.id, perk = perk })
 

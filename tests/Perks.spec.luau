@@ -14,7 +14,22 @@ local function count(events: { Types.Event }, kind: string): number
 	return n
 end
 
+-- Gives the player every perk of the pool at its limit, except those named.
+local function maxOutExcept(run: Types.Run, player: Types.Player, left: { string })
+	for id, perk in run.config.perks.pool do
+		player.perks[id] = if table.find(left, id) then 0 else perk.maxStacks
+	end
+end
+
 return {
+	["the pool holds twenty perks"] = function()
+		local n = 0
+		for _ in Fixtures.config().perks.pool do
+			n += 1
+		end
+		Assert.equal(n, 20)
+	end,
+
 	["an offer has offerSize distinct perks from the pool"] = function()
 		local run = Fixtures.run()
 		local player = run.players[1]
@@ -57,36 +72,48 @@ return {
 	["perks at their maximum are not offered"] = function()
 		local run = Fixtures.run()
 		local player = run.players[1]
-		player.perks.searingBolts = 1
-		player.perks.quickHands = 5
+		local pool = run.config.perks.pool
+		player.perks.splitShot = pool.splitShot.maxStacks
+		player.perks.quickHands = pool.quickHands.maxStacks
 		for seed = 1, 20 do
 			run.rng = Fixtures.run(1, nil, seed).rng
 			player.offers = {}
 			Perks.offer(run, player)
 			for _, perk in player.offers[1] do
-				Assert.truthy(perk ~= "searingBolts" and perk ~= "quickHands", perk)
+				Assert.truthy(perk ~= "splitShot" and perk ~= "quickHands", perk)
 			end
 		end
+	end,
+
+	["a perk below its maximum can still be offered"] = function()
+		local run = Fixtures.run()
+		local player = run.players[1]
+		player.perks.power = run.config.perks.pool.power.maxStacks - 1
+		local offered = false
+		for seed = 1, 40 do
+			run.rng = Fixtures.run(1, nil, seed).rng
+			player.offers = {}
+			Perks.offer(run, player)
+			if table.find(player.offers[1], "power") then
+				offered = true
+			end
+		end
+		Assert.truthy(offered, "power was never offered")
 	end,
 
 	["the offer shrinks when few perks remain"] = function()
 		local run = Fixtures.run()
 		local player = run.players[1]
-		for id, perk in run.config.perks.pool do
-			player.perks[id] = perk.maxStacks
-		end
-		player.perks.frostBolts = nil
-		player.perks.iceBlast = nil
+		maxOutExcept(run, player, { "power", "wideReach" })
 		Perks.offer(run, player)
 		Assert.equal(#player.offers[1], 2)
+		Assert.falsy(table.find(player.offers[1], "swift"))
 	end,
 
 	["no offer when every perk is maxed"] = function()
 		local run = Fixtures.run()
 		local player = run.players[1]
-		for id, perk in run.config.perks.pool do
-			player.perks[id] = perk.maxStacks
-		end
+		maxOutExcept(run, player, {})
 		Perks.offer(run, player)
 		Assert.equal(#player.offers, 0)
 		Assert.equal(#run.events, 0)
@@ -152,35 +179,47 @@ return {
 		Assert.truthy(Perks.choose(run, 1, 1))
 	end,
 
-	["toughness raises max health and health"] = function()
-		local run = Fixtures.run()
-		local player = run.players[1]
-		player.offers = { { "toughness", "quickHands" } }
-		player.health = 50
-		local bonus = run.config.perks.toughnessHealth
-		Assert.truthy(Perks.choose(run, 1, 1))
-		Assert.equal(player.maxHealth, run.config.player.maxHealth + bonus)
-		Assert.equal(player.health, 50 + bonus)
-		Assert.equal(player.perks.toughness, 1)
-	end,
-
 	["a queued offer is drawn again when a choice maxes out one of its perks"] = function()
 		local run = Fixtures.run(1)
 		local player = run.players[1]
-		local max = run.config.perks.pool.quickHands.maxStacks
-		player.perks.quickHands = max - 1
-		player.offers = { { "quickHands", "toughness" }, { "quickHands", "toughness" } }
+		local max = run.config.perks.pool.power.maxStacks
+		player.perks.power = max - 1
+		player.offers = { { "power", "toughness" }, { "power", "toughness" } }
 		Assert.truthy(Perks.choose(run, 1, 1))
-		Assert.equal(player.perks.quickHands, max)
+		Assert.equal(player.perks.power, max)
+		Assert.equal(#player.offers, 1)
+		Assert.equal(#player.offers[1], run.config.perks.offerSize)
 		Assert.falsy(
-			table.find(player.offers[1], "quickHands"),
+			table.find(player.offers[1], "power"),
 			"the stale offer still holds the maxed perk"
 		)
-		for index = 1, #player.offers[1] do
-			Assert.truthy(player.offers[1][index] ~= "quickHands")
-		end
+		local announced = Assert.findEvent(run.events, "offer")
+		Assert.equal(table.concat(announced.perks, ","), table.concat(player.offers[1], ","))
 		Assert.truthy(Perks.choose(run, 1, 1))
-		Assert.equal(player.perks.quickHands, max)
+		Assert.equal(player.perks.power, max)
+	end,
+
+	["a queued offer that is still valid is kept"] = function()
+		local run = Fixtures.run(1)
+		local player = run.players[1]
+		player.offers = { { "power", "toughness" }, { "wideReach", "swift" } }
+		Assert.truthy(Perks.choose(run, 1, 1))
+		Assert.equal(table.concat(player.offers[1], ","), "wideReach,swift")
+		Assert.equal(
+			table.concat(Assert.findEvent(run.events, "offer").perks, ","),
+			"wideReach,swift"
+		)
+	end,
+
+	["a stale offer is dropped when no perk is left to draw"] = function()
+		local run = Fixtures.run(1)
+		local player = run.players[1]
+		maxOutExcept(run, player, { "power" })
+		player.perks.power = run.config.perks.pool.power.maxStacks - 1
+		player.offers = { { "power" }, { "power" } }
+		Assert.truthy(Perks.choose(run, 1, 1))
+		Assert.equal(#player.offers, 0)
+		Assert.equal(count(run.events, "offer"), 0)
 	end,
 
 	["perks never exceed their stacks across many seeds"] = function()
@@ -200,5 +239,112 @@ return {
 				)
 			end
 		end
+	end,
+
+	["modifiers are empty without perks"] = function()
+		local run = Fixtures.run(1)
+		local modifiers = Perks.modifiers(run.config, run.players[1])
+		Assert.equal(next(modifiers), nil)
+		Assert.equal(Perks.value(modifiers, "damage", 10), 10)
+	end,
+
+	["modifiers multiply per stack"] = function()
+		local run = Fixtures.run(1)
+		local player = run.players[1]
+		local mul = run.config.perks.pool.power.mul :: number
+		player.perks.power = 1
+		Assert.near(Perks.modifiers(run.config, player).damage.mul, mul)
+		player.perks.power = 2
+		local modifier = Perks.modifiers(run.config, player).damage
+		Assert.near(modifier.mul, mul * mul)
+		Assert.near(modifier.mul, 1.15 ^ 2)
+		Assert.equal(modifier.add, 0)
+	end,
+
+	["modifiers add per stack"] = function()
+		local run = Fixtures.run(1)
+		local player = run.players[1]
+		player.perks.toughness = 2
+		local modifier = Perks.modifiers(run.config, player).maxHealth
+		Assert.equal(modifier.add, 50)
+		Assert.equal(modifier.mul, 1)
+	end,
+
+	["modifiers are kept apart by property"] = function()
+		local run = Fixtures.run(1)
+		local player = run.players[1]
+		player.perks.power = 1
+		player.perks.toughness = 1
+		player.perks.ghost = 2
+		player.perks.swift = 0
+		local modifiers = Perks.modifiers(run.config, player)
+		Assert.near(modifiers.damage.mul, 1.15)
+		Assert.equal(modifiers.damage.add, 0)
+		Assert.equal(modifiers.maxHealth.add, 25)
+		Assert.equal(modifiers.maxHealth.mul, 1)
+		Assert.falsy(modifiers.moveSpeed)
+		Assert.falsy(modifiers.ghost)
+	end,
+
+	["value multiplies and then adds"] = function()
+		local config = Fixtures.config()
+		config.perks.pool.power.add = 5
+		local run = Fixtures.run(1, config)
+		local player = run.players[1]
+		player.perks.power = 2
+		local modifiers = Perks.modifiers(config, player)
+		Assert.near(Perks.value(modifiers, "damage", 100), 100 * 1.15 ^ 2 + 10)
+		Assert.near(Perks.playerValue(config, player, "damage", 100), 100 * 1.15 ^ 2 + 10)
+		Assert.equal(Perks.value(modifiers, "range", 100), 100)
+	end,
+
+	["Toughness raises maximum health and health"] = function()
+		local run = Fixtures.run()
+		local player = run.players[1]
+		player.offers = { { "toughness", "quickHands" } }
+		player.health = 50
+		local bonus = run.config.perks.pool.toughness.add :: number
+		Assert.truthy(Perks.choose(run, 1, 1))
+		Assert.equal(bonus, 25)
+		Assert.equal(player.maxHealth, run.config.player.maxHealth + bonus)
+		Assert.equal(player.health, 50 + bonus)
+		Assert.equal(player.perks.toughness, 1)
+
+		player.offers = { { "toughness", "quickHands" } }
+		Assert.truthy(Perks.choose(run, 1, 1))
+		Assert.equal(player.maxHealth, run.config.player.maxHealth + 2 * bonus)
+		Assert.equal(player.health, 50 + 2 * bonus)
+	end,
+
+	["Toughness taken while downed raises the maximum and leaves the player downed"] = function()
+		local run = Fixtures.run()
+		local player = run.players[1]
+		player.state = "downed"
+		player.health = 0
+		player.offers = { { "toughness", "quickHands" } }
+		Assert.truthy(Perks.choose(run, 1, 1))
+		Assert.equal(player.state, "downed")
+		Assert.equal(player.maxHealth, run.config.player.maxHealth + 25)
+	end,
+
+	["Fleet Footed adds a dash charge at once"] = function()
+		local run = Fixtures.run()
+		local player = run.players[1]
+		local charges = player.dashCharges
+		player.offers = { { "fleetFooted", "quickHands" } }
+		Assert.truthy(Perks.choose(run, 1, 1))
+		Assert.equal(player.dashCharges, charges + 1)
+		Assert.equal(player.perks.fleetFooted, 1)
+	end,
+
+	["a perk of another property changes neither health nor dash charges"] = function()
+		local run = Fixtures.run()
+		local player = run.players[1]
+		local charges = player.dashCharges
+		player.offers = { { "power", "quickHands" } }
+		Assert.truthy(Perks.choose(run, 1, 1))
+		Assert.equal(player.dashCharges, charges)
+		Assert.equal(player.maxHealth, run.config.player.maxHealth)
+		Assert.equal(player.health, run.config.player.maxHealth)
 	end,
 }

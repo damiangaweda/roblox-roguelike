@@ -1,23 +1,16 @@
 --!strict
--- Player health: damage, downed, revive and death.
+-- Player health and body: damage, knockback, downed, revive and death,
+-- potions and pickups.
 
+local Geometry = require("./Geometry")
+local Perks = require("./Perks")
+local State = require("./State")
 local Types = require("./Types")
+local World = require("./World")
 
 local Life = {}
 
--- Players by ascending id: `pairs` order over the map is not stable between runs.
-local function sortedPlayers(run: Types.Run): { Types.Player }
-	local list = {}
-	for _, player in run.players do
-		table.insert(list, player)
-	end
-	table.sort(list, function(a, b)
-		return a.id < b.id
-	end)
-	return list
-end
-
--- Stage 1: anyone alive may revive anyone downed. Stage 2 restricts it to allies.
+-- Stage 2a: anyone alive may revive anyone downed. Stage 3 restricts it to allies.
 local function canRevive(_run: Types.Run, _reviver: Types.Player, _downed: Types.Player): boolean
 	return true
 end
@@ -29,9 +22,9 @@ local function findReviver(run: Types.Run, downed: Types.Player): Types.Player?
 	local best: Types.Player? = nil
 	local bestDistance = math.huge
 	-- Ascending ids, so a tie goes to the lowest id on every run.
-	for _, other in sortedPlayers(run) do
+	for _, other in State.sortedPlayers(run) do
 		if other.state == "alive" and other.interacting and canRevive(run, other, downed) then
-			local distance = math.sqrt((other.x - downed.x) ^ 2 + (other.z - downed.z) ^ 2)
+			local distance = Geometry.distance(other.x, other.z, downed.x, downed.z)
 			if distance <= radius and distance < bestDistance then
 				best = other
 				bestDistance = distance
@@ -41,16 +34,24 @@ local function findReviver(run: Types.Run, downed: Types.Player): Types.Player?
 	return best
 end
 
--- Damages an alive player; at zero health the player is downed.
-function Life.damage(run: Types.Run, player: Types.Player, amount: number)
+-- Damages an alive player; at zero health the player is downed. `enemyId`
+-- names the attacker when one did it.
+function Life.damage(run: Types.Run, player: Types.Player, amount: number, enemyId: number?)
 	if player.state ~= "alive" or amount <= 0 then
 		return
 	end
 	player.health -= amount
-	-- Damage interrupts extraction, and reviving (see Life.update).
+	-- Damage interrupts extraction, drinking, and reviving (see Life.update).
 	player.extractProgress = 0
 	player.hurtAt = run.time
-	table.insert(run.events, { kind = "playerHurt", player = player.id, amount = amount })
+	if player.drinkingUntil ~= nil then
+		player.drinkingUntil = nil
+		table.insert(run.events, { kind = "drinkInterrupted", player = player.id })
+	end
+	table.insert(
+		run.events,
+		{ kind = "playerHurt", player = player.id, amount = amount, enemyId = enemyId }
+	)
 
 	if player.health <= 0 then
 		player.health = 0
@@ -61,10 +62,105 @@ function Life.damage(run: Types.Run, player: Types.Player, amount: number)
 	end
 end
 
--- Advances revives and bleeding out of downed players by `dt`.
-function Life.update(run: Types.Run, dt: number)
+-- Pushes an alive player `studs` away from (fromX, fromZ), over
+-- config.player.knockbackSeconds.
+function Life.knockPlayer(
+	run: Types.Run,
+	player: Types.Player,
+	fromX: number,
+	fromZ: number,
+	studs: number
+)
+	if player.state ~= "alive" or studs <= 0 then
+		return
+	end
+	local seconds = run.config.player.knockbackSeconds
+	local dx, dz = Geometry.normalize(player.x - fromX, player.z - fromZ)
+	player.knockX = dx * studs / seconds
+	player.knockZ = dz * studs / seconds
+	player.knockUntil = run.time + seconds
+	table.insert(
+		run.events,
+		{ kind = "knocked", player = player.id, dx = dx * studs, dz = dz * studs }
+	)
+end
+
+-- The player's potion capacity after perks.
+function Life.potionCapacity(run: Types.Run, player: Types.Player): number
+	return math.floor(
+		Perks.playerValue(run.config, player, "potionCapacity", run.config.player.potionCapacity)
+	)
+end
+
+-- Starts drinking a potion. Returns false when the player cannot drink now.
+function Life.drink(run: Types.Run, playerId: number): boolean
+	local player = run.players[playerId]
+	if
+		player == nil
+		or player.state ~= "alive"
+		or player.potions <= 0
+		or player.drinkingUntil ~= nil
+	then
+		return false
+	end
+	player.drinkingUntil = run.time + run.config.player.drinkSeconds
+	table.insert(run.events, { kind = "drinking", player = player.id })
+	return true
+end
+
+-- Moves knocked players, finishes drinks, takes pickups.
+local function updateBodies(run: Types.Run, dt: number)
 	local config = run.config.player
-	for _, player in sortedPlayers(run) do
+	for _, player in State.sortedPlayers(run) do
+		if player.state ~= "alive" then
+			continue
+		end
+
+		-- The last step of a knockback covers only what is left of it.
+		local knockLeft = math.clamp(player.knockUntil - (run.time - dt), 0, dt)
+		if knockLeft > 0 then
+			local x, z = World.clamp(
+				run.world,
+				player.x + player.knockX * knockLeft,
+				player.z + player.knockZ * knockLeft
+			)
+			-- The character is pushed too, so its next report is within budget.
+			player.moveBudget += Geometry.distance(player.x, player.z, x, z)
+			player.x, player.z = x, z
+		end
+
+		local drinkingUntil = player.drinkingUntil
+		if drinkingUntil and run.time >= drinkingUntil then
+			player.drinkingUntil = nil
+			player.potions -= 1
+			local amount = Perks.playerValue(run.config, player, "potionHeal", config.potionHeal)
+			amount = math.min(amount, player.maxHealth - player.health)
+			player.health += amount
+			table.insert(run.events, { kind = "drank", player = player.id, amount = amount })
+		end
+
+		if player.potions < Life.potionCapacity(run, player) then
+			for index, pickup in run.pickups do
+				if
+					Geometry.distance(player.x, player.z, pickup.x, pickup.z) <= config.pickupRadius
+				then
+					table.remove(run.pickups, index)
+					player.potions += 1
+					table.insert(
+						run.events,
+						{ kind = "pickedUp", player = player.id, pickup = pickup.kind }
+					)
+					break
+				end
+			end
+		end
+	end
+end
+
+-- Advances revives and bleeding out of downed players by `dt`.
+local function updateDowned(run: Types.Run, dt: number)
+	local config = run.config.player
+	for _, player in State.sortedPlayers(run) do
 		local downedAt = player.downedAt
 		if player.state == "downed" and downedAt then
 			local reviver = findReviver(run, player)
@@ -92,6 +188,11 @@ function Life.update(run: Types.Run, dt: number)
 			end
 		end
 	end
+end
+
+function Life.update(run: Types.Run, dt: number)
+	updateBodies(run, dt)
+	updateDowned(run, dt)
 end
 
 return Life

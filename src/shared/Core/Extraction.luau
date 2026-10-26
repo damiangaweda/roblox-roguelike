@@ -1,36 +1,10 @@
 --!strict
--- Extraction zones and the flood at the end of the run.
+-- Extraction zones, open for the whole run, and the flood at its end.
 
+local State = require("./State")
 local Types = require("./Types")
 
 local Extraction = {}
-
--- Players by ascending id, so events come in the same order on every run.
-local function sortedPlayers(run: Types.Run): { Types.Player }
-	local list = {}
-	for _, player in run.players do
-		table.insert(list, player)
-	end
-	table.sort(list, function(a, b)
-		return a.id < b.id
-	end)
-	return list
-end
-
--- Picks `zoneCount` distinct zone points with the run's generator.
-local function openZones(run: Types.Run)
-	local config = run.config.run
-	local points = table.clone(config.zonePoints)
-	local count = math.min(config.zoneCount, #points)
-	for i = 1, count do
-		-- Partial Fisher-Yates: the first `count` entries end up chosen.
-		local j = run.rng:integer(i, #points)
-		points[i], points[j] = points[j], points[i]
-		table.insert(run.zones, { x = points[i].x, z = points[i].z, radius = config.zoneRadius })
-	end
-	run.zonesOpen = true
-	table.insert(run.events, { kind = "zonesOpened" })
-end
 
 local function inAnyZone(run: Types.Run, player: Types.Player): boolean
 	for _, zone in run.zones do
@@ -42,16 +16,9 @@ local function inAnyZone(run: Types.Run, player: Types.Player): boolean
 	return false
 end
 
--- Opens the zones when their time comes and advances players extracting in them.
+-- Advances players extracting in a zone while they hold the interact button.
 function Extraction.update(run: Types.Run, dt: number)
-	if not run.zonesOpen and run.time >= run.config.run.zonesOpenAtSeconds then
-		openZones(run)
-	end
-	if not run.zonesOpen then
-		return
-	end
-
-	for _, player in sortedPlayers(run) do
+	for _, player in State.sortedPlayers(run) do
 		if player.state == "alive" then
 			if player.interacting and inAnyZone(run, player) then
 				player.extractProgress += dt
@@ -74,7 +41,7 @@ function Extraction.flood(run: Types.Run)
 	run.flooded = true
 	table.insert(run.events, { kind = "flood" })
 
-	for _, player in sortedPlayers(run) do
+	for _, player in State.sortedPlayers(run) do
 		if player.state == "alive" or player.state == "downed" then
 			player.state = "dead"
 			table.insert(run.events, { kind = "died", player = player.id })
