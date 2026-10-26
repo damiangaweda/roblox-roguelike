@@ -58,19 +58,23 @@ end
 -- Calls `handler` for every well-formed intent within the rate limit; the
 -- rest are dropped silently.
 function Network.onIntent(handler: (player: Player, intent: Protocol.Intent) -> ())
-	intentRemote.OnServerEvent:Connect(function(player, kind, a, b)
+	intentRemote.OnServerEvent:Connect(function(player, kind, a, b, c)
 		if not allow(player) then
 			return
 		end
-		local intent = Protocol.parseIntent(kind, a, b)
+		local intent = Protocol.parseIntent(kind, a, b, c)
 		if intent then
 			handler(player, intent)
 		end
 	end)
 end
 
-function Network.sendWorld(run: Types.Run, kindNames: { string })
-	worldRemote:FireAllClients(Protocol.worldView(run), Protocol.encodeEnemies(run, kindNames))
+function Network.sendWorld(run: Types.Run, archetypeNames: { string }, projectileKinds: { string })
+	worldRemote:FireAllClients(
+		Protocol.worldView(run),
+		Protocol.encodeEnemies(run, archetypeNames),
+		Protocol.encodeProjectiles(run, projectileKinds)
+	)
 end
 
 -- Sends each player the public events and its own private ones, with its

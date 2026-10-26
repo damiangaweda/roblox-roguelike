@@ -1,7 +1,9 @@
 --!strict
 -- Keeps each player's character in line with the player the core tracks. The
 -- core's health is the truth: the Humanoid's own health never kills anyone
--- (AGENTS.md rule 1), and the character only shows what the core decided.
+-- (AGENTS.md rule 1), and the character only shows what the core decided. The
+-- server reads one thing from a character: where it stands. The aim is an
+-- intent (ADR-0009); the character's facing is the client's own drawing of it.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -13,15 +15,15 @@ local Characters = {}
 -- Presentation constants, not gameplay numbers.
 local DEAD_TRANSPARENCY = 0.7
 local EXTRACTED_TRANSPARENCY = 1
+-- Where a teleported character's feet land above the floor.
+local TELEPORT_HEIGHT = 3.5
 
 type Entry = {
 	character: Model,
 	humanoid: Humanoid,
-	-- The jump values of a fresh character, restored when the player is alive.
-	jumpHeight: number,
-	jumpPower: number,
-	-- The state last applied, so a state is applied once, not every frame.
+	-- The state and walk speed last applied, so they are applied on change only.
 	state: Types.PlayerState?,
+	walkSpeed: number?,
 }
 
 local entries: { [Player]: Entry } = {}
@@ -43,33 +45,50 @@ local function entryFor(player: Player): Entry?
 		return nil
 	end
 	humanoid.BreakJointsOnDeath = false
+	-- A top-down run has no jumping: the dash is the burst of movement.
+	humanoid.JumpHeight = 0
+	humanoid.JumpPower = 0
+	humanoid.UseJumpPower = false
 	local entry: Entry = {
 		character = character,
 		humanoid = humanoid,
-		jumpHeight = humanoid.JumpHeight,
-		jumpPower = humanoid.JumpPower,
 		state = nil,
+		walkSpeed = nil,
 	}
 	entries[player] = entry
 	return entry
 end
 
--- The character's position on the ground plane, or nil while it has none.
-function Characters.position(player: Player): Types.PlayerInput?
+local function root(player: Player): BasePart?
 	local character = player.Character
 	if character == nil then
 		return nil
 	end
-	local root = character:FindFirstChild("HumanoidRootPart")
-	if root == nil or not root:IsA("BasePart") then
+	local part = character:FindFirstChild("HumanoidRootPart")
+	if part == nil or not part:IsA("BasePart") then
 		return nil
 	end
-	return { x = root.Position.X, z = root.Position.Z }
+	return part
 end
 
-local function setJumping(entry: Entry, enabled: boolean)
-	entry.humanoid.JumpHeight = if enabled then entry.jumpHeight else 0
-	entry.humanoid.JumpPower = if enabled then entry.jumpPower else 0
+-- The character's position on the ground plane, or nil while it has no body.
+function Characters.input(player: Player): Types.PlayerInput?
+	local part = root(player)
+	if part == nil then
+		return nil
+	end
+	return { x = part.Position.X, z = part.Position.Z }
+end
+
+-- Puts the character where the run says the player is, keeping its facing.
+function Characters.teleport(player: Player, x: number, z: number)
+	local character = player.Character
+	local part = root(player)
+	if character == nil or part == nil then
+		return
+	end
+	local pivot = character:GetPivot()
+	character:PivotTo(pivot.Rotation + Vector3.new(x, TELEPORT_HEIGHT, z))
 end
 
 -- Hides the character and lets others walk through it.
@@ -87,25 +106,25 @@ local function fade(entry: Entry, transparency: number)
 	end
 end
 
--- Makes the player's character match `state`. Call it every frame; it acts
--- on a change of state and keeps the Humanoid's health full.
 -- Puts a character back where the run says the player is, once it has drifted
 -- further than walking allows: a teleport, a speed hack, or a downed player
 -- trying to crawl away (rule 1).
 function Characters.hold(player: Player, x: number, z: number)
 	local character = player.Character
-	local root = if character then character:FindFirstChild("HumanoidRootPart") else nil
-	if character == nil or root == nil or not root:IsA("BasePart") then
+	local part = root(player)
+	if character == nil or part == nil then
 		return
 	end
-	local position = root.Position
+	local position = part.Position
 	local dx, dz = position.X - x, position.Z - z
 	if dx * dx + dz * dz > Config.player.correctionDistance ^ 2 then
 		character:PivotTo(character:GetPivot() + Vector3.new(-dx, 0, -dz))
 	end
 end
 
-function Characters.apply(player: Player, state: Types.PlayerState)
+-- Makes the player's character match `state` and `walkSpeed`. Call it every
+-- frame; it acts on a change and keeps the Humanoid's health full.
+function Characters.apply(player: Player, state: Types.PlayerState, walkSpeed: number)
 	local entry = entryFor(player)
 	if entry == nil then
 		return
@@ -114,18 +133,17 @@ function Characters.apply(player: Player, state: Types.PlayerState)
 	if humanoid.Health > 0 and humanoid.Health < humanoid.MaxHealth then
 		humanoid.Health = humanoid.MaxHealth
 	end
-	if entry.state == state then
+	if entry.state == state and entry.walkSpeed == walkSpeed then
 		return
 	end
 	entry.state = state
+	entry.walkSpeed = walkSpeed
 
 	if state == "alive" then
-		humanoid.WalkSpeed = Config.player.walkSpeed
-		setJumping(entry, true)
+		humanoid.WalkSpeed = walkSpeed
 		return
 	end
 	humanoid.WalkSpeed = 0
-	setJumping(entry, false)
 	if state == "dead" then
 		fade(entry, DEAD_TRANSPARENCY)
 	elseif state == "extracted" then

@@ -26,8 +26,14 @@ table.sort(files)
 local passed, failed = 0, 0
 for _, file in files do
 	-- Requires resolve relative to this script, which lives in tests/.
-	local spec =
-		require("./" .. string.sub(file, #"tests/" + 1, -#".luau" - 1)) :: { [string]: () -> () }
+	local loaded, spec = pcall(require, "./" .. string.sub(file, #"tests/" + 1, -#".luau" - 1))
+	if not loaded then
+		-- A spec that does not load fails as a whole; the others still run.
+		failed += 1
+		print("FAIL " .. file .. "\n     " .. tostring(spec))
+		continue
+	end
+	spec = spec :: { [string]: () -> () }
 	local names = {}
 	for name in spec do
 		table.insert(names, name)
