@@ -63,6 +63,9 @@ local function perfConfig(): Types.Config
 	config.enemies.patrols.groupsAtStart = 25
 	config.enemies.patrols.sizeAtStart = 8
 	config.player.maxHealth = 1e6
+	-- The map of a full server, whatever the player count (stage 2b criterion 6).
+	config.map.minHalf = config.map.maxHalf
+	config.map.minPoints = config.map.maxPoints
 	return config
 end
 
@@ -114,8 +117,14 @@ local function startRun(respawn: boolean)
 		end
 		perfRun = perfRequested()
 		local config = if perfRun then perfConfig() else Config
-		local fresh = Run.new(config, Random.new():NextInteger(1, 2 ^ 31 - 2), count)
+		local seed = Random.new():NextInteger(1, 2 ^ 31 - 2)
+		local fresh = Run.new(config, seed, count)
+		-- The seed regenerates this map offline (Map.generate) when a position needs a look.
+		workspace:SetAttribute("MapSeed", seed)
+		local buildStart = os.clock()
 		MapBuilder.build(fresh.map, config)
+		-- How long the map took, for the lead to read in Studio (stage 2b criterion 6).
+		workspace:SetAttribute("MapBuildSeconds", os.clock() - buildStart)
 
 		if respawn then
 			for _, player in present() do
@@ -267,6 +276,19 @@ local function onHeartbeat(dt: number)
 		local current = run
 		workspace:SetAttribute("ServerHeartbeatHz", heartbeatFrames / heartbeatClock)
 		workspace:SetAttribute("EnemyCount", if current then #current.enemies else 0)
+		-- Where the core thinks each player stands, for the lead to compare with
+		-- the character in Studio.
+		if current then
+			for id, core in current.players do
+				local player = Players:GetPlayerByUserId(id)
+				if player then
+					player:SetAttribute("CoreX", core.x)
+					player:SetAttribute("CoreZ", core.z)
+					player:SetAttribute("CoreWalkable", Map.walkable(current.map, core.x, core.z))
+					player:SetAttribute("CorePoint", core.pointId)
+				end
+			end
+		end
 		heartbeatFrames = 0
 		heartbeatClock = 0
 	end

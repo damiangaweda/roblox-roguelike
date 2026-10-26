@@ -232,6 +232,27 @@ return {
 		end
 	end,
 
+	["before anyone joins, the start patrols keep away from the entries"] = function()
+		local config = Fixtures.config()
+		config.enemies.maxAlive = 10000
+		local patrols = config.enemies.patrols
+		patrols.groupsAtStart = 4
+		patrols.wanderersAtStart = 4
+		for seed = 1, 20 do
+			local run = State.newRun(config, seed, 4)
+			Assert.equal(#run.players, 0)
+			Camps.populate(run)
+			for _, patrol in run.patrols do
+				for _, entry in run.map.entries do
+					Assert.truthy(
+						run.map.hops[patrol.previousPoint][entry] >= patrols.minHopsFromPlayers,
+						"seed " .. seed .. ": a start patrol next to an entry"
+					)
+				end
+			end
+		end
+	end,
+
 	["populate spawns the start patrols and wanderers away from the players"] = function()
 		local run = build(8, 6, function(config)
 			local patrols = config.enemies.patrols

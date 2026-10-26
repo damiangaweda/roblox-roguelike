@@ -32,6 +32,9 @@ local PROP_HEIGHT = 14
 local PROP_SINK = 2
 local PROP_COLOR = Color3.fromRGB(58, 60, 68)
 local COVER_HEIGHT = 4
+-- The invisible walls over water: tall enough that nothing walks or dashes over them.
+local WATER_BARRIER_HEIGHT = 12
+local WATER_BARRIER_SINK = 2
 local COVER_COLOR = Color3.fromRGB(70, 120, 60)
 local MARKER_THICKNESS = 0.4
 -- How far a marker floats above the ground, so the terrain does not hide it.
@@ -293,6 +296,35 @@ end
 
 -- Replaces the previous run's map with this one. Yields while the terrain is
 -- written.
+-- The core does not let anyone walk on water, but a character would swim
+-- across it and be pulled back every second. One invisible wall per water
+-- cell of the height grid keeps characters and dashes out, as the rules do.
+local function buildWaterBarriers(map: Types.Map, parent: Instance)
+	local cell = map.heightCell
+	local count = 0
+	for row, line in map.heights do
+		for col, height in line do
+			if height < map.waterLevel then
+				count += 1
+				local part = Instance.new("Part")
+				part.Name = "Water" .. count
+				part.Anchored = true
+				part.Transparency = 1
+				part.CastShadow = false
+				part.CanQuery = true
+				part.CanTouch = false
+				part.Size = Vector3.new(cell, WATER_BARRIER_HEIGHT, cell)
+				part.CFrame = CFrame.new(
+					-map.half + (col - 1) * cell,
+					map.waterLevel + WATER_BARRIER_HEIGHT / 2 - WATER_BARRIER_SINK,
+					-map.half + (row - 1) * cell
+				)
+				part.Parent = parent
+			end
+		end
+	end
+end
+
 function MapBuilder.build(map: Types.Map, config: Types.Config)
 	MapBuilder.clear()
 	writeTerrain(map)
@@ -315,6 +347,7 @@ function MapBuilder.build(map: Types.Map, config: Types.Config)
 		covers += 1
 		buildBush(map, config, "Cover" .. covers, spot, root)
 	end
+	buildWaterBarriers(map, root)
 	for index, id in map.zonePoints do
 		local point = map.points[id]
 		buildMarker(map, "Zone" .. index, point, config.map.zoneRadius, ZONE_MARKER_COLOR, root)

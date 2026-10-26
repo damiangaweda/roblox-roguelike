@@ -124,6 +124,11 @@ local function eligiblePoints(run: Types.Run): { Types.MapPoint }
 			table.insert(playerPoints, player.pointId)
 		end
 	end
+	-- Before anyone has joined (the run's first patrols) the players are about
+	-- to appear at the entries, so the entries count as theirs.
+	if #playerPoints == 0 then
+		playerPoints = run.map.entries
+	end
 
 	local far: { Types.MapPoint } = {}
 	local any: { Types.MapPoint } = {}
