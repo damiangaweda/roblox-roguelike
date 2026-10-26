@@ -4,12 +4,14 @@
 local RunService = game:GetService("RunService")
 local StarterGui = game:GetService("StarterGui")
 
+local Atmosphere = require(script.Parent.Atmosphere)
 local Camera = require(script.Parent.Camera)
 local Effects = require(script.Parent.Effects)
 local EnemyView = require(script.Parent.EnemyView)
 local Hud = require(script.Parent.Hud)
 local Input = require(script.Parent.Input)
 
+Atmosphere.start()
 EnemyView.start()
 Effects.start()
 Camera.start()
