@@ -53,7 +53,7 @@ function Extraction.update(run: Types.Run, dt: number)
 
 	for _, player in sortedPlayers(run) do
 		if player.state == "alive" then
-			if inAnyZone(run, player) then
+			if player.interacting and inAnyZone(run, player) then
 				player.extractProgress += dt
 				if player.extractProgress >= run.config.run.extractSeconds then
 					player.state = "extracted"

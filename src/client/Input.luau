@@ -1,6 +1,7 @@
 --!strict
--- Skill aim on PC: the left mouse button or Q fires the skill at the point
--- where the mouse ray meets the ground. The server decides what happens.
+-- Keyboard and mouse: the left mouse button or Q fires the active skill at the
+-- point where the mouse ray meets the ground; holding E interacts (revives or
+-- extracts). The server decides what happens.
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
@@ -37,7 +38,15 @@ local function overButton(position: Vector3): boolean
 	return false
 end
 
+local INTERACT_KEY = Enum.KeyCode.E
+
 local function onInputBegan(input: InputObject, _gameProcessed: boolean)
+	if input.KeyCode == INTERACT_KEY then
+		if UserInputService:GetFocusedTextBox() == nil then
+			Net.interact(true)
+		end
+		return
+	end
 	-- Touch devices fire through the Hud's own button, which auto-aims.
 	if UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled then
 		return
@@ -62,6 +71,15 @@ end
 
 function Input.start()
 	UserInputService.InputBegan:Connect(onInputBegan)
+	UserInputService.InputEnded:Connect(function(input: InputObject)
+		if input.KeyCode == INTERACT_KEY then
+			Net.interact(false)
+		end
+	end)
+	-- A key released while the window is in the background never arrives.
+	UserInputService.WindowFocusReleased:Connect(function()
+		Net.interact(false)
+	end)
 end
 
 return Input

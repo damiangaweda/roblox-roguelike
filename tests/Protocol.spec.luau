@@ -96,4 +96,14 @@ return {
 			"arena.halfSize is too big for the encoding"
 		)
 	end,
+
+	["interact intent carries whether the button is held"] = function()
+		local down = Protocol.parseIntent("interact", true) :: any
+		Assert.equal(down.kind, "interact")
+		Assert.equal(down.held, true)
+		Assert.equal((Protocol.parseIntent("interact", false) :: any).held, false)
+		Assert.equal(Protocol.parseIntent("interact", 1), nil)
+		Assert.equal(Protocol.parseIntent("interact", nil), nil)
+		Assert.equal(Protocol.parseIntent("interact", true, 2), nil)
+	end,
 }

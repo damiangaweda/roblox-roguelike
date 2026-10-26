@@ -141,6 +141,9 @@ export type Player = {
 	kills: number,
 	-- Studs the player may still move before the run holds them back.
 	moveBudget: number,
+	-- Whether the player holds the interact button, which revives a downed
+	-- player nearby or extracts in a zone.
+	interacting: boolean,
 }
 
 export type Zone = {

@@ -51,6 +51,11 @@ function Net.useActiveSkill(aim: Vector3?)
 	end
 end
 
+-- The interact button went down (`held`) or up: reviving or extracting.
+function Net.interact(held: boolean)
+	intentRemote:FireServer("interact", held)
+end
+
 function Net.choosePerk(index: number)
 	intentRemote:FireServer("perk", index)
 end

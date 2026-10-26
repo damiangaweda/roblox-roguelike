@@ -33,6 +33,7 @@ end
 return {
 	["zones are closed before they open"] = function()
 		local run = Fixtures.run(1)
+		run.players[1].interacting = true
 		run.time = run.config.run.zonesOpenAtSeconds - 1
 		Extraction.update(run, 1)
 		Assert.falsy(run.zonesOpen)
@@ -42,6 +43,7 @@ return {
 
 	["zones open with distinct points at their time"] = function()
 		local run = Fixtures.run(1)
+		run.players[1].interacting = true
 		openZones(run)
 		local config = run.config.run
 		Assert.truthy(run.zonesOpen)
@@ -63,6 +65,7 @@ return {
 
 	["zones open only once"] = function()
 		local run = Fixtures.run(1)
+		run.players[1].interacting = true
 		openZones(run)
 		Extraction.update(run, 1)
 		Assert.equal(#run.zones, run.config.run.zoneCount)
@@ -112,6 +115,7 @@ return {
 
 	["a player is extracted after five seconds in a zone"] = function()
 		local run = Fixtures.run(1)
+		run.players[1].interacting = true
 		openZones(run)
 		enterZone(run, 1)
 		local extractSeconds = run.config.run.extractSeconds
@@ -127,6 +131,7 @@ return {
 
 	["nobody extracts while the zones are closed"] = function()
 		local run = Fixtures.run(1)
+		run.players[1].interacting = true
 		run.players[1].x = run.config.run.zonePoints[1].x
 		run.players[1].z = run.config.run.zonePoints[1].z
 		run.time = 1
@@ -137,6 +142,7 @@ return {
 
 	["leaving the zone resets extraction progress"] = function()
 		local run = Fixtures.run(1)
+		run.players[1].interacting = true
 		openZones(run)
 		enterZone(run, 1)
 		advance(run, 3, 1)
@@ -151,6 +157,7 @@ return {
 
 	["damage interrupts extraction"] = function()
 		local run = Fixtures.run(1)
+		run.players[1].interacting = true
 		openZones(run)
 		enterZone(run, 1)
 		advance(run, 3, 1)
@@ -162,6 +169,7 @@ return {
 
 	["a downed player does not extract"] = function()
 		local run = Fixtures.run(1)
+		run.players[1].interacting = true
 		openZones(run)
 		enterZone(run, 1)
 		Life.damage(run, run.players[1], run.players[1].maxHealth)
@@ -195,11 +203,26 @@ return {
 
 	["the flood happens once"] = function()
 		local run = Fixtures.run(1)
+		run.players[1].interacting = true
 		Extraction.flood(run)
 		run.events = {}
 		run.players[1].state = "alive"
 		Extraction.flood(run)
 		Assert.equal(run.players[1].state, "alive")
 		Assert.equal(#run.events, 0)
+	end,
+
+	["standing in a zone without holding interact does not extract"] = function()
+		local run = Fixtures.run(1)
+		run.time = run.config.run.zonesOpenAtSeconds
+		Extraction.update(run, 0)
+		local zone = run.zones[1]
+		local player = run.players[1]
+		player.x, player.z = zone.x, zone.z
+		for _ = 1, 20 do
+			Extraction.update(run, 0.5)
+		end
+		Assert.equal(player.state, "alive")
+		Assert.equal(player.extractProgress, 0)
 	end,
 }

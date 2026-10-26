@@ -181,6 +181,8 @@ local function onIntent(player: Player, intent: Protocol.Intent)
 		Run.useActiveSkill(current, player.UserId, intent.aim)
 	elseif intent.kind == "perk" then
 		Run.choosePerk(current, player.UserId, intent.index)
+	elseif intent.kind == "interact" then
+		Run.setInteracting(current, player.UserId, intent.held)
 	end
 end
 

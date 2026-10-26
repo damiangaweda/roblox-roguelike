@@ -19,6 +19,7 @@ Protocol.remotes = {
 export type Intent =
 	{ kind: "activeSkill", aim: { x: number, z: number }? }
 	| { kind: "perk", index: number }
+	| { kind: "interact", held: boolean }
 
 local function isFiniteNumber(value: any): boolean
 	return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
@@ -38,6 +39,11 @@ function Protocol.parseIntent(kind: any, a: any, b: any): Intent?
 	elseif kind == "perk" then
 		if isFiniteNumber(a) and a == math.floor(a) and a >= 1 and a <= 16 and b == nil then
 			return { kind = "perk", index = a }
+		end
+		return nil
+	elseif kind == "interact" then
+		if type(a) == "boolean" and b == nil then
+			return { kind = "interact", held = a }
 		end
 		return nil
 	end

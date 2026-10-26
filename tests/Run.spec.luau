@@ -59,6 +59,7 @@ return {
 		Assert.truthy(Assert.findEvent(events, "zonesOpened"))
 		local zone = run.zones[1]
 		run.players[1].x, run.players[1].z = zone.x, zone.z
+		Run.setInteracting(run, 1, true)
 		events = advance(run, config.run.extractSeconds + 1, { [1] = { x = zone.x, z = zone.z } })
 		Assert.truthy(Assert.findEvent(events, "extracted"))
 		Assert.truthy(Assert.findEvent(events, "ended"))

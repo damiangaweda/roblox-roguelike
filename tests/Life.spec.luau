@@ -13,11 +13,13 @@ local function advance(run: Types.Run, seconds: number, dt: number)
 	end
 end
 
--- Two players: player 1 downed at the origin, player 2 alive beside them.
+-- Two players: player 1 downed at the origin, player 2 alive beside them and
+-- holding the interact button.
 local function downedPair(): (Types.Run, Types.Player, Types.Player)
 	local run = Fixtures.run(2)
 	local downed, helper = run.players[1], run.players[2]
 	helper.x = 3
+	helper.interacting = true
 	Life.damage(run, downed, downed.maxHealth)
 	run.events = {}
 	return run, downed, helper
@@ -105,7 +107,7 @@ return {
 	["the nearest alive player is credited with the revive"] = function()
 		local run, downed = downedPair()
 		run.players[2].x = 6
-		Run.addPlayer(run, 3, 1, 0)
+		Run.addPlayer(run, 3, 1, 0).interacting = true
 		advance(run, run.config.player.reviveSeconds, 0.5)
 		Assert.equal(downed.state, "alive")
 		Assert.equal(Assert.findEvent(run.events, "revived").by, 3)
@@ -169,5 +171,22 @@ return {
 		local event = Assert.findEvent(run.events, "died")
 		Assert.truthy(event)
 		Assert.equal(event.player, 1)
+	end,
+
+	["standing beside a downed player without holding interact does not revive"] = function()
+		local run, downed, helper = downedPair()
+		helper.interacting = false
+		advance(run, run.config.player.reviveSeconds + 1, 0.5)
+		Assert.equal(downed.state, "downed")
+		Assert.equal(downed.reviveProgress, 0)
+	end,
+
+	["letting go of interact resets revive progress"] = function()
+		local run, downed, helper = downedPair()
+		advance(run, run.config.player.reviveSeconds / 2, 0.5)
+		Assert.truthy(downed.reviveProgress > 0)
+		helper.interacting = false
+		advance(run, 0.5, 0.5)
+		Assert.equal(downed.reviveProgress, 0)
 	end,
 }

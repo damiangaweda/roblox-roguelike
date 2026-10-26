@@ -49,6 +49,7 @@ function Run.addPlayer(run: Types.Run, id: number, x: number, z: number): Types.
 		activeSkillReadyAt = 0,
 		kills = 0,
 		moveBudget = 0,
+		interacting = false,
 	}
 	run.players[id] = player
 	return player
@@ -68,6 +69,14 @@ function Run.useActiveSkill(
 		return false
 	end
 	return Combat.useActiveSkill(run, playerId, aim)
+end
+
+-- The player pressed (`held`) or released the interact button.
+function Run.setInteracting(run: Types.Run, playerId: number, held: boolean)
+	local player = run.players[playerId]
+	if player then
+		player.interacting = held
+	end
 end
 
 function Run.choosePerk(run: Types.Run, playerId: number, index: number): boolean

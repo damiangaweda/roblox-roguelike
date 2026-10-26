@@ -22,14 +22,15 @@ local function canRevive(_run: Types.Run, _reviver: Types.Player, _downed: Types
 	return true
 end
 
--- The nearest alive player within revive range who may revive `downed`.
+-- The nearest alive player within revive range, holding the interact button,
+-- who may revive `downed`.
 local function findReviver(run: Types.Run, downed: Types.Player): Types.Player?
 	local radius = run.config.player.reviveRadius
 	local best: Types.Player? = nil
 	local bestDistance = math.huge
 	-- Ascending ids, so a tie goes to the lowest id on every run.
 	for _, other in sortedPlayers(run) do
-		if other.state == "alive" and canRevive(run, other, downed) then
+		if other.state == "alive" and other.interacting and canRevive(run, other, downed) then
 			local distance = math.sqrt((other.x - downed.x) ^ 2 + (other.z - downed.z) ^ 2)
 			if distance <= radius and distance < bestDistance then
 				best = other

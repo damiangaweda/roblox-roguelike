@@ -22,8 +22,8 @@ The public release happens when the user judges the game ready; it needs every m
 - One ranged class: a basic attack that fires automatically at the nearest enemy in range, and one active area skill on a cooldown, aimed with the mouse on PC and at the nearest enemy on touch.
 - The horde as lightweight enemies ([ADR-0004](adr/0004-lightweight-enemies.md)), two enemy types, spawning faster as the run goes on, up to 150 alive.
 - Experience from kills; each level-up offers 3 random perks out of about 6, carrying two tags (fire, ice), with one synergy between them.
-- Downed for 15 s; any player can revive by standing next to the downed player for 3 s.
-- From minute 10, 2 extraction zones open at random among fixed points; extracting takes 5 s in a zone and damage interrupts it. At minute 15 the horde floods the map and everyone left dies.
+- Downed for 15 s; any player can revive by holding the interact button next to the downed player for 3 s.
+- From minute 10, 2 extraction zones open at random among fixed points; extracting takes holding the interact button for 5 s in a zone, and damage or letting go interrupts it. At minute 15 the horde floods the map and everyone left dies.
 - A short summary at the end of a run (extracted or died, time, level), then a new run on the same server.
 
 **Acceptance criteria:**
@@ -31,7 +31,7 @@ The public release happens when the user judges the game ready; it needs every m
 2. Core tests cover damage; perk offers (three distinct perks, repeatable for a given seed); the synergy firing only when its tags meet; downed, revive and death timings; the extraction channel and its interruption; zones opening at minute 10 and the flood at minute 15.
 3. Core modules reference no Roblox API, and a check in `make ci` fails if one does.
 4. Every number named in the scope (timers, counts, spawn rates, damage, cooldowns) is read from one configuration module.
-5. The client sends only intents (activate a skill with an aim direction, choose a perk, revive, extract); the server checks cooldown, range and state and decides damage, experience, perks and extraction.
+5. The client sends only intents (fire the active skill at a point or at the nearest enemy, choose a perk, press or release the interact button); the server checks cooldown, range, position and state and decides damage, experience, perks, revives and extraction. Player movement is held to what walking can reach ([ADR-0007](adr/0007-movement-budget.md)).
 6. In a Studio test with 2 players, each can: move, auto-attack, fire the skill (mouse on PC; auto-target in the device emulator on a phone), level up and pick a perk, see the synergy deal its bonus, be downed and revived, die, extract, see the summary and start the next run.
 7. In a Studio test with a server and 4 clients on the user's Mac, with 150 living enemies, the server holds at least 50 Hz and each client at least 50 FPS; the phone device emulator is checked by hand.
 

@@ -232,7 +232,45 @@ function Hud.start()
 			Net.useActiveSkill(nil)
 		end)
 		skillButton = button
+
+		-- Held, not tapped: revive and extraction take seconds.
+		local interact = Instance.new("TextButton")
+		interact.Name = "InteractButton"
+		interact.AnchorPoint = Vector2.new(1, 1)
+		interact.Position = UDim2.new(1, -186, 1, -36)
+		interact.Size = UDim2.fromOffset(100, 100)
+		interact.BackgroundColor3 = EXTRACT_COLOR
+		interact.BackgroundTransparency = 0.15
+		interact.BorderSizePixel = 0
+		interact.Font = FONT_BOLD
+		interact.TextSize = 18
+		interact.TextColor3 = WHITE
+		interact.TextStrokeTransparency = 0.6
+		interact.Text = "HOLD"
+		interact.Parent = root
+		round(interact, 50)
+		interact.MouseButton1Down:Connect(function()
+			Net.interact(true)
+		end)
+		interact.MouseButton1Up:Connect(function()
+			Net.interact(false)
+		end)
+		interact.MouseLeave:Connect(function()
+			Net.interact(false)
+		end)
 	end
+
+	-- What holding interact would do here, if anything.
+	local interactPrompt = newLabel(
+		root,
+		"InteractPrompt",
+		UDim2.fromOffset(420, 26),
+		UDim2.new(0.5, -210, 1, -110),
+		20,
+		FONT_BOLD
+	)
+	interactPrompt.Visible = false
+	local holdWord = if touch then "Hold HOLD" else "Hold E"
 
 	-- Perk choice: a row of buttons that leaves the middle and the corners free
 	-- for movement.
@@ -574,6 +612,37 @@ function Hud.start()
 
 		-- Perk choice.
 		showOffer(if selfView then selfView.offer else nil)
+
+		-- The interact prompt, from where the local character stands.
+		local prompt: string? = nil
+		local character = Players.LocalPlayer.Character
+		local ownRoot = if character then character:FindFirstChild("HumanoidRootPart") else nil
+		if view and view.state == "alive" and snapshot and ownRoot and ownRoot:IsA("BasePart") then
+			local here = ownRoot.Position
+			for _, zone in snapshot.world.zones do
+				if (Vector3.new(zone.x, here.Y, zone.z) - here).Magnitude <= zone.radius then
+					prompt = holdWord .. " to extract"
+				end
+			end
+			for _, other in snapshot.world.players do
+				local otherPlayer = if other.state == "downed"
+					then Players:GetPlayerByUserId(other.id)
+					else nil
+				local otherCharacter = if otherPlayer then otherPlayer.Character else nil
+				local otherRoot = if otherCharacter
+					then otherCharacter:FindFirstChild("HumanoidRootPart")
+					else nil
+				if
+					otherRoot
+					and otherRoot:IsA("BasePart")
+					and (otherRoot.Position - here).Magnitude <= Config.player.reviveRadius
+				then
+					prompt = holdWord .. " to revive"
+				end
+			end
+		end
+		interactPrompt.Visible = prompt ~= nil
+		interactPrompt.Text = prompt or ""
 
 		-- Extraction progress.
 		local extracting = view ~= nil and view.state == "alive" and view.extractProgress > 0
