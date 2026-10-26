@@ -47,7 +47,7 @@ Checks that stage 1 leaves to stage 2a, where the loop they would test is replac
 - **The first class, the Elementalist:** Arcane Bolt (basic attack, a burst that pierces one enemy); Fireball (an aimed projectile that bursts and burns); Frost Nova (a ring around the player that chills and knocks back); Chain Lightning (jumps between the four nearest enemies); Blink (the dash). Tags fire, ice and lightning, with three synergies inside one build: shatter (fire on a chilled enemy deals double), conduct (lightning on a burning enemy spreads the burn), brittle (lightning on a chilled enemy lowers its defence).
 - **Perks** are modifiers independent of any one skill: each changes a property that skills can have (projectiles split in three, areas grow, statuses last longer, cooldowns shorten, health rises). About 20 perks; a level-up offers three. Experience comes straight from kills, and enemies can be skipped.
 - **Health:** no regeneration. Potions, up to three carried, drop from camp leaders (and from chests in stage 2b); drinking takes one second and damage interrupts it.
-- **Rigs and animations** for the Elementalist and the 7 archetypes: run, idle, attack, hit, death. Source: open question below.
+- **Rigs and animations** ([ADR-0010](adr/0010-rigs-from-a-store-pack-first.md)): the 7 archetypes from one rigged store pack, the Elementalist on an Auto Setup R15 rig; idle, run, attack, hit and death played by the client from a state the server sends.
 - Downed, revive and extraction as in stage 1 (hold the interact button; a hit or letting go resets).
 
 **Acceptance criteria:**
@@ -89,7 +89,6 @@ Each item below is grilled into a stage when its turn comes: the shop (skins, sh
 
 ## Open questions
 
-- **Rigs and animations for stage 2a**: Roblox's own AI tools, external AI pipelines, Creator Store packs or Rig Builder; decided from the research in progress, before stage 2a starts.
 - Library or own code for saving the profile (ProfileStore or a wrapper over DataStores): stage 4.
 - When `make test-cloud` arrives (ADR-0001 ties it to the adapter growing; stage 4 adds DataStores and teleports).
 - The power numbers of items, skills and classes, and the power limits of the two tiers: stage 5.
@@ -104,6 +103,7 @@ Simplifications are allowed only when listed here, with the stage that removes t
 | Simplification | Removed by |
 |---|---|
 | Greybox environment: room templates from plain shapes | After stage 5, before the release |
+| Enemies from one store pack, players on default R15 rigs | The art stage, with generated creatures (ADR-0010) |
 | The engine adapter is verified in Studio (by an agent through the Studio MCP, or by hand), not by automated tests in the gate | When `make test-cloud` lands (open question) |
 | No persistence: nothing survives a run | Stage 4 |
 | The run place starts runs on its own, without a hub | Stage 4 |

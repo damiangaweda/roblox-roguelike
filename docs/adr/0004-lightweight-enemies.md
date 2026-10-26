@@ -6,3 +6,5 @@ Up to about 150 living enemies per run (the number is configuration) are plain d
 
 - **Humanoid enemies**: the obvious Roblox path, too expensive at horde size.
 - **Fewer enemies (about 50)**: would allow Humanoids, but no longer feels like a horde.
+
+How the clients draw them, with rigs and animations, is [ADR-0010](0010-rigs-from-a-store-pack-first.md).
