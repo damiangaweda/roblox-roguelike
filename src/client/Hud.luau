@@ -1,8 +1,9 @@
 --!strict
--- The stage 1 HUD, built in code: health, level and experience, the skill
--- cooldown (with a button on touch), the run clock, banners, the perk choice,
--- the downed, extraction and end-of-run panels. It only shows state and sends
--- intents through Net (AGENTS.md rule 1).
+-- The HUD, built in code: health, potions, level and experience, the three
+-- active skills and the dash, the run clock, the zone compass, banners, the perk
+-- choice and list, the downed, extraction and end-of-run panels, and the touch
+-- buttons. It only shows state and sends intents through Net or Input
+-- (AGENTS.md rule 1).
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -12,6 +13,7 @@ local UserInputService = game:GetService("UserInputService")
 local Config = require(ReplicatedStorage.Shared.Config)
 local Protocol = require(ReplicatedStorage.Shared.Protocol)
 local Types = require(ReplicatedStorage.Shared.Core.Types)
+local Input = require(script.Parent.Input)
 local Net = require(script.Parent.Net)
 
 local Hud = {}
@@ -21,6 +23,40 @@ local DESIGN_HEIGHT = 720
 local MIN_SCALE = 0.55
 local MAX_SCALE = 1.25
 local BANNER_SECONDS = 4
+local CAMP_BANNER_SECONDS = 2
+local HURT_FLASH_SECONDS = 0.25
+local HURT_FLASH_TRANSPARENCY = 0.7
+local COMPASS_RADIUS = 110
+-- A zone this close (edge to character) is on screen; its arrow is hidden.
+local COMPASS_HIDE_STUDS = 25
+local MAX_SKILL_SLOTS = 3
+local SKILL_KEYS = { "Q", "E", "R" }
+local POTION_SLOT_SIZE = 22
+local POTION_SLOT_STEP = 26
+
+-- What a perk's property is called on a perk button.
+local PROPERTY_LABELS: { [string]: string } = {
+	damage = "Damage",
+	area = "Area size",
+	cooldown = "Cooldowns",
+	attackSpeed = "Attack speed",
+	range = "Range",
+	statusDuration = "Status duration",
+	projectileSplit = "Projectiles",
+	pierce = "Pierce",
+	chainJumps = "Chain jumps",
+	knockback = "Knockback",
+	maxHealth = "Max health",
+	moveSpeed = "Move speed",
+	dashCharges = "Dash charges",
+	dashDistance = "Dash distance",
+	potionCapacity = "Potion slots",
+	potionHeal = "Potion healing",
+	burnDamage = "Burn damage",
+	chillSlow = "Chill slow",
+	synergyBonus = "Synergy bonus",
+	xpGain = "Experience",
+}
 
 local WHITE = Color3.new(1, 1, 1)
 local PANEL_COLOR = Color3.fromRGB(20, 22, 28)
@@ -29,6 +65,8 @@ local HEALTH_COLOR = Color3.fromRGB(214, 69, 65)
 local XP_COLOR = Color3.fromRGB(86, 156, 236)
 local SKILL_COLOR = Color3.fromRGB(120, 200, 120)
 local SKILL_COOLDOWN_COLOR = Color3.fromRGB(110, 114, 126)
+local POTION_COLOR = Color3.fromRGB(214, 69, 65)
+local DASH_COLOR = Color3.fromRGB(150, 210, 240)
 local EXTRACT_COLOR = Color3.fromRGB(240, 196, 70)
 local BLEED_COLOR = Color3.fromRGB(190, 60, 60)
 local REVIVE_COLOR = Color3.fromRGB(110, 210, 150)
@@ -45,6 +83,25 @@ type Bar = {
 	root: Frame,
 	fill: Frame,
 	label: TextLabel,
+}
+
+type SkillSlot = {
+	root: Frame,
+	overlay: Frame,
+	name: TextLabel,
+	key: TextLabel,
+	time: TextLabel,
+}
+
+type Pip = {
+	root: Frame,
+	fill: Frame,
+}
+
+type Arrow = {
+	root: Frame,
+	arrow: TextLabel,
+	distance: TextLabel,
 }
 
 local function round(parent: GuiObject, radius: number)
@@ -120,6 +177,27 @@ local function formatTime(seconds: number): string
 	return string.format("%d:%02d", whole // 60, whole % 60)
 end
 
+-- "1.15" for 1.15, "1.5" for 1.50, "1" for 1.00.
+local function trimNumber(value: number): string
+	local text = string.format("%.2f", value)
+	text = (string.gsub(text, "0+$", ""))
+	text = (string.gsub(text, "%.$", ""))
+	return text
+end
+
+-- What a perk changes, in a plain sentence: "Damage ×1.15" or "Max health +25".
+local function describePerk(perk: Types.PerkConfig): string
+	local label = PROPERTY_LABELS[perk.property] or perk.property
+	local parts: { string } = {}
+	if perk.mul then
+		table.insert(parts, "×" .. trimNumber(perk.mul))
+	end
+	if perk.add then
+		table.insert(parts, string.format("%+g", perk.add))
+	end
+	return label .. " " .. table.concat(parts, " ")
+end
+
 local started = false
 
 function Hud.start()
@@ -130,7 +208,7 @@ function Hud.start()
 
 	local player = Players.LocalPlayer
 	local userId = player.UserId
-	local touch = UserInputService.TouchEnabled
+	local touch = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
 
 	local gui = Instance.new("ScreenGui")
 	gui.Name = "Hud"
@@ -145,30 +223,73 @@ function Hud.start()
 	local uiScale = Instance.new("UIScale")
 	uiScale.Parent = root
 
-	-- Top left: health, experience, kills.
+	-- Hurt flash: a red wash that fades out; behind every panel.
+	local hurtFlash =
+		newFrame(root, "HurtFlash", UDim2.fromScale(1, 1), UDim2.new(), BLEED_COLOR, 1)
+
+	-- Top left: health, potions, experience, kills.
 	local stats = newFrame(
 		root,
 		"Stats",
-		UDim2.fromOffset(280, 100),
+		UDim2.fromOffset(280, 120),
 		UDim2.fromOffset(16, 16),
 		PANEL_COLOR,
 		1
 	)
 	local healthBar =
 		newBar(stats, "Health", UDim2.fromOffset(280, 28), UDim2.new(), HEALTH_COLOR, 18)
+
+	local potionRow = newFrame(
+		stats,
+		"Potions",
+		UDim2.fromOffset(280, POTION_SLOT_SIZE),
+		UDim2.fromOffset(0, 34),
+		PANEL_COLOR,
+		1
+	)
+	local potionSlots: { Frame } = {}
+	local potionHint = newLabel(
+		potionRow,
+		"Hint",
+		UDim2.fromOffset(20, POTION_SLOT_SIZE),
+		UDim2.new(),
+		14,
+		FONT_BOLD
+	)
+	potionHint.Text = if touch then "" else "C"
+	local drinkBar = newBar(
+		potionRow,
+		"Drinking",
+		UDim2.fromOffset(120, POTION_SLOT_SIZE),
+		UDim2.fromOffset(160, 0),
+		POTION_COLOR,
+		13
+	)
+	drinkBar.root.Visible = false
+	local shownCapacity = 0
+
 	local xpBar = newBar(
 		stats,
 		"Experience",
 		UDim2.fromOffset(280, 22),
-		UDim2.fromOffset(0, 34),
+		UDim2.fromOffset(0, 62),
 		XP_COLOR,
 		15
 	)
 	local killsLabel =
-		newLabel(stats, "Kills", UDim2.fromOffset(280, 22), UDim2.fromOffset(0, 62), 16, FONT)
+		newLabel(stats, "Kills", UDim2.fromOffset(280, 22), UDim2.fromOffset(0, 90), 16, FONT)
 	killsLabel.TextXAlignment = Enum.TextXAlignment.Left
 
-	-- Top centre: run clock, zone note, banner.
+	-- Right edge: the perks taken so far.
+	local perkList =
+		newLabel(root, "PerkList", UDim2.fromOffset(200, 0), UDim2.new(1, -16, 0, 16), 16, FONT)
+	perkList.AnchorPoint = Vector2.new(1, 0)
+	perkList.AutomaticSize = Enum.AutomaticSize.Y
+	perkList.TextXAlignment = Enum.TextXAlignment.Right
+	perkList.TextYAlignment = Enum.TextYAlignment.Top
+	local shownPerkList = ""
+
+	-- Top centre: run clock, flood note, banner.
 	local clockLabel = newLabel(
 		root,
 		"Clock",
@@ -177,8 +298,14 @@ function Hud.start()
 		30,
 		FONT_BOLD
 	)
-	local zoneLabel =
-		newLabel(root, "ZoneNote", UDim2.fromOffset(460, 22), UDim2.new(0.5, -230, 0, 48), 16, FONT)
+	local floodLabel = newLabel(
+		root,
+		"FloodNote",
+		UDim2.fromOffset(460, 22),
+		UDim2.new(0.5, -230, 0, 48),
+		16,
+		FONT
+	)
 	local bannerLabel = newLabel(
 		root,
 		"Banner",
@@ -189,6 +316,35 @@ function Hud.start()
 	)
 	bannerLabel.TextColor3 = EXTRACT_COLOR
 	bannerLabel.Visible = false
+
+	-- The zone compass: one arrow per extraction zone on a ring around the screen centre.
+	local compass =
+		newFrame(root, "Compass", UDim2.fromOffset(0, 0), UDim2.fromScale(0.5, 0.5), PANEL_COLOR, 1)
+	local arrows: { Arrow } = {}
+	local function newArrow(index: number): Arrow
+		local frame = newFrame(
+			compass,
+			"Zone" .. index,
+			UDim2.fromOffset(56, 48),
+			UDim2.new(),
+			PANEL_COLOR,
+			1
+		)
+		frame.AnchorPoint = Vector2.new(0.5, 0.5)
+		local arrow = newLabel(frame, "Arrow", UDim2.fromOffset(56, 28), UDim2.new(), 26, FONT_BOLD)
+		arrow.Text = "▲"
+		arrow.TextColor3 = EXTRACT_COLOR
+		local distance = newLabel(
+			frame,
+			"Distance",
+			UDim2.fromOffset(56, 18),
+			UDim2.fromOffset(0, 28),
+			14,
+			FONT_BOLD
+		)
+		distance.TextColor3 = EXTRACT_COLOR
+		return { root = frame, arrow = arrow, distance = distance }
+	end
 
 	-- Extraction progress, above the middle of the screen.
 	local extractBar = newBar(
@@ -201,62 +357,139 @@ function Hud.start()
 	)
 	extractBar.root.Visible = false
 
-	-- Skill cooldown, bottom centre; touch adds a large button.
-	local skillBar = newBar(
+	-- Bottom centre: the three active skills, then the dash.
+	local skillRow = newFrame(
 		root,
-		"Skill",
-		UDim2.fromOffset(260, 24),
-		UDim2.new(0.5, -130, 1, -44),
-		SKILL_COLOR,
-		15
+		"Skills",
+		UDim2.fromOffset(376, 60),
+		UDim2.new(0.5, -188, 1, -76),
+		PANEL_COLOR,
+		1
 	)
-	local skillButton: TextButton? = nil
-	if touch then
-		local button = Instance.new("TextButton")
-		button.Name = "SkillButton"
-		button.AnchorPoint = Vector2.new(1, 1)
-		button.Position = UDim2.new(1, -36, 1, -36)
-		button.Size = UDim2.fromOffset(130, 130)
-		button.BackgroundColor3 = SKILL_COLOR
-		button.BackgroundTransparency = 0.15
-		button.BorderSizePixel = 0
-		button.AutoButtonColor = true
-		button.Font = FONT_BOLD
-		button.TextSize = 26
-		button.TextColor3 = WHITE
-		button.TextStrokeTransparency = 0.6
-		button.Text = "SKILL"
-		button.Parent = root
-		round(button, 65)
-		button.Activated:Connect(function()
-			Net.useActiveSkill(nil)
-		end)
-		skillButton = button
+	local skillSlots: { SkillSlot } = {}
+	for index = 1, MAX_SKILL_SLOTS do
+		local slot = newFrame(
+			skillRow,
+			"Skill" .. index,
+			UDim2.fromOffset(120, 60),
+			UDim2.fromOffset((index - 1) * 128, 0),
+			SKILL_COLOR,
+			0.25
+		)
+		round(slot, 8)
+		-- Drains from full to empty as the cooldown runs out.
+		local overlay =
+			newFrame(slot, "Cooldown", UDim2.fromScale(0, 1), UDim2.new(), PANEL_COLOR, 0.35)
+		round(overlay, 8)
+		local name =
+			newLabel(slot, "Name", UDim2.new(1, -8, 0, 24), UDim2.fromOffset(4, 6), 17, FONT_BOLD)
+		local key =
+			newLabel(slot, "Key", UDim2.fromOffset(40, 20), UDim2.new(0, 6, 1, -24), 15, FONT_BOLD)
+		key.TextXAlignment = Enum.TextXAlignment.Left
+		key.Text = if touch then "" else (SKILL_KEYS[index] or "")
+		local time = newLabel(
+			slot,
+			"Time",
+			UDim2.fromOffset(60, 20),
+			UDim2.new(1, -66, 1, -24),
+			15,
+			FONT_BOLD
+		)
+		time.TextXAlignment = Enum.TextXAlignment.Right
+		skillSlots[index] = {
+			root = slot,
+			overlay = overlay,
+			name = name,
+			key = key,
+			time = time,
+		}
+	end
 
-		-- Held, not tapped: revive and extraction take seconds.
-		local interact = Instance.new("TextButton")
-		interact.Name = "InteractButton"
-		interact.AnchorPoint = Vector2.new(1, 1)
-		interact.Position = UDim2.new(1, -186, 1, -36)
-		interact.Size = UDim2.fromOffset(100, 100)
-		interact.BackgroundColor3 = EXTRACT_COLOR
-		interact.BackgroundTransparency = 0.15
-		interact.BorderSizePixel = 0
-		interact.Font = FONT_BOLD
-		interact.TextSize = 18
-		interact.TextColor3 = WHITE
-		interact.TextStrokeTransparency = 0.6
-		interact.Text = "HOLD"
-		interact.Parent = root
-		round(interact, 50)
+	local dashPanel = newFrame(
+		root,
+		"Dash",
+		UDim2.fromOffset(120, 60),
+		UDim2.new(0.5, 194, 1, -76),
+		PANEL_COLOR,
+		0.25
+	)
+	round(dashPanel, 8)
+	local pipRow =
+		newFrame(dashPanel, "Pips", UDim2.new(1, 0, 0, 28), UDim2.fromOffset(0, 6), PANEL_COLOR, 1)
+	local pipLayout = Instance.new("UIListLayout")
+	pipLayout.FillDirection = Enum.FillDirection.Horizontal
+	pipLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	pipLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+	pipLayout.Padding = UDim.new(0, 6)
+	pipLayout.Parent = pipRow
+	local pips: { Pip } = {}
+	local dashKey =
+		newLabel(dashPanel, "Key", UDim2.new(1, 0, 0, 20), UDim2.new(0, 0, 1, -24), 15, FONT_BOLD)
+	dashKey.Text = if touch then "Dash" else "Space"
+
+	-- Touch: a cluster of large round buttons in the bottom-right corner, kept
+	-- clear of the aim pad above it. Skills in the bottom row, dash, potion and
+	-- hold above. Held, not tapped, for interact: revive and extraction take seconds.
+	local skillButtons: { TextButton } = {}
+	local dashButton: TextButton? = nil
+	local potionButton: TextButton? = nil
+	if touch then
+		local function newButton(
+			name: string,
+			text: string,
+			color: Color3,
+			column: number,
+			row: number
+		): TextButton
+			local button = Instance.new("TextButton")
+			button.Name = name
+			button.AnchorPoint = Vector2.new(1, 1)
+			button.Position = UDim2.new(1, -16 - column * 84, 1, -16 - row * 84)
+			button.Size = UDim2.fromOffset(76, 76)
+			button.BackgroundColor3 = color
+			button.BackgroundTransparency = 0.15
+			button.BorderSizePixel = 0
+			button.AutoButtonColor = true
+			button.Font = FONT_BOLD
+			button.TextSize = 15
+			button.TextColor3 = WHITE
+			button.TextStrokeTransparency = 0.6
+			button.Text = text
+			button.Parent = root
+			round(button, 38)
+			return button
+		end
+
+		for index = 1, MAX_SKILL_SLOTS do
+			local button =
+				newButton("SkillButton" .. index, "SKILL " .. index, SKILL_COLOR, index - 1, 0)
+			button.Activated:Connect(function()
+				Input.useSkill(index)
+			end)
+			skillButtons[index] = button
+		end
+
+		local dash = newButton("DashButton", "DASH", DASH_COLOR, 0, 1)
+		dash.Activated:Connect(function()
+			Input.dash()
+		end)
+		dashButton = dash
+
+		local potion = newButton("PotionButton", "POTION", POTION_COLOR, 1, 1)
+		potion.Activated:Connect(function()
+			Input.drink()
+		end)
+		potionButton = potion
+
+		local interact = newButton("InteractButton", "HOLD", EXTRACT_COLOR, 2, 1)
 		interact.MouseButton1Down:Connect(function()
-			Net.interact(true)
+			Input.interact(true)
 		end)
 		interact.MouseButton1Up:Connect(function()
-			Net.interact(false)
+			Input.interact(false)
 		end)
 		interact.MouseLeave:Connect(function()
-			Net.interact(false)
+			Input.interact(false)
 		end)
 	end
 
@@ -265,20 +498,20 @@ function Hud.start()
 		root,
 		"InteractPrompt",
 		UDim2.fromOffset(420, 26),
-		UDim2.new(0.5, -210, 1, -110),
+		UDim2.new(0.5, -210, 1, -112),
 		20,
 		FONT_BOLD
 	)
 	interactPrompt.Visible = false
-	local holdWord = if touch then "Hold HOLD" else "Hold E"
+	local holdWord = if touch then "Hold HOLD" else "Hold F"
 
 	-- Perk choice: a row of buttons that leaves the middle and the corners free
 	-- for movement.
 	local perkPanel = newFrame(
 		root,
 		"Perks",
-		UDim2.fromOffset(640, 150),
-		UDim2.new(0.5, -320, 0.62, 0),
+		UDim2.fromOffset(660, 170),
+		UDim2.new(0.5, -330, 0.6, 0),
 		PANEL_COLOR,
 		1
 	)
@@ -355,9 +588,9 @@ function Hud.start()
 	summary.Visible = false
 
 	-- What the HUD remembers between frames.
-	local selfAt = os.clock()
 	local lastWorldTime = -1
 	local bannerUntil = 0
+	local hurtAt = -math.huge
 	local ended = false
 	-- The run time when the local player extracted or died, and which.
 	local finishedAt: number? = nil
@@ -368,10 +601,10 @@ function Hud.start()
 		return if snapshot then snapshot.world.time else 0
 	end
 
-	local function showBanner(text: string)
+	local function showBanner(text: string, seconds: number)
 		bannerLabel.Text = text
 		bannerLabel.Visible = true
-		bannerUntil = os.clock() + BANNER_SECONDS
+		bannerUntil = os.clock() + seconds
 	end
 
 	local function resetRun()
@@ -381,6 +614,7 @@ function Hud.start()
 		summary.Visible = false
 		bannerLabel.Visible = false
 		bannerUntil = 0
+		hurtAt = -math.huge
 	end
 
 	local function localView(snapshot: Net.Snapshot?): Protocol.PlayerView?
@@ -432,12 +666,15 @@ function Hud.start()
 	end
 
 	Net.onEvents(function(events: { Types.Event })
-		selfAt = os.clock()
 		for _, event in events do
-			if event.kind == "zonesOpened" then
-				showBanner("Extraction zones are open")
-			elseif event.kind == "flood" then
-				showBanner("The horde floods the map")
+			if event.kind == "flood" then
+				showBanner("The horde floods the map", BANNER_SECONDS)
+			elseif event.kind == "campAlerted" then
+				showBanner("A camp notices you", CAMP_BANNER_SECONDS)
+			elseif event.kind == "levelUp" and event.player == userId then
+				showBanner("Level " .. event.level, BANNER_SECONDS)
+			elseif event.kind == "playerHurt" and event.player == userId then
+				hurtAt = os.clock()
 			elseif event.kind == "died" and event.player == userId then
 				finishedAt = finishedAt or worldTime()
 				outcome = "Died"
@@ -467,24 +704,34 @@ function Hud.start()
 		if offer == nil then
 			return
 		end
+		local taken = if Net.self then Net.self.perks else {}
 		for index, id in offer do
 			local perk = Config.perks.pool[id]
 			local button = Instance.new("TextButton")
 			button.Name = "Perk" .. index
 			button.LayoutOrder = index
-			button.Size = UDim2.fromOffset(200, 104)
+			button.Size = UDim2.fromOffset(204, 124)
 			button.BackgroundColor3 = PANEL_COLOR
 			button.BackgroundTransparency = 0.1
 			button.BorderSizePixel = 0
 			button.AutoButtonColor = true
 			button.Font = FONT_BOLD
-			button.TextSize = 20
+			button.TextSize = 18
 			button.TextColor3 = WHITE
 			button.TextWrapped = true
-			local name = if perk then perk.name else id
-			local tags = if perk and #perk.tags > 0 then table.concat(perk.tags, ", ") else "no tag"
 			local prefix = if touch then "" else index .. ". "
-			button.Text = prefix .. name .. "\n[" .. tags .. "]"
+			if perk then
+				button.Text = string.format(
+					"%s%s\n%s\n(%d/%d)",
+					prefix,
+					perk.name,
+					describePerk(perk),
+					taken[id] or 0,
+					perk.maxStacks
+				)
+			else
+				button.Text = prefix .. id
+			end
 			button.Parent = perkRow
 			round(button, 8)
 			button.Activated:Connect(function()
@@ -525,6 +772,184 @@ function Hud.start()
 		updateScale()
 	end)
 
+	-- Builds or hides potion slots to match the capacity.
+	local function setPotionCapacity(capacity: number)
+		if capacity == shownCapacity then
+			return
+		end
+		shownCapacity = capacity
+		for index = #potionSlots + 1, capacity do
+			local slot = newFrame(
+				potionRow,
+				"Slot" .. index,
+				UDim2.fromOffset(POTION_SLOT_SIZE, POTION_SLOT_SIZE),
+				UDim2.fromOffset((index - 1) * POTION_SLOT_STEP, 0),
+				TRACK_COLOR,
+				0.15
+			)
+			round(slot, 11)
+			potionSlots[index] = slot
+		end
+		for index, slot in potionSlots do
+			slot.Visible = index <= capacity
+		end
+		potionHint.Position = UDim2.fromOffset(capacity * POTION_SLOT_STEP + 2, 0)
+	end
+
+	local function updatePotions(
+		selfView: Protocol.SelfView?,
+		view: Protocol.PlayerView?,
+		now: number
+	)
+		local capacity = if selfView then selfView.potionCapacity else Config.player.potionCapacity
+		local potions = if selfView then selfView.potions else 0
+		setPotionCapacity(capacity)
+		for index, slot in potionSlots do
+			slot.BackgroundColor3 = if index <= potions then POTION_COLOR else TRACK_COLOR
+		end
+		local snapshot = Net.latest
+		local drinking = 0
+		if view and snapshot and view.drinkingFor > 0 then
+			drinking = math.max(0, view.drinkingFor - (now - snapshot.receivedAt))
+		end
+		drinkBar.root.Visible = drinking > 0
+		if drinking > 0 then
+			setBar(drinkBar, 1 - drinking / Config.player.drinkSeconds, "Drinking…")
+		end
+		if potionButton then
+			potionButton.BackgroundColor3 = if potions > 0
+				then POTION_COLOR
+				else SKILL_COOLDOWN_COLOR
+			potionButton.Text = string.format("POTION\n%d", potions)
+		end
+	end
+
+	local function updateSkills(selfView: Protocol.SelfView?, now: number)
+		local elapsed = now - Net.selfAt
+		local actives = Config.classes.elementalist.actives
+		for index = 1, MAX_SKILL_SLOTS do
+			local slot = skillSlots[index]
+			local skill = if selfView then selfView.skills[index] else nil
+			local remaining = 0
+			local fraction = 0
+			if skill then
+				remaining = skill.readyIn - elapsed
+				fraction = if skill.cooldown > 0
+					then math.clamp(remaining / skill.cooldown, 0, 1)
+					else 0
+			end
+			local cooling = remaining > 0
+			slot.name.Text = if skill
+				then skill.name
+				else (actives[index] and actives[index].name or "")
+			slot.root.BackgroundColor3 = if cooling then SKILL_COOLDOWN_COLOR else SKILL_COLOR
+			slot.overlay.Size = UDim2.fromScale(if cooling then fraction else 0, 1)
+			slot.time.Text = if cooling then string.format("%.1f", remaining) else ""
+			local button = skillButtons[index]
+			if button then
+				button.BackgroundColor3 = if cooling then SKILL_COOLDOWN_COLOR else SKILL_COLOR
+				button.Text = if cooling
+					then string.format("%.1f", remaining)
+					else "SKILL " .. index
+			end
+		end
+	end
+
+	local function updateDash(selfView: Protocol.SelfView?, now: number)
+		local maxCharges = if selfView then selfView.dashMaxCharges else 0
+		local charges = if selfView then selfView.dashCharges else 0
+		for index = #pips + 1, maxCharges do
+			local pip = newFrame(
+				pipRow,
+				"Pip" .. index,
+				UDim2.fromOffset(24, 24),
+				UDim2.new(),
+				TRACK_COLOR,
+				0.15
+			)
+			pip.LayoutOrder = index
+			round(pip, 12)
+			local fill =
+				newFrame(pip, "Fill", UDim2.fromScale(1, 0), UDim2.fromScale(0, 1), DASH_COLOR, 0)
+			fill.AnchorPoint = Vector2.new(0, 1)
+			round(fill, 12)
+			pips[index] = { root = pip, fill = fill }
+		end
+		local recharge = Config.classes.elementalist.dash.rechargeSeconds
+		local rechargeLeft = if selfView then selfView.dashRechargeIn - (now - Net.selfAt) else 0
+		for index, pip in pips do
+			pip.root.Visible = index <= maxCharges
+			if index <= charges then
+				pip.fill.Size = UDim2.fromScale(1, 1)
+			elseif index == charges + 1 and recharge > 0 then
+				pip.fill.Size = UDim2.fromScale(1, math.clamp(1 - rechargeLeft / recharge, 0, 1))
+			else
+				pip.fill.Size = UDim2.fromScale(1, 0)
+			end
+		end
+		if dashButton then
+			dashButton.BackgroundColor3 = if charges > 0 then DASH_COLOR else SKILL_COOLDOWN_COLOR
+			dashButton.Text = string.format("DASH\n%d", charges)
+		end
+	end
+
+	-- The perks taken, one per line, sorted by name; the text is set only on a change.
+	local function updatePerkList(selfView: Protocol.SelfView?)
+		local entries: { string } = {}
+		if selfView then
+			for id, stacks in selfView.perks do
+				local perk = Config.perks.pool[id]
+				table.insert(
+					entries,
+					string.format("%s ×%d", if perk then perk.name else id, stacks)
+				)
+			end
+			table.sort(entries)
+		end
+		local text = table.concat(entries, "\n")
+		if text ~= shownPerkList then
+			shownPerkList = text
+			perkList.Text = text
+		end
+	end
+
+	-- Points one arrow per zone from the character toward it; none for a zone already on screen.
+	local function updateCompass(
+		snapshot: Net.Snapshot?,
+		view: Protocol.PlayerView?,
+		ownRoot: BasePart?
+	)
+		local zones = if snapshot
+				and view
+				and view.state == "alive"
+				and ownRoot
+			then snapshot.world.zones
+			else {}
+		for index = #arrows + 1, #zones do
+			arrows[index] = newArrow(index)
+		end
+		for index, arrow in arrows do
+			local zone = zones[index]
+			local visible = false
+			if zone and ownRoot then
+				local dx = zone.x - ownRoot.Position.X
+				local dz = zone.z - ownRoot.Position.Z
+				local distance = math.sqrt(dx * dx + dz * dz)
+				if distance - zone.radius > COMPASS_HIDE_STUDS and distance > 0 then
+					visible = true
+					arrow.root.Position = UDim2.fromOffset(
+						dx / distance * COMPASS_RADIUS,
+						dz / distance * COMPASS_RADIUS
+					)
+					-- World +x is screen right and +z screen down; the arrow points up at 0.
+					arrow.arrow.Rotation = math.deg(math.atan2(dx, -dz))
+					arrow.distance.Text = tostring(math.floor(distance + 0.5))
+				end
+			end
+			arrow.root.Visible = visible
+		end
+	end
+
 	local function render()
 		local now = os.clock()
 		local snapshot = Net.latest
@@ -561,8 +986,16 @@ function Hud.start()
 			setBar(xpBar, 0, "")
 			killsLabel.Text = ""
 		end
+		updatePotions(selfView, view, now)
+		updatePerkList(selfView)
 
-		-- Run clock and zone note; the clock runs on between snapshots and
+		-- Hurt flash.
+		local sinceHurt = now - hurtAt
+		hurtFlash.BackgroundTransparency = if sinceHurt < HURT_FLASH_SECONDS
+			then HURT_FLASH_TRANSPARENCY + (1 - HURT_FLASH_TRANSPARENCY) * sinceHurt / HURT_FLASH_SECONDS
+			else 1
+
+		-- Run clock and flood note; the clock runs on between snapshots and
 		-- freezes once the run has ended.
 		local duration = if snapshot
 			then snapshot.world.durationSeconds
@@ -575,40 +1008,16 @@ function Hud.start()
 			end
 		end
 		clockLabel.Text = formatTime(runTime)
-		if runTime < Config.run.zonesOpenAtSeconds then
-			zoneLabel.Text = "Extraction zones open in "
-				.. formatTime(Config.run.zonesOpenAtSeconds - runTime)
-		elseif runTime < duration then
-			zoneLabel.Text = "Zones are open - the horde floods in "
-				.. formatTime(duration - runTime)
-		else
-			zoneLabel.Text = ""
-		end
+		floodLabel.Text = if runTime < duration
+			then "flood in " .. formatTime(duration - runTime)
+			else ""
 		if bannerLabel.Visible and now >= bannerUntil then
 			bannerLabel.Visible = false
 		end
 
-		-- Skill cooldown, counted down locally between event batches.
-		local ready = true
-		local skillText = "Skill ready"
-		local skillFraction = 1
-		local remaining = 0
-		if selfView then
-			remaining = selfView.activeSkillReadyIn - (now - selfAt)
-			if remaining > 0 then
-				ready = false
-				skillText = string.format("Skill %.1f s", remaining)
-				skillFraction = if selfView.activeSkillCooldown > 0
-					then 1 - remaining / selfView.activeSkillCooldown
-					else 0
-			end
-		end
-		skillBar.fill.BackgroundColor3 = if ready then SKILL_COLOR else SKILL_COOLDOWN_COLOR
-		setBar(skillBar, skillFraction, skillText)
-		if skillButton then
-			skillButton.BackgroundColor3 = if ready then SKILL_COLOR else SKILL_COOLDOWN_COLOR
-			skillButton.Text = if ready then "SKILL" else string.format("%.1f", remaining)
-		end
+		-- Skills and dash, counted down locally between event batches.
+		updateSkills(selfView, now)
+		updateDash(selfView, now)
 
 		-- Perk choice.
 		-- Only a player still in the run can choose; the summary hides the panel.
@@ -617,12 +1026,13 @@ function Hud.start()
 			and not summary.Visible
 		showOffer(if selfView and choosing then selfView.offer else nil)
 
-		-- The interact prompt, from where the local character stands.
+		-- The interact prompt and the zone compass, from where the local character stands.
 		local prompt: string? = nil
 		local character = Players.LocalPlayer.Character
 		local ownRoot = if character then character:FindFirstChild("HumanoidRootPart") else nil
-		if view and view.state == "alive" and snapshot and ownRoot and ownRoot:IsA("BasePart") then
-			local here = ownRoot.Position
+		local ownPart = if ownRoot and ownRoot:IsA("BasePart") then ownRoot else nil
+		if view and view.state == "alive" and snapshot and ownPart then
+			local here = ownPart.Position
 			for _, zone in snapshot.world.zones do
 				if (Vector3.new(zone.x, here.Y, zone.z) - here).Magnitude <= zone.radius then
 					prompt = holdWord .. " to extract"
@@ -647,6 +1057,7 @@ function Hud.start()
 		end
 		interactPrompt.Visible = prompt ~= nil
 		interactPrompt.Text = prompt or ""
+		updateCompass(if summary.Visible then nil else snapshot, view, ownPart)
 
 		-- Extraction progress.
 		local extracting = view ~= nil and view.state == "alive" and view.extractProgress > 0

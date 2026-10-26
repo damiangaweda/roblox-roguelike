@@ -1,28 +1,30 @@
 --!strict
--- The server adapter (ADR-0002): builds the arena, owns the run lifecycle and
+-- The server adapter (ADR-0002): builds the world, owns the run lifecycle and
 -- drives the pure core in fixed steps. The only things it reads from the world
--- are character positions and parsed intents (AGENTS.md rule 1).
+-- are character positions and facings, and parsed intents (AGENTS.md rule 1).
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
 local Config = require(ReplicatedStorage.Shared.Config)
+local Life = require(ReplicatedStorage.Shared.Core.Life)
 local Progression = require(ReplicatedStorage.Shared.Core.Progression)
 local Protocol = require(ReplicatedStorage.Shared.Protocol)
 local Run = require(ReplicatedStorage.Shared.Core.Run)
 local Types = require(ReplicatedStorage.Shared.Core.Types)
 
-local Arena = require(script.Parent.Arena)
 local Characters = require(script.Parent.Characters)
 local Network = require(script.Parent.Network)
+local WorldBuilder = require(script.Parent.WorldBuilder)
 
 local STEP_SECONDS = 1 / Config.net.stepHz
 local SNAPSHOT_SECONDS = 1 / Config.net.snapshotHz
 -- A slow frame catches up with at most this many steps; the rest is dropped.
 local MAX_STEPS_PER_FRAME = 5
 
-local kindNames = Protocol.kindNames(Config)
+local archetypeNames = Protocol.archetypeNames(Config)
+local projectileKinds = Protocol.projectileKinds(Config)
 
 local run: Types.Run? = nil
 -- True while a run is being set up, which can yield on respawning characters.
@@ -52,10 +54,12 @@ local function deepCopy(value: any): any
 	return copy
 end
 
--- Studio only: a heavy run for the performance check (plan, criterion 7).
+-- Studio only: a heavy run for the performance check (plan, criterion 6): a
+-- world full of patrols and an unkillable player.
 local function perfConfig(): Types.Config
 	local config = deepCopy(Config) :: Types.Config
-	config.horde.spawnPerSecondAtStart = 100
+	config.enemies.patrols.groupsAtStart = 25
+	config.enemies.patrols.sizeAtStart = 8
 	config.player.maxHealth = 1e6
 	return config
 end
@@ -64,16 +68,12 @@ local function perfRequested(): boolean
 	return RunService:IsStudio() and workspace:GetAttribute("PerfTest") == true
 end
 
+-- Adds a player to the run and moves their character to the start room.
 local function joinRun(current: Types.Run, player: Player)
-	local position = Characters.position(player)
-	Run.addPlayer(
-		current,
-		player.UserId,
-		if position then position.x else 0,
-		if position then position.z else 0
-	)
+	local core = Run.addPlayer(current, player.UserId)
 	members[player.UserId] = player
 	seen[player.UserId] = true
+	Characters.teleport(player, core.x, core.z)
 end
 
 -- Starts a run with everyone present, respawning them first if asked to.
@@ -102,7 +102,8 @@ local function startRun(respawn: boolean)
 	if #present > 0 then
 		perfRun = perfRequested()
 		local config = if perfRun then perfConfig() else Config
-		local fresh = Run.new(config, Random.new():NextInteger(1, 2 ^ 31 - 2))
+		local fresh = Run.new(config, Random.new():NextInteger(1, 2 ^ 31 - 2), #present)
+		WorldBuilder.build(fresh.world, config)
 		for _, player in present do
 			joinRun(fresh, player)
 		end
@@ -115,6 +116,19 @@ local function startRun(respawn: boolean)
 end
 
 local function onPlayerAdded(player: Player)
+	-- A respawned character appears at the origin; the run says where it belongs.
+	player.CharacterAdded:Connect(function()
+		local current = run
+		local core = if current then current.players[player.UserId] else nil
+		if core then
+			task.defer(Characters.teleport, player, core.x, core.z)
+		elseif current and #current.world.startRooms > 0 then
+			-- A spectator waits in a start room, out of the camps' way.
+			local room = current.world.rooms[current.world.startRooms[1]]
+			task.defer(Characters.teleport, player, room.x, room.z)
+		end
+	end)
+
 	if starting then
 		-- The run being set up picks the player up.
 		return
@@ -148,14 +162,32 @@ end
 local function selfViews(current: Types.Run): { [number]: Protocol.SelfView }
 	local views = {}
 	for id, player in current.players do
+		local class = Run.class(current, player)
+		local skills: { Protocol.SkillView } = {}
+		for index, active in class.actives do
+			table.insert(skills, {
+				id = active.id,
+				name = active.name,
+				readyIn = math.max(0, (player.skillReadyAt[index] or 0) - current.time),
+				cooldown = active.cooldownSeconds,
+			})
+		end
+		local maxCharges = Run.dashMaxCharges(current, player)
 		views[id] = {
 			level = player.level,
 			xp = player.xp,
 			xpToNext = Progression.xpToNext(current.config, player.level),
-			activeSkillReadyIn = math.max(0, player.activeSkillReadyAt - current.time),
-			activeSkillCooldown = current.config.activeSkill.cooldownSeconds,
 			kills = player.kills,
 			offer = player.offers[1],
+			perks = player.perks,
+			skills = skills,
+			dashCharges = player.dashCharges,
+			dashMaxCharges = maxCharges,
+			dashRechargeIn = if player.dashCharges < maxCharges
+				then math.max(0, player.dashRechargeAt - current.time)
+				else 0,
+			potions = player.potions,
+			potionCapacity = Life.potionCapacity(current, player),
 		}
 	end
 	return views
@@ -164,9 +196,9 @@ end
 local function gatherInputs(): { [number]: Types.PlayerInput }
 	local inputs = {}
 	for id, player in members do
-		local position = Characters.position(player)
-		if position then
-			inputs[id] = position
+		local input = Characters.input(player)
+		if input then
+			inputs[id] = input
 		end
 	end
 	return inputs
@@ -177,12 +209,21 @@ local function onIntent(player: Player, intent: Protocol.Intent)
 	if current == nil then
 		return
 	end
-	if intent.kind == "activeSkill" then
-		Run.useActiveSkill(current, player.UserId, intent.aim)
-	elseif intent.kind == "perk" then
-		Run.choosePerk(current, player.UserId, intent.index)
+	local id = player.UserId
+	if intent.kind == "fire" then
+		Run.setFiring(current, id, intent.held)
+	elseif intent.kind == "skill" then
+		Run.useSkill(current, id, intent.index, intent.aimDistance)
+	elseif intent.kind == "dash" then
+		Run.dash(current, id)
+	elseif intent.kind == "drink" then
+		Run.drink(current, id)
 	elseif intent.kind == "interact" then
-		Run.setInteracting(current, player.UserId, intent.held)
+		Run.setInteracting(current, id, intent.held)
+	elseif intent.kind == "perk" then
+		Run.choosePerk(current, id, intent.index)
+	elseif intent.kind == "assist" then
+		Run.setAssist(current, id, intent.enabled)
 	end
 end
 
@@ -229,7 +270,7 @@ local function onHeartbeat(dt: number)
 	for id, player in members do
 		local core = current.players[id]
 		if core then
-			Characters.apply(player, core.state)
+			Characters.apply(player, core.state, Run.walkSpeed(current, core))
 			Characters.hold(player, core.x, core.z)
 		end
 	end
@@ -237,7 +278,7 @@ local function onHeartbeat(dt: number)
 	snapshotAccumulator += dt
 	if snapshotAccumulator >= SNAPSHOT_SECONDS then
 		snapshotAccumulator %= SNAPSHOT_SECONDS
-		Network.sendWorld(current, kindNames)
+		Network.sendWorld(current, archetypeNames, projectileKinds)
 		Network.sendEvents(pending, selfViews(current))
 		pending = {}
 	end
@@ -251,7 +292,6 @@ local function onHeartbeat(dt: number)
 end
 
 Network.init(Config)
-Arena.build(Config)
 Network.onIntent(onIntent)
 
 Players.PlayerAdded:Connect(onPlayerAdded)

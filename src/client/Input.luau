@@ -1,14 +1,90 @@
 --!strict
--- Keyboard and mouse: the left mouse button or Q fires the active skill at the
--- point where the mouse ray meets the ground; holding E interacts (revives or
--- extracts). The server decides what happens.
+-- Raw input: the character faces the aim (the server reads the facing from the
+-- root part, so facing the aim is sending it), the basic attack fires while held,
+-- three active skills, the dash, drinking and interacting. PC, touch (an aim pad on
+-- the right of the screen) and gamepad. The client only sends intents and moves its
+-- own character; the server decides what happens (AGENTS.md rule 1). The Hud's
+-- on-screen buttons call the exported functions.
 
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 
+local Config = require(ReplicatedStorage.Shared.Config)
 local Net = require(script.Parent.Net)
 
 local Input = {}
+
+-- How long a dash or a knockback takes to carry the character over its distance.
+local DASH_SECONDS = 0.12
+-- A dash or knockback stops this far before a wall.
+local WALL_MARGIN = 1.5
+-- The aim pad is the right part of the screen; a drag longer than this aims and fires.
+local PAD_REGION = 0.45
+local PAD_DEADZONE = 12
+-- The gamepad's right stick below this deflection gives no aim.
+local STICK_DEADZONE = 0.25
+-- Below this the move direction counts as standing still.
+local MOVE_EPSILON = 0.1
+-- Walking away from the aim at least this much (dot product) counts as backpedaling.
+local BACKPEDAL_DOT = -0.3
+
+local SKILL_KEYS: { [Enum.KeyCode]: number } = {
+	[Enum.KeyCode.Q] = 1,
+	[Enum.KeyCode.E] = 2,
+	[Enum.KeyCode.R] = 3,
+	[Enum.KeyCode.ButtonX] = 1,
+	[Enum.KeyCode.ButtonY] = 2,
+	[Enum.KeyCode.ButtonB] = 3,
+}
+local DASH_KEYS: { [Enum.KeyCode]: boolean } = {
+	[Enum.KeyCode.Space] = true,
+	[Enum.KeyCode.LeftShift] = true,
+	[Enum.KeyCode.ButtonL2] = true,
+	[Enum.KeyCode.ButtonR1] = true,
+}
+local DRINK_KEYS: { [Enum.KeyCode]: boolean } = {
+	[Enum.KeyCode.C] = true,
+	[Enum.KeyCode.DPadDown] = true,
+}
+local INTERACT_KEYS: { [Enum.KeyCode]: boolean } = {
+	[Enum.KeyCode.F] = true,
+	[Enum.KeyCode.ButtonA] = true,
+}
+-- The last input type that makes the mouse the aim source.
+local MOUSE_TYPES: { [Enum.UserInputType]: boolean } = {
+	[Enum.UserInputType.MouseMovement] = true,
+	[Enum.UserInputType.MouseButton1] = true,
+	[Enum.UserInputType.MouseButton2] = true,
+	[Enum.UserInputType.MouseButton3] = true,
+	[Enum.UserInputType.MouseWheel] = true,
+	[Enum.UserInputType.Keyboard] = true,
+}
+
+-- A displacement of the character, spread over `duration` seconds.
+type Shift = {
+	character: Model,
+	delta: Vector3,
+	duration: number,
+	elapsed: number,
+	applied: number,
+}
+
+local lastAim: Vector3? = nil
+local mouseAim = UserInputService.MouseEnabled
+-- The right stick's deflection (x right, y up).
+local stick = Vector2.zero
+-- The touch that is the aim pad, where it began and the aim it gives once past the dead zone.
+local padTouch: InputObject? = nil
+local padStart = Vector2.zero
+local padAim: Vector3? = nil
+
+local firing = false
+local backpedaling = false
+local shifts: { Shift } = {}
+local dashShift: Shift? = nil
+local trackedCharacter: Model? = nil
 
 -- The ground plane is y = 0.
 local function groundPoint(): Vector3?
@@ -24,7 +100,7 @@ local function groundPoint(): Vector3?
 	return ray.Origin + ray.Direction * (-ray.Origin.Y / ray.Direction.Y)
 end
 
--- Clicking a button of the Hud (a perk offer, say) must not fire the skill.
+-- Clicking a button of the Hud (a perk offer, say) must not fire.
 local function overButton(position: Vector3): boolean
 	local playerGui = Players.LocalPlayer:FindFirstChildOfClass("PlayerGui")
 	if playerGui == nil then
@@ -38,48 +114,319 @@ local function overButton(position: Vector3): boolean
 	return false
 end
 
-local INTERACT_KEY = Enum.KeyCode.E
+local function typing(): boolean
+	return UserInputService:GetFocusedTextBox() ~= nil
+end
+
+local function localParts(): (Model?, Humanoid?, BasePart?)
+	local character = Players.LocalPlayer.Character
+	if character == nil then
+		return nil, nil, nil
+	end
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local root = character:FindFirstChild("HumanoidRootPart")
+	if humanoid == nil or root == nil or not root:IsA("BasePart") then
+		return nil, nil, nil
+	end
+	return character, humanoid, root
+end
+
+local function flat(vector: Vector3): Vector3?
+	local horizontal = Vector3.new(vector.X, 0, vector.Z)
+	if horizontal.Magnitude < 1e-3 then
+		return nil
+	end
+	return horizontal.Unit
+end
+
+-- The direction the character is aiming along the ground, if it has aimed yet.
+function Input.aimDirection(): Vector3?
+	return lastAim
+end
+
+-- How far the mouse's ground point is from the character: only a mouse aims at a point.
+local function aimDistance(): number?
+	if not mouseAim then
+		return nil
+	end
+	local _, _, root = localParts()
+	local point = groundPoint()
+	if root == nil or point == nil then
+		return nil
+	end
+	return Vector3.new(point.X - root.Position.X, 0, point.Z - root.Position.Z).Magnitude
+end
+
+local function setFiring(held: boolean)
+	if firing == held then
+		return
+	end
+	firing = held
+	Net.setFiring(held)
+end
+
+-- Fires active skill `index` (1..3) along the current aim.
+function Input.useSkill(index: number)
+	Net.useSkill(index, aimDistance())
+end
+
+function Input.drink()
+	Net.drink()
+end
+
+function Input.interact(held: boolean)
+	Net.interact(held)
+end
+
+-- Shortens `delta` so that a move from `origin` stops before a wall of the world.
+local function limitByWalls(origin: Vector3, delta: Vector3): Vector3
+	local distance = delta.Magnitude
+	local world = workspace:FindFirstChild("World")
+	if distance < 1e-3 or world == nil then
+		return delta
+	end
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Include
+	params.FilterDescendantsInstances = { world }
+	local hit = workspace:Raycast(origin, delta, params)
+	if hit == nil then
+		return delta
+	end
+	return delta.Unit * math.max(0, hit.Distance - WALL_MARGIN)
+end
+
+local function addShift(character: Model, root: BasePart, delta: Vector3, duration: number): Shift
+	local shift = {
+		character = character,
+		delta = limitByWalls(root.Position, delta),
+		duration = duration,
+		elapsed = 0,
+		applied = 0,
+	}
+	table.insert(shifts, shift)
+	return shift
+end
+
+-- Carries the character along its shifts; a shift of another character is dropped.
+local function stepShifts(character: Model, deltaTime: number)
+	for index = #shifts, 1, -1 do
+		local shift = shifts[index]
+		if shift.character ~= character then
+			table.remove(shifts, index)
+			if shift == dashShift then
+				dashShift = nil
+			end
+			continue
+		end
+		shift.elapsed += deltaTime
+		local fraction = math.min(shift.elapsed / shift.duration, 1)
+		character:PivotTo(character:GetPivot() + shift.delta * (fraction - shift.applied))
+		shift.applied = fraction
+		if fraction >= 1 then
+			table.remove(shifts, index)
+			if shift == dashShift then
+				dashShift = nil
+			end
+		end
+	end
+end
+
+-- Asks for a dash and moves the character along the move direction (or the facing).
+-- The client moves the base distance only: a Long Blink perk's extra distance is in
+-- the server's budget, which keeps the run's position, so the character is pulled
+-- onto it by the next snapshot of the position.
+function Input.dash()
+	if dashShift ~= nil then
+		return
+	end
+	local dashSelf = Net.self
+	if dashSelf and dashSelf.dashCharges <= 0 then
+		return
+	end
+	Net.dash()
+	local character, humanoid, root = localParts()
+	if character == nil or humanoid == nil or root == nil then
+		return
+	end
+	local direction = if humanoid.MoveDirection.Magnitude > MOVE_EPSILON
+		then flat(humanoid.MoveDirection)
+		else nil
+	direction = direction or lastAim or flat(root.CFrame.LookVector)
+	if direction == nil then
+		return
+	end
+	local distance = Config.classes.elementalist.dash.distance
+	dashShift = addShift(character, root, direction * distance, DASH_SECONDS)
+end
+
+local function knocked(dx: number, dz: number)
+	local character, _, root = localParts()
+	if character == nil or root == nil then
+		return
+	end
+	addShift(character, root, Vector3.new(dx, 0, dz), Config.player.knockbackSeconds)
+end
+
+-- Where the character aims this frame: the aim pad, the right stick or the mouse; with
+-- none of them the last aim stays.
+local function updateAim(root: BasePart)
+	if padAim then
+		lastAim = padAim
+	elseif stick.Magnitude > STICK_DEADZONE then
+		lastAim = flat(Vector3.new(stick.X, 0, -stick.Y)) or lastAim
+	elseif mouseAim then
+		local point = groundPoint()
+		if point then
+			lastAim = flat(point - root.Position) or lastAim
+		end
+	end
+end
+
+local function face(root: BasePart)
+	local aim = lastAim
+	if aim == nil then
+		return
+	end
+	local position = root.Position
+	root.CFrame = CFrame.lookAt(position, position + aim)
+end
+
+-- Walking away from the aim while firing is slower. A Swift perk's speed is not
+-- reflected here: this restores the configured base speed.
+local function updateBackpedal(humanoid: Humanoid)
+	local move = humanoid.MoveDirection
+	local aim = lastAim
+	local backwards = firing
+		and aim ~= nil
+		and move.Magnitude > MOVE_EPSILON
+		and move.Unit:Dot(aim) < BACKPEDAL_DOT
+	if backwards then
+		humanoid.WalkSpeed = Config.player.walkSpeed * Config.player.backpedalFactor
+		backpedaling = true
+	elseif backpedaling then
+		humanoid.WalkSpeed = Config.player.walkSpeed
+		backpedaling = false
+	end
+end
+
+local function update(deltaTime: number)
+	local character, humanoid, root = localParts()
+	if character == nil or humanoid == nil or root == nil then
+		return
+	end
+	if character ~= trackedCharacter then
+		trackedCharacter = character
+		backpedaling = false
+		humanoid.AutoRotate = false
+	end
+	if humanoid.Health <= 0 then
+		return
+	end
+	stepShifts(character, deltaTime)
+	updateAim(root)
+	face(root)
+	updateBackpedal(humanoid)
+end
+
+local function refreshAssist()
+	local touchOnly = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+	Net.setAssist(touchOnly or UserInputService.GamepadEnabled)
+end
 
 local function onInputBegan(input: InputObject, _gameProcessed: boolean)
-	if input.KeyCode == INTERACT_KEY then
-		if UserInputService:GetFocusedTextBox() == nil then
-			Net.interact(true)
+	if input.UserInputType == Enum.UserInputType.Touch then
+		if padTouch ~= nil or overButton(input.Position) then
+			return
+		end
+		local camera = workspace.CurrentCamera
+		if camera == nil or input.Position.X < camera.ViewportSize.X * (1 - PAD_REGION) then
+			return
+		end
+		padTouch = input
+		padStart = Vector2.new(input.Position.X, input.Position.Y)
+		return
+	end
+	if typing() then
+		return
+	end
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		if not overButton(input.Position) then
+			setFiring(true)
 		end
 		return
 	end
-	-- Touch devices fire through the Hud's own button, which auto-aims.
-	if UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled then
-		return
+	local key = input.KeyCode
+	if key == Enum.KeyCode.ButtonR2 then
+		setFiring(true)
+	elseif SKILL_KEYS[key] then
+		Input.useSkill(SKILL_KEYS[key])
+	elseif DASH_KEYS[key] then
+		Input.dash()
+	elseif DRINK_KEYS[key] then
+		Input.drink()
+	elseif INTERACT_KEYS[key] then
+		Input.interact(true)
 	end
-	local isMouse = input.UserInputType == Enum.UserInputType.MouseButton1
-	local isKey = input.KeyCode == Enum.KeyCode.Q
-	if not (isMouse or isKey) then
-		return
+end
+
+local function onInputChanged(input: InputObject, _gameProcessed: boolean)
+	if input.KeyCode == Enum.KeyCode.Thumbstick2 then
+		stick = Vector2.new(input.Position.X, input.Position.Y)
+	elseif input == padTouch then
+		-- Screen right is world +x and screen up is world -z, as the camera sees it.
+		local drag = Vector2.new(input.Position.X, input.Position.Y) - padStart
+		if drag.Magnitude > PAD_DEADZONE then
+			padAim = flat(Vector3.new(drag.X, 0, drag.Y))
+			setFiring(true)
+		end
 	end
-	-- Typing in the chat is not aiming.
-	if UserInputService:GetFocusedTextBox() ~= nil then
-		return
-	end
-	if isMouse and overButton(input.Position) then
-		return
-	end
-	local point = groundPoint()
-	if point then
-		Net.useActiveSkill(point)
+end
+
+-- Releases are handled whatever the focus: a key let go while typing must not stick.
+local function onInputEnded(input: InputObject, _gameProcessed: boolean)
+	if input == padTouch then
+		padTouch = nil
+		padAim = nil
+		setFiring(false)
+	elseif
+		input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.KeyCode == Enum.KeyCode.ButtonR2
+	then
+		setFiring(false)
+	elseif INTERACT_KEYS[input.KeyCode] then
+		Input.interact(false)
 	end
 end
 
 function Input.start()
-	UserInputService.InputBegan:Connect(onInputBegan)
-	UserInputService.InputEnded:Connect(function(input: InputObject)
-		if input.KeyCode == INTERACT_KEY then
-			Net.interact(false)
+	refreshAssist()
+	UserInputService.GamepadConnected:Connect(refreshAssist)
+	UserInputService.GamepadDisconnected:Connect(refreshAssist)
+	UserInputService.LastInputTypeChanged:Connect(function(inputType: Enum.UserInputType)
+		if MOUSE_TYPES[inputType] then
+			mouseAim = UserInputService.MouseEnabled
+		elseif inputType == Enum.UserInputType.Touch or inputType.Name:sub(1, 7) == "Gamepad" then
+			mouseAim = false
 		end
 	end)
+	UserInputService.InputBegan:Connect(onInputBegan)
+	UserInputService.InputChanged:Connect(onInputChanged)
+	UserInputService.InputEnded:Connect(onInputEnded)
 	-- A key released while the window is in the background never arrives.
 	UserInputService.WindowFocusReleased:Connect(function()
+		firing = false
+		Net.setFiring(false)
 		Net.interact(false)
 	end)
+	Net.onEvents(function(events)
+		for _, event in events do
+			if event.kind == "knocked" and event.player == Players.LocalPlayer.UserId then
+				knocked(event.dx, event.dz)
+			end
+		end
+	end)
+	-- After the camera, so the facing is the last word each frame.
+	RunService:BindToRenderStep("InputFacing", Enum.RenderPriority.Camera.Value + 2, update)
 end
 
 return Input

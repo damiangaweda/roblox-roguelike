@@ -69,8 +69,12 @@ function Network.onIntent(handler: (player: Player, intent: Protocol.Intent) -> 
 	end)
 end
 
-function Network.sendWorld(run: Types.Run, kindNames: { string })
-	worldRemote:FireAllClients(Protocol.worldView(run), Protocol.encodeEnemies(run, kindNames))
+function Network.sendWorld(run: Types.Run, archetypeNames: { string }, projectileKinds: { string })
+	worldRemote:FireAllClients(
+		Protocol.worldView(run),
+		Protocol.encodeEnemies(run, archetypeNames),
+		Protocol.encodeProjectiles(run, projectileKinds)
+	)
 end
 
 -- Sends each player the public events and its own private ones, with its
