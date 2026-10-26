@@ -362,22 +362,10 @@ export type SelfView = {
 	potionCapacity: number,
 }
 
-export type MapPointView = {
-	id: number,
-	x: number,
-	z: number,
-	template: string,
-	radius: number,
-	level: number,
-	isEntry: boolean,
-	hasZone: boolean,
-}
-
-export type PathView = { a: number, b: number, halfWidth: number }
-
--- The map as the client draws it. Heights travel as u16 tenths of a stud,
--- row-major: heights[row][col], row along z, col along x, both from -half,
--- spaced heightCell apart.
+-- The map as the client draws it: only the ground, since everything else
+-- the client sees (props, cover, markers) is built by the server as parts.
+-- Heights travel as u16 tenths of a stud, row-major: heights[row][col], row
+-- along z, col along x, both from -half, spaced heightCell apart.
 export type MapView = {
 	half: number,
 	heightCell: number,
@@ -385,9 +373,6 @@ export type MapView = {
 	rows: number,
 	cols: number,
 	heights: buffer,
-	points: { MapPointView },
-	paths: { PathView },
-	fieldCover: { { x: number, z: number } },
 }
 
 local HEIGHT_SCALE = 10
@@ -407,27 +392,6 @@ function Protocol.mapView(map: Types.Map): MapView
 			)
 		end
 	end
-	local points: { MapPointView } = table.create(#map.points)
-	for i, point in map.points do
-		points[i] = {
-			id = point.id,
-			x = point.x,
-			z = point.z,
-			template = point.template,
-			radius = point.radius,
-			level = point.level,
-			isEntry = point.isEntry,
-			hasZone = point.hasZone,
-		}
-	end
-	local paths: { PathView } = table.create(#map.paths)
-	for i, path in map.paths do
-		paths[i] = { a = path.a, b = path.b, halfWidth = path.halfWidth }
-	end
-	local fieldCover = table.create(#map.fieldCover)
-	for i, spot in map.fieldCover do
-		fieldCover[i] = { x = spot.x, z = spot.z }
-	end
 	return {
 		half = map.half,
 		heightCell = map.heightCell,
@@ -435,9 +399,6 @@ function Protocol.mapView(map: Types.Map): MapView
 		rows = rows,
 		cols = cols,
 		heights = heights,
-		points = points,
-		paths = paths,
-		fieldCover = fieldCover,
 	}
 end
 

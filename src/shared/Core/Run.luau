@@ -1,6 +1,6 @@
 --!strict
 -- One run, advanced by the server adapter in fixed steps (ADR-0002). The core
--- never reads time, randomness or the world itself: the adapter passes them in.
+-- never reads time, randomness or the engine itself: the adapter passes them in.
 
 local Camps = require("./Camps")
 local Combat = require("./Combat")

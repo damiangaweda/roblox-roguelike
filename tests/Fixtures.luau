@@ -77,7 +77,7 @@ end
 -- water, so a spec has open ground there whatever the seed made.
 function Fixtures.dry(run: Types.Run, x: number, z: number, radius: number)
 	local map = run.map
-	local dry = map.waterLevel + 1
+	local dry = map.waterLevel + run.config.map.dryMargin
 	eachNode(run, x, z, radius + map.heightCell * math.sqrt(2), function(row, col)
 		map.heights[row][col] = math.max(map.heights[row][col], dry)
 	end)

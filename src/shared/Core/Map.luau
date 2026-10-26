@@ -9,10 +9,17 @@ local Types = require("./Types")
 
 local Map = {}
 
--- How far apart the points are that a line is checked at.
-local PATH_SAMPLE = 1
 -- How far beyond a prop's edge a position pushed out of it lands.
 local PUSH_MARGIN = 1e-3
+-- A walker this close to its nearest point's centre counts as standing on it.
+local CENTRE_TOLERANCE = 1
+-- The headings local steering tries when the straight line is blocked, in
+-- degrees turned from the direct one, smaller turns first.
+local STEER_TURNS = { 30, -30, 60, -60, 90, -90, 120, -120, 150, -150 }
+-- The directions sampled on each ring around an unwalkable position.
+local CLAMP_DIRECTIONS = 8
+-- How far out from a prop's corner, on both axes, a walk round it turns.
+local CORNER_MARGIN = 1
 
 type Centre = { x: number, z: number }
 type Edge = { a: number, b: number, length: number }
@@ -92,44 +99,44 @@ local function nearestCentre(centres: { Centre }, x: number, z: number): number
 	return nearest
 end
 
--- Entries on the edge band, as far apart as minEntrySpacing asks; when no
--- candidate is far enough, the farthest one drawn.
+-- Entries on the edge band, as far apart as minEntrySpacing asks, and
+-- whether they all are: placing stops at the first entry for which no
+-- candidate out of placementAttempts is far enough.
 local function placeEntries(
 	settings: Types.MapConfig,
 	rng: Types.Rng,
 	half: number,
 	count: number
-): { Centre }
+): ({ Centre }, boolean)
 	local entries: { Centre } = {}
 	local inner = half - settings.edgeMargin
 	while #entries < count do
-		local best: Centre? = nil
-		local bestDistance = -1
+		local placed = false
 		for _ = 1, settings.placementAttempts do
 			local along = -inner + rng:next() * 2 * inner
-			local depth = inner - rng:next() * settings.entryBand
+			local inset = inner - rng:next() * settings.entryBand
 			local side = rng:integer(1, 4)
 			local candidate: Centre
 			if side == 1 then
-				candidate = { x = along, z = -depth }
+				candidate = { x = along, z = -inset }
 			elseif side == 2 then
-				candidate = { x = along, z = depth }
+				candidate = { x = along, z = inset }
 			elseif side == 3 then
-				candidate = { x = -depth, z = along }
+				candidate = { x = -inset, z = along }
 			else
-				candidate = { x = depth, z = along }
+				candidate = { x = inset, z = along }
 			end
-			local apart = nearestCentre(entries, candidate.x, candidate.z)
-			if apart > bestDistance then
-				best, bestDistance = candidate, apart
-			end
-			if apart >= settings.minEntrySpacing then
+			if nearestCentre(entries, candidate.x, candidate.z) >= settings.minEntrySpacing then
+				table.insert(entries, candidate)
+				placed = true
 				break
 			end
 		end
-		table.insert(entries, best :: Centre)
+		if not placed then
+			return entries, false
+		end
 	end
-	return entries
+	return entries, true
 end
 
 -- Adds point centres inside the margin until there are `count`: each is the
@@ -253,32 +260,36 @@ local function bfs(points: { Types.MapPoint }, source: number): ({ number }, { n
 	return hops, parent
 end
 
--- Deep points far from each other, none an entry. Only the deeper half of
--- the points (by distance) is considered while it has enough of them, since
--- on a long chain of points the spread alone would pull a zone shallow.
+-- Points far from the entries and from each other, none an entry. Only the
+-- points at least zoneMinDistanceFraction of the farthest distance away are
+-- considered while there are enough of them, since on a long chain of points
+-- the spread alone would pull a zone close to the entries.
 local function chooseZonePoints(
 	config: Types.Config,
 	points: { Types.MapPoint },
 	hops: { { number } },
 	count: number
 ): { number }
-	local deepest = 0
+	local farthest = 0
 	for _, point in points do
-		deepest = math.max(deepest, point.distance)
+		farthest = math.max(farthest, point.distance)
 	end
-	local deep = 0
+	local nearest = farthest * config.map.zoneMinDistanceFraction
+	local far = 0
 	for _, point in points do
-		if not point.isEntry and point.distance * 2 >= deepest then
-			deep += 1
+		if not point.isEntry and point.distance >= nearest then
+			far += 1
 		end
 	end
-	local shallowest = if deep >= count then deepest / 2 else 0
+	if far < count then
+		nearest = 0
+	end
 
 	local zones: { number } = {}
 	while #zones < count do
 		local best, bestScore = nil, -1
 		for _, point in points do
-			if point.isEntry or point.distance < shallowest or table.find(zones, point.id) then
+			if point.isEntry or point.distance < nearest or table.find(zones, point.id) then
 				continue
 			end
 			local apart = math.huge
@@ -288,7 +299,7 @@ local function chooseZonePoints(
 			if apart == math.huge then
 				apart = 0
 			end
-			local score = point.distance * config.map.zoneDepthWeight + apart
+			local score = point.distance * config.map.zoneDistanceWeight + apart
 			if score > bestScore then
 				best, bestScore = point.id, score
 			end
@@ -374,11 +385,17 @@ function Map.generate(config: Types.Config, rng: Types.Rng, playerCount: number)
 	local entryCount =
 		math.clamp(math.ceil(players / settings.playersPerEntry), 1, settings.maxEntries)
 
-	-- A layout that ends short of the count is drawn again; the fullest one
-	-- drawn is kept.
+	-- A layout whose entries are too close, or that ends short of the count,
+	-- is drawn again; the fullest one drawn is kept. A map that still cannot
+	-- be laid out is a configuration error: a run on it would be broken.
 	local centres: { Centre } = {}
+	local spaced = false
 	for _ = 1, settings.placementAttempts do
-		local layout = placeEntries(settings, rng, half, entryCount)
+		local layout, ok = placeEntries(settings, rng, half, entryCount)
+		if not ok then
+			continue
+		end
+		spaced = true
 		placePoints(settings, rng, half, layout, pointCount)
 		if #layout > #centres then
 			centres = layout
@@ -386,6 +403,31 @@ function Map.generate(config: Types.Config, rng: Types.Rng, playerCount: number)
 		if #centres >= pointCount then
 			break
 		end
+	end
+	if not spaced then
+		error(
+			string.format(
+				"Map.generate: %d entries do not fit %d studs apart on a map %d studs wide "
+					.. "after %d layouts; check minEntrySpacing",
+				entryCount,
+				settings.minEntrySpacing,
+				2 * half,
+				settings.placementAttempts
+			)
+		)
+	end
+	if #centres < settings.minPoints then
+		error(
+			string.format(
+				"Map.generate: only %d of at least %d points fit %d studs apart on a map %d "
+					.. "studs wide after %d layouts; check pointSpacing and edgeMargin",
+				#centres,
+				settings.minPoints,
+				settings.pointSpacing,
+				2 * half,
+				settings.placementAttempts
+			)
+		)
 	end
 
 	local points: { Types.MapPoint } = {}
@@ -479,21 +521,21 @@ function Map.generate(config: Types.Config, rng: Types.Rng, playerCount: number)
 		end
 	end
 
-	local deepest = 0
+	local farthest = 0
 	for _, point in points do
 		local nearest = math.huge
 		for _, entry in entries do
 			nearest = math.min(nearest, hops[point.id][entry])
 		end
 		point.distance = nearest
-		deepest = math.max(deepest, nearest)
+		farthest = math.max(farthest, nearest)
 	end
 	for _, point in points do
 		if point.distance == 0 then
 			point.level = 1
 		else
 			point.level = math.clamp(
-				math.ceil(point.distance / deepest * settings.maxLevel),
+				math.ceil(point.distance / farthest * settings.maxLevel),
 				1,
 				settings.maxLevel
 			)
@@ -512,13 +554,13 @@ function Map.generate(config: Types.Config, rng: Types.Rng, playerCount: number)
 	end
 
 	-- Terrain: hills, then every node under a path band or near a footprint
-	-- raised above the water, then each footprint flattened to the mean of
+	-- raised dryMargin above the water, then each footprint flattened to the mean of
 	-- its nodes. The margin of one cell's diagonal keeps every cell a band or
 	-- a disc touches above the water too.
 	local cell = settings.heightCell
 	local size = math.ceil(2 * half / cell) + 1
 	local heights = noiseHeights(settings, rng, half, size)
-	local dry = settings.waterLevel + 1
+	local dry = settings.waterLevel + settings.dryMargin
 	local diagonal = cell * math.sqrt(2)
 
 	local flat: { number } = {}
@@ -628,6 +670,9 @@ function Map.generate(config: Types.Config, rng: Types.Rng, playerCount: number)
 		heights = heights,
 		heightCell = cell,
 		waterLevel = settings.waterLevel,
+		sampleStep = settings.sampleStep,
+		clampRadius = settings.clampRadius,
+		steerProbe = settings.steerProbe,
 		fieldCover = {},
 		pointCells = pointCells,
 	}
@@ -769,8 +814,9 @@ function Map.heightAt(map: Types.Map, x: number, z: number): number
 end
 
 -- A walkable position near (x, z): onto the square's edge, out of a prop to
--- its nearest edge, and out of the water toward the nearest point's centre a
--- stud at a time (that centre is walkable, so the walk ends by it).
+-- its nearest edge, and out of the water to the nearest walkable position on
+-- rings a stud apart out to clampRadius. Only when none is found, toward the
+-- nearest point's centre (that centre is walkable, so the walk ends by it).
 function Map.clamp(map: Types.Map, x: number, z: number): (number, number)
 	x = math.clamp(x, -map.half, map.half)
 	z = math.clamp(z, -map.half, map.half)
@@ -802,10 +848,22 @@ function Map.clamp(map: Types.Map, x: number, z: number): (number, number)
 			return x, z
 		end
 	end
+	-- Every sample on a ring is as far from (x, z) as the others, so the
+	-- first walkable one is the nearest found.
+	for radius = 1, map.clampRadius do
+		for index = 0, CLAMP_DIRECTIONS - 1 do
+			local angle = index / CLAMP_DIRECTIONS * 2 * math.pi
+			local sx, sz = x + math.cos(angle) * radius, z + math.sin(angle) * radius
+			if Map.walkable(map, sx, sz) then
+				return sx, sz
+			end
+		end
+	end
 	local target = Map.nearestPoint(map, x, z)
 	local distance = Geometry.distance(x, z, target.x, target.z)
-	for step = 1, math.ceil(distance / PATH_SAMPLE) do
-		local t = math.min(step * PATH_SAMPLE, distance) / distance
+	local sample = map.sampleStep
+	for step = 1, math.ceil(distance / sample) do
+		local t = math.min(step * sample, distance) / distance
 		local sx, sz = x + (target.x - x) * t, z + (target.z - z) * t
 		if Map.walkable(map, sx, sz) then
 			return sx, sz
@@ -840,11 +898,11 @@ function Map.reach(map: Types.Map, fromX: number, fromZ: number, toX: number, to
 	if distance < 1e-9 then
 		return 0
 	end
-	local steps = math.ceil(distance / PATH_SAMPLE)
-	for step = 1, steps do
-		local t = math.min(step * PATH_SAMPLE, distance)
+	local sample = map.sampleStep
+	for step = 1, math.ceil(distance / sample) do
+		local t = math.min(step * sample, distance)
 		if not Map.walkable(map, fromX + dx / distance * t, fromZ + dz / distance * t) then
-			return math.max(0, t - PATH_SAMPLE)
+			return math.max(0, t - sample)
 		end
 	end
 	return distance
@@ -893,11 +951,11 @@ function Map.shotReach(
 	if distance < 1e-9 then
 		return 0
 	end
-	local steps = math.ceil(distance / PATH_SAMPLE)
-	for step = 1, steps do
-		local t = math.min(step * PATH_SAMPLE, distance)
+	local sample = map.sampleStep
+	for step = 1, math.ceil(distance / sample) do
+		local t = math.min(step * sample, distance)
 		if Map.blocksShots(map, fromX + dx / distance * t, fromZ + dz / distance * t) then
-			return math.max(0, t - PATH_SAMPLE)
+			return math.max(0, t - sample)
 		end
 	end
 	return distance
@@ -925,12 +983,152 @@ function Map.pathBetween(map: Types.Map, a: number, b: number): Types.Path?
 	return nil
 end
 
+-- The prop the straight line from (fromX, fromZ) to (toX, toZ) meets first,
+-- sampled as reach samples; nil when water or the edge stops it first, or
+-- nothing does.
+local function blockingProp(
+	map: Types.Map,
+	fromX: number,
+	fromZ: number,
+	toX: number,
+	toZ: number
+): Types.Rect?
+	local dx, dz = toX - fromX, toZ - fromZ
+	local distance = math.sqrt(dx * dx + dz * dz)
+	if distance < 1e-9 then
+		return nil
+	end
+	local sample = map.sampleStep
+	for step = 1, math.ceil(distance / sample) do
+		local t = math.min(step * sample, distance)
+		local x, z = fromX + dx / distance * t, fromZ + dz / distance * t
+		if not Map.walkable(map, x, z) then
+			local point = Map.pointAt(map, x, z)
+			if point then
+				for _, prop in point.props do
+					if Geometry.insideRect(prop, x, z) then
+						return prop
+					end
+				end
+			end
+			return nil
+		end
+	end
+	return nil
+end
+
+-- The way round `prop` from (fromX, fromZ) to (toX, toZ): the corner, set
+-- CORNER_MARGIN out, to walk to first on the shortest route over clear lines
+-- that passes one corner, or two along a side. Nil when no such route is
+-- clear (water or another prop in the way); a corner the walker stands on
+-- is not a way on.
+local function aroundProp(
+	map: Types.Map,
+	prop: Types.Rect,
+	fromX: number,
+	fromZ: number,
+	toX: number,
+	toZ: number
+): (number?, number?)
+	local west = prop.x - prop.halfWidth - CORNER_MARGIN
+	local east = prop.x + prop.halfWidth + CORNER_MARGIN
+	local north = prop.z - prop.halfDepth - CORNER_MARGIN
+	local south = prop.z + prop.halfDepth + CORNER_MARGIN
+	-- In order round the prop, so neighbours in the list share a side.
+	local corners = { { west, north }, { east, north }, { east, south }, { west, south } }
+	local open: { boolean } = {}
+	local toTarget: { number } = {}
+	for index, corner in corners do
+		local x, z = corner[1], corner[2]
+		open[index] = Map.walkable(map, x, z)
+		toTarget[index] = if open[index] and Map.clearPath(map, x, z, toX, toZ)
+			then Geometry.distance(x, z, toX, toZ)
+			else math.huge
+	end
+	local lengths: { number } = {}
+	local order: { number } = {}
+	for index, corner in corners do
+		local x, z = corner[1], corner[2]
+		local first = Geometry.distance(fromX, fromZ, x, z)
+		if not open[index] or first < map.sampleStep then
+			continue
+		end
+		local rest = toTarget[index]
+		for _, other in { index % 4 + 1, (index + 2) % 4 + 1 } do
+			local ox, oz = corners[other][1], corners[other][2]
+			local side = Geometry.distance(x, z, ox, oz)
+			if
+				toTarget[other] < math.huge
+				and side + toTarget[other] < rest
+				and Map.clearPath(map, x, z, ox, oz)
+			then
+				rest = side + toTarget[other]
+			end
+		end
+		if rest < math.huge then
+			lengths[index] = first + rest
+			table.insert(order, index)
+		end
+	end
+	-- Shortest route first; only its first leg is left to check.
+	table.sort(order, function(a, b)
+		if lengths[a] ~= lengths[b] then
+			return lengths[a] < lengths[b]
+		end
+		return a < b
+	end)
+	for _, index in order do
+		local x, z = corners[index][1], corners[index][2]
+		if Map.clearPath(map, fromX, fromZ, x, z) then
+			return x, z
+		end
+	end
+	return nil, nil
+end
+
+-- Local steering around what blocks the straight line from (fromX, fromZ)
+-- to (toX, toZ): a probe of steerProbe studs along each turned heading, and
+-- the end of the first one that runs its full length and ends nearer the
+-- target, or else of the one whose walkable part ends nearest it. When no
+-- probe ends nearer the target than the walker stands, there is no way on
+-- within the probe: the walker's own position.
+local function steer(
+	map: Types.Map,
+	fromX: number,
+	fromZ: number,
+	toX: number,
+	toZ: number
+): (number, number)
+	local probe = map.steerProbe
+	local direct = Geometry.angle(toX - fromX, toZ - fromZ)
+	local bestX, bestZ = fromX, fromZ
+	local bestDistance = Geometry.distance(fromX, fromZ, toX, toZ)
+	local here = bestDistance
+	for _, turn in STEER_TURNS do
+		local angle = direct + math.rad(turn)
+		local dirX, dirZ = math.cos(angle), math.sin(angle)
+		local reach = Map.reach(map, fromX, fromZ, fromX + dirX * probe, fromZ + dirZ * probe)
+		local x, z = fromX + dirX * reach, fromZ + dirZ * reach
+		local distance = Geometry.distance(x, z, toX, toZ)
+		if reach >= probe - 1e-9 and distance < here then
+			return x, z
+		end
+		if distance < bestDistance then
+			bestX, bestZ, bestDistance = x, z, distance
+		end
+	end
+	return bestX, bestZ
+end
+
 -- Where to walk next from (fromX, fromZ) toward (toX, toZ): the target itself
--- when the line is clear; otherwise the centre of the next point along the
+-- when the line is clear. When the walker and the target share their nearest
+-- point: round the corners of a prop that blocks the line, or else a local
+-- steer around what blocks it; the walker's own position when there is no
+-- way on. Otherwise the centre of the next point along the
 -- paths from the point nearest the walker toward the point nearest the
--- target, or, when that centre is not in a clear line either, the centre of
--- the walker's own nearest point first. From a centre, the next point's
--- centre is clear by construction.
+-- target, or, when that centre is not in a clear line either, the walker's
+-- own nearest point's centre first, steered toward when blocked. From a
+-- centre, the next point's centre is clear by construction.
 function Map.waypointToward(
 	map: Types.Map,
 	fromX: number,
@@ -943,18 +1141,25 @@ function Map.waypointToward(
 	end
 	local from = Map.nearestPoint(map, fromX, fromZ)
 	local to = Map.nearestPoint(map, toX, toZ)
-	local atCentre = Geometry.distance(fromX, fromZ, from.x, from.z) < PATH_SAMPLE
 	if from.id == to.id then
-		if atCentre then
-			return toX, toZ
+		local prop = blockingProp(map, fromX, fromZ, toX, toZ)
+		if prop then
+			local cornerX, cornerZ = aroundProp(map, prop, fromX, fromZ, toX, toZ)
+			if cornerX and cornerZ then
+				return cornerX, cornerZ
+			end
 		end
-		return from.x, from.z
+		return steer(map, fromX, fromZ, toX, toZ)
 	end
+	local atCentre = Geometry.distance(fromX, fromZ, from.x, from.z) < CENTRE_TOLERANCE
 	local nextPoint = map.points[map.nextHop[from.id][to.id]]
 	if atCentre or Map.clearPath(map, fromX, fromZ, nextPoint.x, nextPoint.z) then
 		return nextPoint.x, nextPoint.z
 	end
-	return from.x, from.z
+	if Map.clearPath(map, fromX, fromZ, from.x, from.z) then
+		return from.x, from.z
+	end
+	return steer(map, fromX, fromZ, from.x, from.z)
 end
 
 return Map

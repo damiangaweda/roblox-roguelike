@@ -15,7 +15,7 @@ local Characters = {}
 -- Presentation constants, not gameplay numbers.
 local DEAD_TRANSPARENCY = 0.7
 local EXTRACTED_TRANSPARENCY = 1
--- How far above the ground a teleported character's pivot lands.
+-- How far above the ground a teleported or corrected character's pivot lands.
 local TELEPORT_HEIGHT = 3.5
 
 type Entry = {
@@ -118,10 +118,10 @@ local function fade(entry: Entry, transparency: number)
 	end
 end
 
--- Puts a character back where the run says the player is, once it has drifted
--- further than walking allows: a teleport, a speed hack, or a downed player
--- trying to crawl away (rule 1).
-function Characters.hold(player: Player, x: number, z: number)
+-- Puts a character back where the run says the player is, on the ground whose
+-- height there is `y`, once it has drifted further than walking allows: a
+-- teleport, a speed hack, or a downed player trying to crawl away (rule 1).
+function Characters.hold(player: Player, x: number, z: number, y: number)
 	local character = player.Character
 	local part = root(player)
 	if character == nil or part == nil then
@@ -130,7 +130,9 @@ function Characters.hold(player: Player, x: number, z: number)
 	local position = part.Position
 	local dx, dz = position.X - x, position.Z - z
 	if dx * dx + dz * dz > Config.player.correctionDistance ^ 2 then
-		character:PivotTo(character:GetPivot() + Vector3.new(-dx, 0, -dz))
+		local pivot = character:GetPivot()
+		character:PivotTo(pivot.Rotation + Vector3.new(x, y + TELEPORT_HEIGHT, z))
+		part.AssemblyLinearVelocity = Vector3.zero
 	end
 end
 

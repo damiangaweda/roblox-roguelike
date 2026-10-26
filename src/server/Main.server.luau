@@ -23,6 +23,10 @@ local STEP_SECONDS = 1 / Config.net.stepHz
 local SNAPSHOT_SECONDS = 1 / Config.net.snapshotHz
 -- A slow frame catches up with at most this many steps; the rest is dropped.
 local MAX_STEPS_PER_FRAME = 5
+-- The seed and the core's view of each player are Studio-only diagnostics:
+-- attributes replicate to every client, and the seed with the shared core
+-- would let a client replay the run's rolls.
+local IS_STUDIO = RunService:IsStudio()
 
 local archetypeNames = Protocol.archetypeNames(Config)
 local projectileKinds = Protocol.projectileKinds(Config)
@@ -57,7 +61,7 @@ local function deepCopy(value: any): any
 end
 
 -- Studio only: a heavy run for the performance check (plan, criterion 6): a
--- world full of patrols and an unkillable player.
+-- map full of patrols and an unkillable player.
 local function perfConfig(): Types.Config
 	local config = deepCopy(Config) :: Types.Config
 	config.enemies.patrols.groupsAtStart = 25
@@ -120,7 +124,9 @@ local function startRun(respawn: boolean)
 		local seed = Random.new():NextInteger(1, 2 ^ 31 - 2)
 		local fresh = Run.new(config, seed, count)
 		-- The seed regenerates this map offline (Map.generate) when a position needs a look.
-		workspace:SetAttribute("MapSeed", seed)
+		if IS_STUDIO then
+			workspace:SetAttribute("MapSeed", seed)
+		end
 		local buildStart = os.clock()
 		MapBuilder.build(fresh.map, config)
 		-- How long the map took, for the lead to read in Studio (stage 2b criterion 6).
@@ -278,7 +284,7 @@ local function onHeartbeat(dt: number)
 		workspace:SetAttribute("EnemyCount", if current then #current.enemies else 0)
 		-- Where the core thinks each player stands, for the lead to compare with
 		-- the character in Studio.
-		if current then
+		if current and IS_STUDIO then
 			for id, core in current.players do
 				local player = Players:GetPlayerByUserId(id)
 				if player then
@@ -322,7 +328,7 @@ local function onHeartbeat(dt: number)
 		local core = current.players[id]
 		if core then
 			Characters.apply(player, core.state, Run.walkSpeed(current, core))
-			Characters.hold(player, core.x, core.z)
+			Characters.hold(player, core.x, core.z, Map.heightAt(current.map, core.x, core.z))
 		end
 	end
 

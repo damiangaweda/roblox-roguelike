@@ -47,15 +47,20 @@ local function addMember(
 	return enemy
 end
 
--- Stands the level's groups on the ring around the camp at its strength.
-local function fillCamp(run: Types.Run, camp: Types.Camp)
-	local level = run.config.enemies.camps[camp.level]
+-- The archetypes of a camp level's groups, one entry per member.
+local function groupArchetypes(run: Types.Run, level: number): { string }
 	local archetypes: { string } = {}
-	for _, group in level.groups do
+	for _, group in run.config.enemies.camps[level].groups do
 		for _ = 1, group.count do
 			table.insert(archetypes, group.archetype)
 		end
 	end
+	return archetypes
+end
+
+-- Stands the level's groups on the ring around the camp at its strength.
+local function fillCamp(run: Types.Run, camp: Types.Camp)
+	local archetypes = groupArchetypes(run, camp.level)
 	for index, archetype in archetypes do
 		if full(run) then
 			return
@@ -108,26 +113,29 @@ function Camps.populate(run: Types.Run)
 	for _ = 1, patrols.groupsAtStart do
 		Camps.spawnPatrol(run, patrols.sizeAtStart, patrols.pool, 1)
 	end
-	-- A wanderer is a patrol of one.
+	-- A wanderer is a patrol of one that wanders.
 	for _ = 1, patrols.wanderersAtStart do
-		Camps.spawnPatrol(run, 1, patrols.wandererPool, 1)
+		Camps.spawnPatrol(run, 1, patrols.wandererPool, 1, true)
 	end
 end
 
--- Points other than entries at least minHopsFromPlayers paths from every
--- alive player's point.
+-- Points other than entries whose centre is at least minDistanceFromPlayers
+-- studs from every alive player.
 local function eligiblePoints(run: Types.Run): { Types.MapPoint }
-	local minHops = run.config.enemies.patrols.minHopsFromPlayers
-	local playerPoints: { number } = {}
+	local minDistance = run.config.enemies.patrols.minDistanceFromPlayers
+	local players: { Types.Point } = {}
 	for _, player in State.sortedPlayers(run) do
 		if player.state == "alive" then
-			table.insert(playerPoints, player.pointId)
+			table.insert(players, { x = player.x, z = player.z })
 		end
 	end
 	-- Before anyone has joined (the run's first patrols) the players are about
-	-- to appear at the entries, so the entries count as theirs.
-	if #playerPoints == 0 then
-		playerPoints = run.map.entries
+	-- to appear at the entries, so the entries' centres count as theirs.
+	if #players == 0 then
+		for _, id in run.map.entries do
+			local entry = run.map.points[id]
+			table.insert(players, { x = entry.x, z = entry.z })
+		end
 	end
 
 	local far: { Types.MapPoint } = {}
@@ -138,8 +146,8 @@ local function eligiblePoints(run: Types.Run): { Types.MapPoint }
 		end
 		table.insert(any, point)
 		local ok = true
-		for _, playerPoint in playerPoints do
-			if run.map.hops[point.id][playerPoint] < minHops then
+		for _, player in players do
+			if Geometry.distance(point.x, point.z, player.x, player.z) < minDistance then
 				ok = false
 				break
 			end
@@ -152,11 +160,14 @@ local function eligiblePoints(run: Types.Run): { Types.MapPoint }
 	return if #far > 0 then far else any
 end
 
+-- Spawns a patrol of `size` at a point away from the players, heading for a
+-- neighbour; with `wanders`, a wanderer that roams the open ground instead.
 function Camps.spawnPatrol(
 	run: Types.Run,
 	size: number,
 	pool: { string },
-	strength: number
+	strength: number,
+	wanders: boolean?
 ): Types.Patrol?
 	local candidates = eligiblePoints(run)
 	if #candidates == 0 then
@@ -174,6 +185,11 @@ function Camps.spawnPatrol(
 		routePoint = routePoint,
 		previousPoint = point.id,
 		strength = strength,
+		wanders = wanders == true,
+		-- Where it stands, so it draws its first spot on its first step.
+		wanderX = point.x,
+		wanderZ = point.z,
+		wanderUntil = run.time,
 	}
 	run.nextPatrolId += 1
 	table.insert(run.patrols, patrol)
@@ -277,8 +293,8 @@ end
 
 -- A cleared camp comes back campReturnMinutes after its last member died,
 -- with the level's groups at the patrols' strength for the run time and
--- without a leader, and grows anew for the players there. At the cap it waits
--- for a free slot.
+-- without a leader, and grows anew for the players there. It comes back
+-- whole: it waits until every member of its groups fits under the cap.
 local function returnCamp(run: Types.Run, camp: Types.Camp)
 	local clearedAt = camp.clearedAt
 	if
@@ -286,7 +302,7 @@ local function returnCamp(run: Types.Run, camp: Types.Camp)
 		or clearedAt == nil
 		or #camp.members > 0
 		or run.time < clearedAt + run.config.map.campReturnMinutes * 60
-		or full(run)
+		or #run.enemies + #groupArchetypes(run, camp.level) > run.config.enemies.maxAlive
 	then
 		return
 	end

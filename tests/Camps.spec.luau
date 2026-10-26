@@ -243,10 +243,13 @@ return {
 			Assert.equal(#run.players, 0)
 			Camps.populate(run)
 			for _, patrol in run.patrols do
-				for _, entry in run.map.entries do
+				local start = run.map.points[patrol.previousPoint]
+				for _, id in run.map.entries do
+					local entry = run.map.points[id]
 					Assert.truthy(
-						run.map.hops[patrol.previousPoint][entry] >= patrols.minHopsFromPlayers,
-						"seed " .. seed .. ": a start patrol next to an entry"
+						Geometry.distance(start.x, start.z, entry.x, entry.z)
+							>= patrols.minDistanceFromPlayers,
+						"seed " .. seed .. ": a start patrol near an entry"
 					)
 				end
 			end
@@ -276,14 +279,15 @@ return {
 			)
 			Assert.equal(patrol.strength, 1)
 			Assert.falsy(previous.isEntry)
-			for id in run.players do
-				local playerPoint = Fixtures.pointOf(run, id)
+			for _, player in run.players do
 				Assert.truthy(
-					run.map.hops[previous.id][playerPoint.id] >= patrols.minHopsFromPlayers,
-					"far from the players"
+					Geometry.distance(previous.x, previous.z, player.x, player.z)
+						>= patrols.minDistanceFromPlayers,
+					"near a player"
 				)
 			end
 			local archetype = if #patrol.members == 1 then "exploder" else "spitter"
+			Assert.equal(patrol.wanders, #patrol.members == 1)
 			if #patrol.members == 1 then
 				wanderers += 1
 			else
@@ -317,7 +321,7 @@ return {
 
 	["spawnPatrol falls back to every point but the entries on a small map"] = function()
 		local run = build(4, 2, function(config)
-			config.enemies.patrols.minHopsFromPlayers = 1000
+			config.enemies.patrols.minDistanceFromPlayers = 1e6
 		end)
 		local patrol = spawn(run, 2, { "grunt" }, 1)
 		Assert.falsy(run.map.points[patrol.previousPoint].isEntry)
@@ -701,19 +705,56 @@ return {
 		Assert.equal(#eventsOf(run, "campReturned"), 0)
 	end,
 
-	["at the cap a returning camp waits for a free slot"] = function()
+	["near the cap a returning camp waits until all of it fits"] = function()
 		local run, camp = campBed()
+		local size = groupTotal(run.config.enemies.camps[camp.level])
+		Assert.truthy(size > 1)
 		clear(run, camp)
-		run.config.enemies.maxAlive = #run.enemies
+		-- Room for all but one of its members.
+		run.config.enemies.maxAlive = #run.enemies + size - 1
 		run.time = returnTime(run, 0)
 		Camps.update(run, 0)
 		Assert.equal(#camp.members, 0)
 		Assert.equal(camp.clearedAt, 0)
 		Assert.equal(#eventsOf(run, "campReturned"), 0)
 
-		run.config.enemies.maxAlive = 10000
+		run.config.enemies.maxAlive = #run.enemies + size
 		Camps.update(run, 0)
-		Assert.truthy(#camp.members > 0)
+		Assert.equal(#camp.members, size)
+		Assert.equal(camp.clearedAt, nil)
 		Assert.equal(#eventsOf(run, "campReturned"), 1)
+	end,
+
+	["patrols spawn at points the configured distance from every alive player"] = function()
+		local run = build(4, 5, function(config)
+			config.enemies.patrols.minDistanceFromPlayers = 100
+		end)
+		local minDistance = run.config.enemies.patrols.minDistanceFromPlayers
+		-- Spread the players over the map, one of them downed, which does not count.
+		local ids = Map.farthestPoints(run.map, 3)
+		for index, id in ids do
+			local point = run.map.points[id]
+			Fixtures.place(run, run.players[index], point.x, point.z)
+		end
+		local downed = run.players[4]
+		downed.state = "downed"
+		Fixtures.place(run, downed, run.map.points[ids[1]].x + 150, 0)
+		local sawNearDowned = false
+		for _ = 1, 200 do
+			local patrol = spawn(run, 1, { "grunt" }, 1)
+			local start = run.map.points[patrol.previousPoint]
+			for index = 1, 3 do
+				local player = run.players[index]
+				Assert.truthy(
+					Geometry.distance(start.x, start.z, player.x, player.z) >= minDistance,
+					"patrol at point " .. start.id .. " near player " .. index
+				)
+			end
+			if Geometry.distance(start.x, start.z, downed.x, downed.z) < minDistance then
+				sawNearDowned = true
+			end
+			clear(run, ({ members = patrol.members } :: any) :: Types.Camp)
+		end
+		Assert.truthy(sawNearDowned, "no patrol near the downed player; the check proves nothing")
 	end,
 }

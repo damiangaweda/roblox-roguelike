@@ -28,6 +28,8 @@ local PAD_DEADZONE = 12
 local STICK_DEADZONE = 0.25
 -- Below this the move direction counts as standing still.
 local MOVE_EPSILON = 0.1
+-- How far the mouse's ray looks for something to aim at, in studs.
+local AIM_RAY_LENGTH = 1000
 
 local SKILL_KEYS: { [Enum.KeyCode]: number } = {
 	[Enum.KeyCode.Q] = 1,
@@ -89,8 +91,10 @@ local shifts: { Shift } = {}
 local dashShift: Shift? = nil
 local trackedCharacter: Model? = nil
 
--- Where the mouse points on the level plane through the ground under the
--- character, so the aim does not drift on a hill.
+-- Where the mouse points: the first terrain, water, prop or enemy under it, so
+-- a target up or down a slope is read where it is drawn. With nothing under
+-- the mouse (past the map's edge), the level plane through the ground under
+-- the character. The invisible barriers and the bushes are not targets.
 local function groundPoint(root: BasePart): Vector3?
 	local camera = workspace.CurrentCamera
 	if camera == nil then
@@ -98,6 +102,23 @@ local function groundPoint(root: BasePart): Vector3?
 	end
 	local location = UserInputService:GetMouseLocation()
 	local ray = camera:ViewportPointToRay(location.X, location.Y)
+	local targets: { Instance } = { workspace.Terrain }
+	local world = workspace:FindFirstChild("World")
+	local props = if world then world:FindFirstChild("Props") else nil
+	if props then
+		table.insert(targets, props)
+	end
+	local enemies = workspace:FindFirstChild("ClientEnemies")
+	if enemies then
+		table.insert(targets, enemies)
+	end
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Include
+	params.FilterDescendantsInstances = targets
+	local hit = workspace:Raycast(ray.Origin, ray.Direction * AIM_RAY_LENGTH, params)
+	if hit then
+		return hit.Position
+	end
 	if ray.Direction.Y >= -1e-4 then
 		return nil
 	end
@@ -212,9 +233,9 @@ function Input.interact(held: boolean)
 	Net.interact(held)
 end
 
--- Shortens `delta` so that a move from `origin` stops before a wall of the world.
--- Only the props in workspace.World stop it: hills are walkable, and the shift
--- climbs them in `stepShifts`.
+-- Shortens `delta` so that a move from `origin` stops before a prop or a barrier
+-- of the map. Only the solid parts in workspace.World stop it: hills are
+-- walkable, and the shift climbs them in `stepShifts`.
 local function limitByWalls(origin: Vector3, delta: Vector3): Vector3
 	local distance = delta.Magnitude
 	local world = workspace:FindFirstChild("World")

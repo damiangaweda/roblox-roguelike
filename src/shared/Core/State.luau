@@ -176,6 +176,7 @@ function State.newEnemy(
 		state = "idle",
 		stateUntil = 0,
 		target = nil,
+		stuckSince = nil,
 		attack = 1,
 		aimX = x,
 		aimZ = z,

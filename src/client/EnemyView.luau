@@ -111,7 +111,8 @@ local function newPart(): Part
 	local part = Instance.new("Part")
 	part.Anchored = true
 	part.CanCollide = false
-	part.CanQuery = false
+	-- Queryable so the mouse aim lands on an enemy (Input).
+	part.CanQuery = true
 	part.CanTouch = false
 	part.CastShadow = false
 	part.Material = Enum.Material.SmoothPlastic

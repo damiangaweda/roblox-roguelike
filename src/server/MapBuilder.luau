@@ -2,8 +2,9 @@
 -- Builds the open map of a run (ADR-0012) in Roblox: terrain from the core's
 -- heights, with the paths and the points' footprints painted on it, then the
 -- props, the cover bushes and the zone and entry markers as plain parts in one
--- folder. Pure presentation of the core's data; nothing here is read back by
--- the rules.
+-- folder, and invisible barriers over the water and around the edge that hold
+-- characters where the rules let them stand. Pure presentation of the core's
+-- data; nothing here is read back by the rules.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -32,9 +33,18 @@ local PROP_HEIGHT = 14
 local PROP_SINK = 2
 local PROP_COLOR = Color3.fromRGB(58, 60, 68)
 local COVER_HEIGHT = 4
--- The invisible walls over water: tall enough that nothing walks or dashes over them.
-local WATER_BARRIER_HEIGHT = 12
-local WATER_BARRIER_SINK = 2
+-- The invisible barriers over the water and around the edge reach this far
+-- above the highest ground, so no character walks or dashes over them, and
+-- this far below the lowest.
+local BARRIER_CLEARANCE = 10
+local BARRIER_SINK = 2
+-- The water is sampled in square cells of this side, one cell water when its
+-- centre is.
+local BARRIER_CELL = 4
+local EDGE_WALL_THICKNESS = 4
+-- The barriers are parented in batches of about this many parts, a frame
+-- apart, so the build never creates them all in one frame.
+local BARRIER_BATCH = 64
 local COVER_COLOR = Color3.fromRGB(70, 120, 60)
 local MARKER_THICKNESS = 0.4
 -- How far a marker floats above the ground, so the terrain does not hide it.
@@ -178,8 +188,8 @@ local function writeChunk(
 	workspace.Terrain:WriteVoxels(region, VOXEL, materials, occupancy)
 end
 
--- Writes the whole terrain, one chunk a frame. Yields.
-local function writeTerrain(map: Types.Map)
+-- The lowest and highest ground of the map, the water's surface counted.
+local function heightRange(map: Types.Map): (number, number)
 	local lowest, highest = math.huge, map.waterLevel
 	for _, line in map.heights do
 		for _, height in line do
@@ -187,6 +197,12 @@ local function writeTerrain(map: Types.Map)
 			highest = math.max(highest, height)
 		end
 	end
+	return lowest, highest
+end
+
+-- Writes the whole terrain, one chunk a frame. Yields.
+local function writeTerrain(map: Types.Map)
+	local lowest, highest = heightRange(map)
 	local bottom = math.floor((lowest - BOTTOM_DEPTH) / VOXEL) * VOXEL
 	local layers = math.max(1, math.ceil((highest - bottom) / VOXEL))
 	local edge = math.ceil(map.half / VOXEL) * VOXEL
@@ -294,49 +310,100 @@ local function buildMarker(
 	marker.CastShadow = false
 end
 
--- Replaces the previous run's map with this one. Yields while the terrain is
--- written.
+-- An invisible, anchored box that stops characters, and the client's dash
+-- and knockback rays, but nothing else.
+local function barrier(
+	name: string,
+	x0: number,
+	z0: number,
+	x1: number,
+	z1: number,
+	bottom: number,
+	top: number
+): Part
+	local part = Instance.new("Part")
+	part.Name = name
+	part.Anchored = true
+	part.Transparency = 1
+	part.CastShadow = false
+	part.CanQuery = true
+	part.CanTouch = false
+	part.Size = Vector3.new(x1 - x0, top - bottom, z1 - z0)
+	part.CFrame = CFrame.new((x0 + x1) / 2, (bottom + top) / 2, (z0 + z1) / 2)
+	return part
+end
+
 -- The core does not let anyone walk on water, but a character would swim
--- across it and be pulled back every second. One invisible wall per water
--- cell of the height grid keeps characters and dashes out, as the rules do.
-local function buildWaterBarriers(map: Types.Map, parent: Instance)
-	local cell = map.heightCell
-	local count = 0
-	for row, line in map.heights do
-		for col, height in line do
-			if height < map.waterLevel then
-				count += 1
-				local part = Instance.new("Part")
-				part.Name = "Water" .. count
-				part.Anchored = true
-				part.Transparency = 1
-				part.CastShadow = false
-				part.CanQuery = true
-				part.CanTouch = false
-				part.Size = Vector3.new(cell, WATER_BARRIER_HEIGHT, cell)
-				part.CFrame = CFrame.new(
-					-map.half + (col - 1) * cell,
-					map.waterLevel + WATER_BARRIER_HEIGHT / 2 - WATER_BARRIER_SINK,
-					-map.half + (row - 1) * cell
-				)
-				part.Parent = parent
+-- across it and be pulled back every second. The water is sampled on a grid
+-- of BARRIER_CELL squares, and each run of water cells along x in one row
+-- becomes one barrier, so the barriers follow the core's water closely and
+-- stay few. Yields between batches.
+local function buildWaterBarriers(map: Types.Map, bottom: number, top: number, parent: Instance)
+	local cells = math.ceil(2 * map.half / BARRIER_CELL)
+	local origin = -map.half
+	local count, batch = 0, 0
+	for row = 1, cells do
+		local z0 = origin + (row - 1) * BARRIER_CELL
+		local z1 = z0 + BARRIER_CELL
+		local cz = z0 + BARRIER_CELL / 2
+		local start: number? = nil
+		for col = 1, cells + 1 do
+			local water = false
+			if col <= cells then
+				local cx = origin + (col - 0.5) * BARRIER_CELL
+				water = Map.heightAt(map, cx, cz) <= map.waterLevel
 			end
+			if water and start == nil then
+				start = col
+			elseif not water and start ~= nil then
+				count += 1
+				batch += 1
+				local x0 = origin + (start - 1) * BARRIER_CELL
+				local x1 = origin + (col - 1) * BARRIER_CELL
+				barrier("Water" .. count, x0, z0, x1, z1, bottom, top).Parent = parent
+				start = nil
+			end
+		end
+		if batch >= BARRIER_BATCH then
+			batch = 0
+			task.wait()
 		end
 	end
 end
 
+-- Four walls just outside the core's square, so nothing leaves the map.
+local function buildEdgeWalls(map: Types.Map, bottom: number, top: number, parent: Instance)
+	local inner = map.half
+	local outer = map.half + EDGE_WALL_THICKNESS
+	barrier("EdgeWest", -outer, -outer, -inner, outer, bottom, top).Parent = parent
+	barrier("EdgeEast", inner, -outer, outer, outer, bottom, top).Parent = parent
+	barrier("EdgeNorth", -inner, -outer, inner, -inner, bottom, top).Parent = parent
+	barrier("EdgeSouth", -inner, inner, inner, outer, bottom, top).Parent = parent
+end
+
+-- Replaces the previous run's map with this one. Yields while the terrain and
+-- the barriers are built.
 function MapBuilder.build(map: Types.Map, config: Types.Config)
 	MapBuilder.clear()
 	writeTerrain(map)
 
 	local root = Instance.new("Folder")
 	root.Name = "World"
+	folder = root
+	-- The props are the only solid parts the client's mouse aim lands on, so
+	-- they get a folder of their own, as the barriers do.
+	local propFolder = Instance.new("Folder")
+	propFolder.Name = "Props"
+	propFolder.Parent = root
+	local barrierFolder = Instance.new("Folder")
+	barrierFolder.Name = "Barriers"
+	barrierFolder.Parent = root
 	local props, covers = 0, 0
 	for _, point in map.points do
 		local floor = Map.heightAt(map, point.x, point.z)
 		for _, prop in point.props do
 			props += 1
-			buildProp(map, "Prop" .. props, prop, floor, root)
+			buildProp(map, "Prop" .. props, prop, floor, propFolder)
 		end
 		for _, spot in point.cover do
 			covers += 1
@@ -347,7 +414,6 @@ function MapBuilder.build(map: Types.Map, config: Types.Config)
 		covers += 1
 		buildBush(map, config, "Cover" .. covers, spot, root)
 	end
-	buildWaterBarriers(map, root)
 	for index, id in map.zonePoints do
 		local point = map.points[id]
 		buildMarker(map, "Zone" .. index, point, config.map.zoneRadius, ZONE_MARKER_COLOR, root)
@@ -357,10 +423,18 @@ function MapBuilder.build(map: Types.Map, config: Types.Config)
 		buildMarker(map, "Entry" .. index, point, ENTRY_MARKER_RADIUS, ENTRY_MARKER_COLOR, root)
 	end
 	root.Parent = workspace
-	folder = root
+
+	-- The barriers go in after the rest, a batch a frame, into the folder
+	-- already in the workspace.
+	local lowest, highest = heightRange(map)
+	local bottom = lowest - BARRIER_SINK
+	local top = math.max(highest, config.map.maxHeight) + BARRIER_CLEARANCE
+	buildEdgeWalls(map, bottom, top, barrierFolder)
+	buildWaterBarriers(map, bottom, top, barrierFolder)
 end
 
--- Removes the terrain and the parts of the current map.
+-- Removes the terrain and the parts of the current map, the barriers among
+-- them.
 function MapBuilder.clear()
 	workspace.Terrain:Clear()
 	if folder then

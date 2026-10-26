@@ -34,12 +34,12 @@ local function eachMap(check: (
 	end
 end
 
-local function deepestDistance(map: Types.Map): number
-	local deepest = 0
+local function farthestDistance(map: Types.Map): number
+	local farthest = 0
 	for _, point in map.points do
-		deepest = math.max(deepest, point.distance)
+		farthest = math.max(farthest, point.distance)
 	end
-	return deepest
+	return farthest
 end
 
 local function distanceToSegment(
@@ -55,7 +55,7 @@ local function distanceToSegment(
 	return Geometry.distance(x, z, ax + dx * t, az + dz * t)
 end
 
--- The world position of a height grid node.
+-- The map position of a height grid node.
 local function nodePosition(map: Types.Map, row: number, col: number): (number, number)
 	return -map.half + (col - 1) * map.heightCell, -map.half + (row - 1) * map.heightCell
 end
@@ -277,8 +277,8 @@ return {
 	["point levels follow the distance from the entries"] = function()
 		eachMap(function(map, config, label)
 			local maxLevel = config.map.maxLevel
-			local deepest = deepestDistance(map)
-			local deepestLevel = 0
+			local farthest = farthestDistance(map)
+			local farthestLevel = 0
 			for _, point in map.points do
 				local nearest = math.huge
 				for _, entry in map.entries do
@@ -286,17 +286,17 @@ return {
 				end
 				Assert.equal(point.distance, nearest, label)
 				Assert.truthy(point.level >= 1 and point.level <= maxLevel, label)
-				deepestLevel = math.max(deepestLevel, point.level)
+				farthestLevel = math.max(farthestLevel, point.level)
 				if not point.isEntry then
 					local expected =
-						math.clamp(math.ceil(point.distance / deepest * maxLevel), 1, maxLevel)
+						math.clamp(math.ceil(point.distance / farthest * maxLevel), 1, maxLevel)
 					Assert.equal(point.level, expected, "point " .. point.id .. ", " .. label)
-					if point.distance == 1 and deepest >= maxLevel then
+					if point.distance == 1 and farthest >= maxLevel then
 						Assert.equal(point.level, 1, "next to an entry, " .. label)
 					end
 				end
 			end
-			Assert.equal(deepestLevel, maxLevel, "no point of the top level, " .. label)
+			Assert.equal(farthestLevel, maxLevel, "no point of the top level, " .. label)
 			for _, id in Map.farthestPoints(map, 1) do
 				Assert.equal(map.points[id].level, maxLevel, "farthest point, " .. label)
 			end
@@ -316,7 +316,7 @@ return {
 		Assert.equal(#Map.farthestPoints(map, 0), 0)
 	end,
 
-	["extraction zones sit at deep points, never at an entry"] = function()
+	["extraction zones sit at far points, never at an entry"] = function()
 		eachMap(function(map, config, label, players)
 			local settings = config.map
 			local expected = math.clamp(
@@ -325,7 +325,7 @@ return {
 				settings.maxZones
 			)
 			Assert.equal(#map.zonePoints, expected, label)
-			local half = math.floor(deepestDistance(map) / 2)
+			local nearest = math.floor(farthestDistance(map) * settings.zoneMinDistanceFraction)
 			local seen = {}
 			for _, id in map.zonePoints do
 				local point = map.points[id]
@@ -333,7 +333,10 @@ return {
 				seen[id] = true
 				Assert.falsy(point.isEntry, "zone at an entry, " .. label)
 				Assert.truthy(point.hasZone, label)
-				Assert.truthy(point.distance >= math.max(1, half), "zone too shallow, " .. label)
+				Assert.truthy(
+					point.distance >= math.max(1, nearest),
+					"zone too near the entries, " .. label
+				)
 			end
 			local flagged = 0
 			for _, point in map.points do
@@ -349,7 +352,7 @@ return {
 		local sawWater = false
 		eachMap(function(map, config, label)
 			local settings = config.map
-			local dry = settings.waterLevel + 1
+			local dry = settings.waterLevel + settings.dryMargin
 			local size = math.ceil(2 * map.half / settings.heightCell) + 1
 			Assert.equal(#map.heights, size, label)
 			for _, line in map.heights do
@@ -529,7 +532,7 @@ return {
 
 	["clearPath stops at a prop and runs along a path"] = function()
 		local sawProp = false
-		eachMap(function(map, _, label)
+		eachMap(function(map, config, label)
 			for _, path in map.paths do
 				local a, b = map.points[path.a], map.points[path.b]
 				Assert.truthy(Map.clearPath(map, a.x, a.z, b.x, b.z), label)
@@ -545,8 +548,13 @@ return {
 					then
 						sawProp = true
 						Assert.falsy(Map.clearPath(map, fromX, prop.z, toX, prop.z), label)
+						-- Two studs to the prop: the walk stops within a sample of it.
 						local reach = Map.reach(map, fromX, prop.z, toX, prop.z)
 						Assert.truthy(reach <= 2 + 1e-9, "reach " .. reach .. ", " .. label)
+						Assert.truthy(
+							reach >= 2 - config.map.sampleStep - 1e-9,
+							"reach " .. reach .. ", " .. label
+						)
 					end
 				end
 			end
@@ -588,14 +596,20 @@ return {
 						Assert.falsy(Map.clearShot(map, fromX, prop.z, toX, prop.z), label)
 						local reach = Map.shotReach(map, fromX, prop.z, toX, prop.z)
 						Assert.truthy(reach <= 2 + 1e-9, "reach " .. reach .. ", " .. label)
-						Assert.truthy(reach >= 1 - 1e-9, "reach " .. reach .. ", " .. label)
+						Assert.truthy(
+							reach >= 2 - config.map.sampleStep - 1e-9,
+							"reach " .. reach .. ", " .. label
+						)
 					end
 				end
 				Assert.falsy(Map.blocksShots(map, point.x, point.z), label)
 			end
 			Assert.truthy(Map.blocksShots(map, map.half + 1, 0), label)
 			local reach = Map.shotReach(map, map.half - 10, 0, map.half + 10, 0)
-			Assert.truthy(reach >= 9 - 1e-9 and reach <= 10 + 1e-9, "edge " .. reach)
+			Assert.truthy(
+				reach >= 10 - config.map.sampleStep - 1e-9 and reach <= 10 + 1e-9,
+				"edge " .. reach
+			)
 			Assert.equal(Map.shotReach(map, 0, 0, 0, 0), 0)
 		end)
 		Assert.truthy(sawWater, "no water checked")
@@ -702,5 +716,151 @@ return {
 			Assert.equal(#map.points, config.map.maxPoints)
 			Assert.truthy(elapsed < 0.1, string.format("%.1f ms", elapsed * 1000))
 		end
+	end,
+
+	["clamp puts a half-stud step into water back within a stud and a half"] = function()
+		local config = Fixtures.config()
+		local checked = 0
+		for seed = 1, 20 do
+			local map = generate(config, seed, 4)
+			local probe = Rng.new(seed * 13)
+			-- Shores lie within a cell of a node under water.
+			local wet: { { number } } = {}
+			for row, line in map.heights do
+				for col, height in line do
+					if height < config.map.waterLevel then
+						table.insert(wet, { nodePosition(map, row, col) })
+					end
+				end
+			end
+			local found = 0
+			for _ = 1, 100000 do
+				if found >= 25 or #wet == 0 then
+					break
+				end
+				local node = wet[probe:integer(1, #wet)]
+				local x = node[1] + (probe:next() * 2 - 1) * map.heightCell
+				local z = node[2] + (probe:next() * 2 - 1) * map.heightCell
+				local angle = probe:next() * 2 * math.pi
+				local sx, sz = x + math.cos(angle) * 0.5, z + math.sin(angle) * 0.5
+				-- A shore: walkable ground half a stud from water, not a prop.
+				if
+					Map.walkable(map, x, z)
+					and not Map.walkable(map, sx, sz)
+					and not Map.blocksShots(map, sx, sz)
+				then
+					found += 1
+					local cx, cz = Map.clamp(map, sx, sz)
+					Assert.truthy(Map.walkable(map, cx, cz), "seed " .. seed)
+					local moved = Geometry.distance(cx, cz, x, z)
+					Assert.truthy(
+						moved <= 1.5,
+						string.format("seed %d: (%.2f, %.2f) put back %.2f away", seed, x, z, moved)
+					)
+				end
+			end
+			checked += found
+		end
+		Assert.equal(checked, 500)
+	end,
+
+	["waypointToward leads round a prop to a target behind it"] = function()
+		local config = Fixtures.config()
+		local checked = 0
+		for _, players in { 1, 4 } do
+			for seed = 1, 5 do
+				local map = generate(config, seed, players)
+				for _, point in map.points do
+					local startX, startZ = point.campX or point.x, point.campZ or point.z
+					for _, prop in point.props do
+						for k = 0, 7 do
+							-- Two studs out from the prop's face, all round it.
+							local dx, dz = math.cos(k * math.pi / 4), math.sin(k * math.pi / 4)
+							local out = math.min(
+								prop.halfWidth / math.max(math.abs(dx), 1e-9),
+								prop.halfDepth / math.max(math.abs(dz), 1e-9)
+							) + 2
+							local tx, tz = prop.x + dx * out, prop.z + dz * out
+							if
+								not Map.walkable(map, tx, tz)
+								or Map.nearestPoint(map, tx, tz) ~= point
+								or Map.clearPath(map, startX, startZ, tx, tz)
+							then
+								continue
+							end
+							checked += 1
+							local x, z = startX, startZ
+							local steps = 0
+							while Geometry.distance(x, z, tx, tz) > 0.5 and steps < 200 do
+								steps += 1
+								local wx, wz = Map.waypointToward(map, x, z, tx, tz)
+								Assert.truthy(wx ~= x or wz ~= z, "no way on, seed " .. seed)
+								x, z = Map.clamp(map, Geometry.stepToward(x, z, wx, wz, 0.5))
+								Assert.truthy(Map.walkable(map, x, z))
+							end
+							Assert.truthy(
+								steps < 200,
+								string.format(
+									"seed %d, %d players: stuck at point %d short of (%.1f, %.1f)",
+									seed,
+									players,
+									point.id,
+									tx,
+									tz
+								)
+							)
+						end
+					end
+				end
+			end
+		end
+		Assert.truthy(checked > 50, "only " .. checked .. " targets behind props")
+	end,
+
+	["waypointToward stays put when water leaves no way to the target"] = function()
+		local run = Fixtures.run(1)
+		local map = run.map
+		local entry = Fixtures.entryOf(run)
+		Fixtures.dry(run, entry.x, entry.z, 40)
+		-- An island: one height node above a pond.
+		local col = math.round((entry.x + 12 + map.half) / map.heightCell) + 1
+		local row = math.round((entry.z + map.half) / map.heightCell) + 1
+		local islandX = -map.half + (col - 1) * map.heightCell
+		local islandZ = -map.half + (row - 1) * map.heightCell
+		Fixtures.water(run, islandX, islandZ, 14)
+		map.heights[row][col] = map.waterLevel + 1
+		Assert.truthy(Map.walkable(map, islandX, islandZ))
+		Assert.equal(Map.nearestPoint(map, islandX, islandZ), entry)
+
+		local x, z = islandX - 22, islandZ
+		Assert.truthy(Map.walkable(map, x, z))
+		local stuck = false
+		for _ = 1, 200 do
+			local wx, wz = Map.waypointToward(map, x, z, islandX, islandZ)
+			if wx == x and wz == z then
+				stuck = true
+				break
+			end
+			x, z = Map.clamp(map, Geometry.stepToward(x, z, wx, wz, 0.5))
+			Assert.truthy(Map.walkable(map, x, z), "walked into the water")
+		end
+		Assert.truthy(stuck, "kept walking toward an island")
+		Assert.truthy(Geometry.distance(x, z, islandX, islandZ) > 4)
+	end,
+
+	["generate fails loudly when the entries cannot keep their spacing"] = function()
+		local config = Fixtures.config()
+		config.map.minEntrySpacing = 10000
+		local ok, message = pcall(Map.generate, config, Rng.new(1), 12)
+		Assert.falsy(ok)
+		Assert.truthy(string.find(tostring(message), "minEntrySpacing", 1, true), tostring(message))
+	end,
+
+	["generate fails loudly when too few points fit"] = function()
+		local config = Fixtures.config()
+		config.map.pointSpacing = 200
+		local ok, message = pcall(Map.generate, config, Rng.new(1), 1)
+		Assert.falsy(ok)
+		Assert.truthy(string.find(tostring(message), "pointSpacing", 1, true), tostring(message))
 	end,
 }

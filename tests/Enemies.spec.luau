@@ -16,6 +16,20 @@ local function tick(run: Types.Run, dt: number?)
 	Enemies.step(run, step)
 end
 
+-- Sinks the ground within 14 studs of the height node nearest (x, z) but
+-- that node: an island a few studs across, no way onto it on foot. Returns
+-- the node's position.
+local function island(run: Types.Run, x: number, z: number): (number, number)
+	local map = run.map
+	local col = math.round((x + map.half) / map.heightCell) + 1
+	local row = math.round((z + map.half) / map.heightCell) + 1
+	local nodeX = -map.half + (col - 1) * map.heightCell
+	local nodeZ = -map.half + (row - 1) * map.heightCell
+	Fixtures.water(run, nodeX, nodeZ, 14)
+	map.heights[row][col] = map.waterLevel + run.config.map.dryMargin
+	return nodeX, nodeZ
+end
+
 -- A run with `playerCount` players. Player 1 stands at the centre of the
 -- first entry, and `point` is that entry: it has no props and the ground
 -- within 30 studs of it is dry, so offsets of up to 20 studs from the centre
@@ -551,7 +565,10 @@ return {
 		grunt.knockUntil = run.time + 1
 		tick(run)
 		Assert.truthy(grunt.x < wall.x - wall.halfWidth, "pushed through the prop")
-		Assert.truthy(grunt.x >= wall.x - wall.halfWidth - 1 - 1e-6, "stopped short")
+		Assert.truthy(
+			grunt.x >= wall.x - wall.halfWidth - run.config.map.sampleStep - 1e-6,
+			"stopped short"
+		)
 		Assert.near(grunt.z, point.z)
 
 		-- Thirty studs toward water whose middle is 22 away.
@@ -641,5 +658,208 @@ return {
 		Assert.equal(lead.state, "patrol")
 		Assert.equal(lead.target, nil)
 		Assert.equal(lead.health, lead.maxHealth)
+	end,
+
+	["a chase goes round a well to a player behind it"] = function()
+		local run = Fixtures.run(1, nil, 1)
+		local player = run.players[1]
+		local crossing: Types.MapPoint? = nil
+		for _, point in run.map.points do
+			if point.template == "crossing" and #point.props == 1 then
+				crossing = point
+				break
+			end
+		end
+		assert(crossing, "seed 1 has no crossing with its well")
+		local well = crossing.props[1]
+		local campX, campZ = crossing.campX :: number, crossing.campZ :: number
+		-- The review's spot by the well's back corner, then two studs behind it.
+		local spots = {
+			{ well.x - well.halfWidth - 0.07, well.z + well.halfDepth - 0.15 },
+			{ well.x, well.z + well.halfDepth + 2 },
+		}
+		for _, spot in spots do
+			Fixtures.place(run, player, spot[1], spot[2])
+			Assert.falsy(Map.clearPath(run.map, campX, campZ, player.x, player.z))
+			local grunt = chaser(run, "grunt", campX, campZ)
+			local attack = State.archetype(run, grunt).attacks[1]
+			local steps = 0
+			while grunt.state == "chase" and steps < 50 do
+				tick(run)
+				steps += 1
+			end
+			Assert.equal(grunt.state, "telegraph", "never got in range")
+			Assert.truthy(Geometry.distance(grunt.x, grunt.z, player.x, player.z) <= attack.range)
+			State.removeEnemy(run, grunt)
+		end
+	end,
+
+	["a chase with no way to its target gives up and walks home"] = function()
+		local run, point, player = arena()
+		local config = run.config.enemies
+		local x, z = island(run, point.x + 12, point.z)
+		Fixtures.place(run, player, x, z)
+		local grunt = chaser(run, "grunt", x - 25, z)
+		config.archetypes.grunt.leash = 1000
+		Assert.truthy(
+			Geometry.distance(grunt.x, grunt.z, x, z) > config.archetypes.grunt.detectionRange,
+			"home within detection range of the island"
+		)
+
+		local steps = 0
+		while grunt.stuckSince == nil and steps < 100 do
+			tick(run)
+			steps += 1
+		end
+		local since = grunt.stuckSince
+		assert(since, "never ran out of way")
+		while grunt.state == "chase" and steps < 200 do
+			tick(run)
+			steps += 1
+		end
+		Assert.equal(grunt.state, "return")
+		Assert.equal(grunt.target, nil)
+		Assert.near(run.time - since, config.giveUpSeconds, DT + 1e-6)
+
+		while grunt.state == "return" and steps < 400 do
+			tick(run)
+			steps += 1
+		end
+		Assert.equal(grunt.state, "idle")
+		Assert.truthy(
+			Geometry.distance(grunt.x, grunt.z, grunt.homeX, grunt.homeZ) <= config.arriveDistance
+		)
+		Assert.near(grunt.homeX, x - 25)
+	end,
+
+	["a chase that keeps finding a way does not give up"] = function()
+		local run, point, player = arena()
+		run.config.enemies.archetypes.grunt.leash = 1000
+		run.config.enemies.archetypes.grunt.detectionRange = 1000
+		local wall = Fixtures.prop(point, point.x + 6, point.z, 1, 6)
+		Fixtures.place(run, player, wall.x + 3, point.z)
+		local grunt = chaser(run, "grunt", point.x - 6, point.z)
+		for _ = 1, math.ceil(run.config.enemies.giveUpSeconds / DT) * 2 do
+			tick(run)
+			if grunt.state ~= "chase" then
+				break
+			end
+			Assert.equal(grunt.stuckSince, nil)
+		end
+		Assert.equal(grunt.state, "telegraph")
+	end,
+
+	["a wanderer roams walkable spots within its radius"] = function()
+		local run, point = arena()
+		local patrols = run.config.enemies.patrols
+		patrols.wanderRadius = 15
+		local wanderer = Fixtures.enemy(run, "grunt", point.x, point.z)
+		local patrol: Types.Patrol = {
+			id = 1,
+			members = { wanderer.id },
+			routePoint = point.id,
+			previousPoint = point.id,
+			strength = 1,
+			wanders = true,
+			wanderX = point.x,
+			wanderZ = point.z,
+			wanderUntil = 0,
+		}
+		table.insert(run.patrols, patrol)
+		wanderer.patrolId = patrol.id
+		wanderer.state = "patrol"
+		-- Nobody to notice.
+		run.players[1].state = "dead"
+
+		local spots, arrivals = 0, 0
+		local lastX, lastZ = patrol.wanderX, patrol.wanderZ
+		for _ = 1, 600 do
+			local fromX, fromZ = wanderer.x, wanderer.z
+			local wasThere = Geometry.distance(fromX, fromZ, lastX, lastZ)
+				<= run.config.enemies.arriveDistance
+			tick(run)
+			if patrol.wanderX ~= lastX or patrol.wanderZ ~= lastZ then
+				spots += 1
+				if wasThere then
+					arrivals += 1
+				end
+				Assert.truthy(Map.walkable(run.map, patrol.wanderX, patrol.wanderZ))
+				Assert.truthy(
+					Geometry.distance(fromX, fromZ, patrol.wanderX, patrol.wanderZ)
+						<= patrols.wanderRadius + 1e-6,
+					"spot beyond the radius"
+				)
+				Assert.near(patrol.wanderUntil, run.time + patrols.wanderSeconds)
+				lastX, lastZ = patrol.wanderX, patrol.wanderZ
+			end
+			Assert.equal(wanderer.state, "patrol")
+			Assert.truthy(Map.walkable(run.map, wanderer.x, wanderer.z))
+		end
+		Assert.truthy(arrivals >= 3, "arrived " .. arrivals .. " times")
+		Assert.truthy(spots >= arrivals)
+	end,
+
+	["a wanderer that cannot reach its spot draws another after wanderSeconds"] = function()
+		local run, point = arena()
+		local patrols = run.config.enemies.patrols
+		patrols.wanderRadius = 10
+		local x, z = island(run, point.x + 12, point.z)
+		local wanderer = Fixtures.enemy(run, "grunt", x - 25, z)
+		local patrol: Types.Patrol = {
+			id = 1,
+			members = { wanderer.id },
+			routePoint = point.id,
+			previousPoint = point.id,
+			strength = 1,
+			wanders = true,
+			wanderX = x,
+			wanderZ = z,
+			wanderUntil = run.time + patrols.wanderSeconds,
+		}
+		table.insert(run.patrols, patrol)
+		wanderer.patrolId = patrol.id
+		wanderer.state = "patrol"
+		run.players[1].state = "dead"
+
+		local deadline = patrol.wanderUntil
+		while run.time < deadline - 1e-9 do
+			tick(run)
+			Assert.equal(patrol.wanderX, x, "drew a spot before wanderSeconds")
+		end
+		tick(run)
+		Assert.truthy(patrol.wanderX ~= x or patrol.wanderZ ~= z, "kept the spot it cannot reach")
+	end,
+
+	["a wanderer notices a player, chases, and wanders on from its leash"] = function()
+		local run, point, player = arena()
+		local wanderer = Fixtures.enemy(run, "grunt", point.x - 15, point.z)
+		local patrol: Types.Patrol = {
+			id = 1,
+			members = { wanderer.id },
+			routePoint = point.id,
+			previousPoint = point.id,
+			strength = 1,
+			wanders = true,
+			wanderX = point.x - 15,
+			wanderZ = point.z,
+			wanderUntil = 1000,
+		}
+		table.insert(run.patrols, patrol)
+		wanderer.patrolId = patrol.id
+		wanderer.state = "patrol"
+		Fixtures.place(run, player, point.x, point.z)
+		tick(run)
+		Assert.equal(wanderer.state, "chase")
+		Assert.equal(wanderer.target, 1)
+		Assert.near(wanderer.homeX, point.x - 15)
+
+		player.state = "dead"
+		local steps = 0
+		while wanderer.state ~= "patrol" and steps < 200 do
+			tick(run)
+			steps += 1
+		end
+		Assert.equal(wanderer.state, "patrol")
+		Assert.equal(wanderer.target, nil)
 	end,
 }

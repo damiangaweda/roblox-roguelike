@@ -1,5 +1,5 @@
 --!strict
--- A top-down camera that follows the local character, close enough for a room
+-- A top-down camera that follows the local character, close enough for a point
 -- to fill the screen, with a shake that big hits ask for. Purely presentation:
 -- it never feeds anything back to the server.
 

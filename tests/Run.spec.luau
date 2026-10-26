@@ -131,6 +131,8 @@ return {
 	["a player who fires at a camp kills, levels up and is offered perks"] = function()
 		local config = Fixtures.config()
 		config.player.maxHealth = 1e9
+		-- Two grunts of the camp pay for the level, whatever else walks by.
+		config.progression.xpToSecondLevel = 2
 		local run = populated(1, config)
 		local player = run.players[1]
 		-- Walk to the nearest camp's point and shoot toward its camp.

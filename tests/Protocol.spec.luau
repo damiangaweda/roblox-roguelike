@@ -7,7 +7,7 @@ local Protocol = require("../src/shared/Protocol")
 local Rng = require("../src/shared/Core/Rng")
 local Types = require("../src/shared/Core/Types")
 
--- A 3 x 2 map with one point, one path and one bush; only what mapView reads.
+-- A 3 x 2 map with one point, one path and one bush; mapView reads only its ground.
 local function smallMap(): Types.Map
 	return {
 		half = 8,
@@ -239,7 +239,7 @@ return {
 		Assert.equal(#view.zones, #run.zones)
 	end,
 
-	["the map view carries the heights to the tenth and the points, paths and cover"] = function()
+	["the map view carries only the ground, its heights to the tenth"] = function()
 		local view = Protocol.mapView(smallMap())
 		Assert.equal(view.rows, 2)
 		Assert.equal(view.cols, 3)
@@ -255,15 +255,13 @@ return {
 		Assert.near(heights[1][3], 24, 1e-9)
 		Assert.near(heights[2][2], 4, 1e-9)
 		Assert.near(heights[2][3], 12.3, 1e-9)
-		Assert.equal(#view.points, 1)
-		Assert.equal(view.points[1].template, "entry")
-		Assert.equal(view.points[1].radius, 6)
-		Assert.equal(view.points[1].isEntry, true)
-		Assert.equal(view.points[1].hasZone, false)
-		Assert.equal(view.paths[1].halfWidth, 4)
-		Assert.equal(view.paths[1].b, 2)
-		Assert.equal(view.fieldCover[1].x, -3.5)
-		Assert.equal(view.fieldCover[1].z, 7)
+		-- Nothing about the points travels: a zone not yet open stays hidden.
+		local fields = {}
+		for key in view :: any do
+			table.insert(fields, key)
+		end
+		table.sort(fields)
+		Assert.equal(table.concat(fields, ","), "cols,half,heightCell,heights,rows,waterLevel")
 	end,
 
 	["a map view whose heights do not match its grid is rejected"] = function()

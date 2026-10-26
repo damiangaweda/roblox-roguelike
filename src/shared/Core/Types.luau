@@ -79,6 +79,10 @@ export type Map = {
 	heights: { { number } },
 	heightCell: number,
 	waterLevel: number,
+	-- The map settings its queries use, from the configuration.
+	sampleStep: number,
+	clampRadius: number,
+	steerProbe: number,
 	-- Cover scattered between points (bushes), absolute.
 	fieldCover: { Point },
 	-- The ids of the points whose footprint overlaps a grid cell, keyed by
@@ -282,9 +286,12 @@ export type MapConfig = {
 	minZones: number,
 	maxZones: number,
 	zoneRadius: number,
-	-- How much a point's depth counts against its distance from other
-	-- zones when extraction zones are placed.
-	zoneDepthWeight: number,
+	-- How much a point's distance from the entries counts against its
+	-- distance from other zones when extraction zones are placed.
+	zoneDistanceWeight: number,
+	-- Zones go only to points at least this share of the farthest point's
+	-- distance from the entries, while there are enough of them.
+	zoneMinDistanceFraction: number,
 	coverRadius: number,
 	-- Bushes scattered between points, per point, and how far they keep
 	-- from footprints and path bands.
@@ -293,10 +300,21 @@ export type MapConfig = {
 	heightCell: number,
 	-- Hills from 0 to this.
 	maxHeight: number,
-	-- Below it water; points and paths stay at least one stud above it.
+	-- Below it water.
 	waterLevel: number,
+	-- How far above the water footprints and path bands are raised.
+	dryMargin: number,
 	-- Cycles per stud of the value noise.
 	hillFrequency: number,
+	-- How far apart the positions are that a walk or a shot is checked at:
+	-- movement stops up to this short of water or a prop.
+	sampleStep: number,
+	-- How far from an unwalkable position walkable ground is looked for
+	-- before a position is put back by the walk to a point's centre.
+	clampRadius: number,
+	-- How far ahead a walker probes the turned headings when the straight
+	-- line to its target is blocked.
+	steerProbe: number,
 	campReturnMinutes: number,
 	templates: { PointTemplate },
 	entryTemplate: PointTemplate,
@@ -370,6 +388,9 @@ export type Config = {
 		buffSpeedFactor: number,
 		-- Damage multiplier of a buffed enemy.
 		buffDamageFactor: number,
+		-- A chase that finds no way toward its target for this long ends, as
+		-- at the leash.
+		giveUpSeconds: number,
 		archetypes: { [string]: ArchetypeConfig },
 		campLeader: string,
 		-- Indexed by point level.
@@ -387,11 +408,17 @@ export type Config = {
 			pool: { string },
 			latePool: { string },
 			lateMinutes: number,
-			-- A patrol appears at least this many paths from every player.
-			minHopsFromPlayers: number,
+			-- A patrol appears at a point whose centre is at least this many
+			-- studs from every alive player.
+			minDistanceFromPlayers: number,
 			-- The pool a lone wanderer is drawn from, and how many roam at start.
 			wandererPool: { string },
 			wanderersAtStart: number,
+			-- A wanderer walks to a walkable spot within wanderRadius of
+			-- where it stands, and draws a new one when it arrives or after
+			-- wanderSeconds.
+			wanderRadius: number,
+			wanderSeconds: number,
 		},
 	},
 	statuses: {
@@ -439,7 +466,8 @@ export type Enemy = {
 	facing: number,
 	health: number,
 	maxHealth: number,
-	-- The camp or patrol the enemy belongs to; a wanderer is a patrol of one.
+	-- The camp or patrol the enemy belongs to; a wanderer is a patrol of one
+	-- that wanders.
 	campId: number?,
 	patrolId: number?,
 	-- Where the leash is measured from: the camp spot, or where a patrol
@@ -451,6 +479,9 @@ export type Enemy = {
 	stateUntil: number,
 	-- The player chased.
 	target: number?,
+	-- Run time since which the walk toward the chased player, or home, has
+	-- found no way on; nil while it finds one.
+	stuckSince: number?,
 	-- Index into the archetype's attacks of the attack being telegraphed, or
 	-- the next one to use.
 	attack: number,
@@ -500,6 +531,12 @@ export type Patrol = {
 	previousPoint: number,
 	-- Multiplies the health of members spawned later in the run.
 	strength: number,
+	-- A wanderer: walks to spots on the open ground instead of along the
+	-- paths, to (wanderX, wanderZ) until it arrives or wanderUntil passes.
+	wanders: boolean,
+	wanderX: number,
+	wanderZ: number,
+	wanderUntil: number,
 }
 
 export type Projectile = {
