@@ -1,6 +1,6 @@
 --!strict
 -- The client end of every remote: sends intents, keeps the latest world and
--- hands events to whoever listens. The client only asks (AGENTS.md rule 1).
+-- the run's map and hands events to whoever listens. The client only asks (AGENTS.md rule 1).
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -14,6 +14,7 @@ local remotes = ReplicatedStorage:WaitForChild("Remotes")
 local intentRemote = remotes:WaitForChild(Protocol.remotes.intent) :: RemoteEvent
 local worldRemote = remotes:WaitForChild(Protocol.remotes.world) :: RemoteEvent
 local eventsRemote = remotes:WaitForChild(Protocol.remotes.events) :: RemoteEvent
+local mapRemote = remotes:WaitForChild(Protocol.remotes.map) :: RemoteEvent
 
 local archetypeNames = Protocol.archetypeNames(Config)
 local projectileKinds = Protocol.projectileKinds(Config)
@@ -32,9 +33,13 @@ Net.latest = nil :: Snapshot?
 -- The local player's own state from the latest event batch, and when it came.
 Net.self = nil :: Protocol.SelfView?
 Net.selfAt = 0
+-- The run's map and its decoded height grid, nil until the server sends one.
+Net.map = nil :: Protocol.MapView?
+Net.heights = nil :: { { number } }?
 
 local worldListeners: { (Snapshot) -> () } = {}
 local eventListeners: { ({ Types.Event }) -> () } = {}
+local mapListeners: { (Protocol.MapView) -> () } = {}
 
 function Net.onWorld(listener: (Snapshot) -> ())
 	table.insert(worldListeners, listener)
@@ -42,6 +47,20 @@ end
 
 function Net.onEvents(listener: ({ Types.Event }) -> ())
 	table.insert(eventListeners, listener)
+end
+
+function Net.onMap(listener: (Protocol.MapView) -> ())
+	table.insert(mapListeners, listener)
+end
+
+-- The ground's drawn height at (x, z); 0 before the map arrives.
+function Net.heightAt(x: number, z: number): number
+	local map = Net.map
+	local heights = Net.heights
+	if map == nil or heights == nil then
+		return 0
+	end
+	return Protocol.heightAt(heights, map.heightCell, map.half, map.waterLevel, x, z)
 end
 
 -- The basic attack's input went down (`held`) or up.
@@ -109,6 +128,21 @@ worldRemote.OnClientEvent:Connect(
 		end
 	end
 )
+
+mapRemote.OnClientEvent:Connect(function(view: Protocol.MapView)
+	if type(view) ~= "table" then
+		return
+	end
+	local heights = Protocol.decodeHeights(view)
+	if heights == nil then
+		return
+	end
+	Net.map = view
+	Net.heights = heights
+	for _, listener in mapListeners do
+		listener(view)
+	end
+end)
 
 eventsRemote.OnClientEvent:Connect(function(events: { Types.Event }, selfView: Protocol.SelfView?)
 	Net.self = selfView

@@ -7,15 +7,15 @@ local Combat = require("./Combat")
 local Enemies = require("./Enemies")
 local Extraction = require("./Extraction")
 local Life = require("./Life")
+local Map = require("./Map")
 local Perks = require("./Perks")
 local Projectiles = require("./Projectiles")
 local State = require("./State")
 local Types = require("./Types")
-local World = require("./World")
 
 local Run = {}
 
--- A run for `playerCount` players: the world is generated for that many and
+-- A run for `playerCount` players: the map is generated for that many and
 -- populated with camps and patrols.
 function Run.new(config: Types.Config, seed: number, playerCount: number): Types.Run
 	local run = State.newRun(config, seed, playerCount)
@@ -160,8 +160,8 @@ local function isFinite(value: number): boolean
 end
 
 -- Positions come from the client's character, so the run accepts only what
--- walking could reach: anything not finite is dropped, the rest is held inside
--- the walkable world, behind the first wall on its way, and to the player's
+-- walking could reach: anything not finite is dropped, the rest is held on
+-- walkable ground, before the first water or prop on its way, and to the player's
 -- movement budget (rule 1). The budget refills at walking speed with a
 -- tolerance (slower while firing backwards) and banks a short burst, which
 -- absorbs late updates but not a teleport; a dash adds a boost that lapses.
@@ -179,7 +179,7 @@ local function move(run: Types.Run, player: Types.Player, input: Types.PlayerInp
 		return
 	end
 
-	local targetX, targetZ = World.clamp(run.world, input.x, input.z)
+	local targetX, targetZ = Map.clamp(run.map, input.x, input.z)
 	local dx, dz = targetX - player.x, targetZ - player.z
 	local distance = math.sqrt(dx * dx + dz * dz)
 
@@ -196,8 +196,8 @@ local function move(run: Types.Run, player: Types.Player, input: Types.PlayerInp
 		player.boost = 0
 	end
 
-	-- A wall on the way stops the move there.
-	local reach = World.reach(run.world, player.x, player.z, targetX, targetZ)
+	-- Water or a prop on the way stops the move there.
+	local reach = Map.reach(run.map, player.x, player.z, targetX, targetZ)
 	local allowed = math.min(distance, reach, player.moveBudget + player.boost)
 	if distance > 1e-9 and allowed < distance then
 		local scale = allowed / distance
@@ -215,9 +215,8 @@ end
 
 -- Refreshes where the player stands and gives dash charges back.
 local function refresh(run: Types.Run, player: Types.Player)
-	local room = World.roomAt(run.world, player.x, player.z)
-	player.roomId = if room then room.id else nil
-	player.inCover = World.inCover(run.world, run.config, player.x, player.z)
+	player.pointId = State.pointIdAt(run, player.x, player.z)
+	player.inCover = Map.inCover(run.map, run.config, player.x, player.z)
 
 	local max = Run.dashMaxCharges(run, player)
 	while player.dashCharges < max and run.time >= player.dashRechargeAt do

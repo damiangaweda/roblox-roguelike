@@ -14,6 +14,8 @@ Protocol.remotes = {
 	world = "World",
 	-- Server to one client: events it may see and its own state.
 	events = "Events",
+	-- Server to one client: the run's map, once per run and on join.
+	map = "Map",
 }
 
 export type Intent =
@@ -359,6 +361,134 @@ export type SelfView = {
 	potions: number,
 	potionCapacity: number,
 }
+
+export type MapPointView = {
+	id: number,
+	x: number,
+	z: number,
+	template: string,
+	radius: number,
+	level: number,
+	isEntry: boolean,
+	hasZone: boolean,
+}
+
+export type PathView = { a: number, b: number, halfWidth: number }
+
+-- The map as the client draws it. Heights travel as u16 tenths of a stud,
+-- row-major: heights[row][col], row along z, col along x, both from -half,
+-- spaced heightCell apart.
+export type MapView = {
+	half: number,
+	heightCell: number,
+	waterLevel: number,
+	rows: number,
+	cols: number,
+	heights: buffer,
+	points: { MapPointView },
+	paths: { PathView },
+	fieldCover: { { x: number, z: number } },
+}
+
+local HEIGHT_SCALE = 10
+local HEIGHT_BYTES = 2
+
+function Protocol.mapView(map: Types.Map): MapView
+	local rows = #map.heights
+	local cols = if rows > 0 then #map.heights[1] else 0
+	local heights = buffer.create(rows * cols * HEIGHT_BYTES)
+	for row, line in map.heights do
+		for col, height in line do
+			local offset = ((row - 1) * cols + col - 1) * HEIGHT_BYTES
+			buffer.writeu16(
+				heights,
+				offset,
+				math.clamp(math.round(height * HEIGHT_SCALE), 0, 65535)
+			)
+		end
+	end
+	local points: { MapPointView } = table.create(#map.points)
+	for i, point in map.points do
+		points[i] = {
+			id = point.id,
+			x = point.x,
+			z = point.z,
+			template = point.template,
+			radius = point.radius,
+			level = point.level,
+			isEntry = point.isEntry,
+			hasZone = point.hasZone,
+		}
+	end
+	local paths: { PathView } = table.create(#map.paths)
+	for i, path in map.paths do
+		paths[i] = { a = path.a, b = path.b, halfWidth = path.halfWidth }
+	end
+	local fieldCover = table.create(#map.fieldCover)
+	for i, spot in map.fieldCover do
+		fieldCover[i] = { x = spot.x, z = spot.z }
+	end
+	return {
+		half = map.half,
+		heightCell = map.heightCell,
+		waterLevel = map.waterLevel,
+		rows = rows,
+		cols = cols,
+		heights = heights,
+		points = points,
+		paths = paths,
+		fieldCover = fieldCover,
+	}
+end
+
+local function isCount(value: any): boolean
+	return isFiniteNumber(value) and value == math.floor(value) and value >= 2
+end
+
+-- The height grid of a map view; nil when the view is malformed or the
+-- buffer's length does not match rows x cols.
+function Protocol.decodeHeights(view: MapView): { { number } }?
+	local data: any = view.heights
+	if type(data) ~= "buffer" or not isCount(view.rows) or not isCount(view.cols) then
+		return nil
+	end
+	local rows, cols = view.rows, view.cols
+	if buffer.len(data) ~= rows * cols * HEIGHT_BYTES then
+		return nil
+	end
+	local heights: { { number } } = table.create(rows)
+	for row = 1, rows do
+		local line = table.create(cols)
+		for col = 1, cols do
+			local offset = ((row - 1) * cols + col - 1) * HEIGHT_BYTES
+			line[col] = buffer.readu16(data, offset) / HEIGHT_SCALE
+		end
+		heights[row] = line
+	end
+	return heights
+end
+
+-- The drawn height at (x, z): bilinear over the grid, never below the water,
+-- by the same rule as Map.heightAt.
+function Protocol.heightAt(
+	heights: { { number } },
+	heightCell: number,
+	half: number,
+	waterLevel: number,
+	x: number,
+	z: number
+): number
+	local rows, cols = #heights, #heights[1]
+	local u = (math.clamp(x, -half, half) + half) / heightCell
+	local v = (math.clamp(z, -half, half) + half) / heightCell
+	local col = math.clamp(math.floor(u) + 1, 1, cols - 1)
+	local row = math.clamp(math.floor(v) + 1, 1, rows - 1)
+	local fx = math.clamp(u - (col - 1), 0, 1)
+	local fz = math.clamp(v - (row - 1), 0, 1)
+	local low = heights[row][col] * (1 - fx) + heights[row][col + 1] * fx
+	local high = heights[row + 1][col] * (1 - fx) + heights[row + 1][col + 1] * fx
+	return math.max(low * (1 - fz) + high * fz, waterLevel)
+end
 
 -- Whether an event goes to every client or only to the player it is about.
 function Protocol.isPrivate(event: Types.Event): boolean

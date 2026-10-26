@@ -31,20 +31,20 @@ local function count(events: { Types.Event }, kind: string): number
 end
 
 return {
-	["zones exist from the start of the run, in the world's zone rooms"] = function()
+	["zones exist from the start of the run, at the map's zone points"] = function()
 		for _, players in { 1, 4, 8, 12 } do
 			for seed = 1, 10 do
 				local run = Fixtures.run(players, nil, seed)
 				local label = "seed " .. seed .. ", " .. players .. " players"
 				Assert.truthy(#run.zones > 0, "no zones, " .. label)
 				Assert.equal(run.time, 0)
-				Assert.equal(#run.zones, #run.world.zoneRooms, label)
-				for index, id in run.world.zoneRooms do
-					local room = run.world.rooms[id]
+				Assert.equal(#run.zones, #run.map.zonePoints, label)
+				for index, id in run.map.zonePoints do
+					local point = run.map.points[id]
 					local zone = run.zones[index]
-					Assert.equal(zone.x, room.x, label)
-					Assert.equal(zone.z, room.z, label)
-					Assert.equal(zone.radius, run.config.world.zoneRadius, label)
+					Assert.equal(zone.x, point.x, label)
+					Assert.equal(zone.z, point.z, label)
+					Assert.equal(zone.radius, run.config.map.zoneRadius, label)
 				end
 			end
 		end
@@ -79,7 +79,7 @@ return {
 	["the zone reaches as far as its radius"] = function()
 		local run = Fixtures.run(1)
 		local zone = run.zones[1]
-		local radius = run.config.world.zoneRadius
+		local radius = run.config.map.zoneRadius
 		enterZone(run, 1)
 		run.players[1].x = zone.x + radius
 		advance(run, 1, 1)
@@ -92,8 +92,8 @@ return {
 	["outside a zone nothing happens"] = function()
 		local run = Fixtures.run(1)
 		local player = run.players[1]
-		-- Start rooms hold no zone.
-		Assert.falsy(run.world.rooms[run.world.zoneRooms[1]].isStart)
+		-- Entries hold no zone.
+		Assert.falsy(run.map.points[run.map.zonePoints[1]].isEntry)
 		player.interacting = true
 		advance(run, run.config.run.extractSeconds * 2, 1)
 		Assert.equal(player.state, "alive")
@@ -128,7 +128,7 @@ return {
 		enterZone(run, 1)
 		advance(run, 3, 1)
 		Assert.near(run.players[1].extractProgress, 3)
-		run.players[1].x += run.config.world.zoneRadius + 1
+		run.players[1].x += run.config.map.zoneRadius + 1
 		advance(run, 1, 1)
 		Assert.equal(run.players[1].extractProgress, 0)
 		enterZone(run, 1)

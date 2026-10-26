@@ -89,8 +89,9 @@ local shifts: { Shift } = {}
 local dashShift: Shift? = nil
 local trackedCharacter: Model? = nil
 
--- The ground plane is y = 0.
-local function groundPoint(): Vector3?
+-- Where the mouse points on the level plane through the ground under the
+-- character, so the aim does not drift on a hill.
+local function groundPoint(root: BasePart): Vector3?
 	local camera = workspace.CurrentCamera
 	if camera == nil then
 		return nil
@@ -100,7 +101,8 @@ local function groundPoint(): Vector3?
 	if ray.Direction.Y >= -1e-4 then
 		return nil
 	end
-	return ray.Origin + ray.Direction * (-ray.Origin.Y / ray.Direction.Y)
+	local planeY = Net.heightAt(root.Position.X, root.Position.Z)
+	return ray.Origin + ray.Direction * ((planeY - ray.Origin.Y) / ray.Direction.Y)
 end
 
 -- Clicking a button of the Hud (a perk offer, say) must not fire.
@@ -179,8 +181,11 @@ local function aimDistance(): number?
 		return nil
 	end
 	local _, _, root = localParts()
-	local point = groundPoint()
-	if root == nil or point == nil then
+	if root == nil then
+		return nil
+	end
+	local point = groundPoint(root)
+	if point == nil then
 		return nil
 	end
 	return Vector3.new(point.X - root.Position.X, 0, point.Z - root.Position.Z).Magnitude
@@ -208,6 +213,8 @@ function Input.interact(held: boolean)
 end
 
 -- Shortens `delta` so that a move from `origin` stops before a wall of the world.
+-- Only the props in workspace.World stop it: hills are walkable, and the shift
+-- climbs them in `stepShifts`.
 local function limitByWalls(origin: Vector3, delta: Vector3): Vector3
 	local distance = delta.Magnitude
 	local world = workspace:FindFirstChild("World")
@@ -217,6 +224,8 @@ local function limitByWalls(origin: Vector3, delta: Vector3): Vector3
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Include
 	params.FilterDescendantsInstances = { world }
+	-- Bushes and other walk-through dressing do not stop a dash.
+	params.RespectCanCollide = true
 	local hit = workspace:Raycast(origin, delta, params)
 	if hit == nil then
 		return delta
@@ -236,8 +245,19 @@ local function addShift(character: Model, root: BasePart, delta: Vector3, durati
 	return shift
 end
 
+-- Lifts the character onto the ground when a shift has pushed its feet under a
+-- hill; physics settles it from there. The root's centre stands HipHeight plus
+-- half its own height above the feet (R15).
+local function keepAboveGround(character: Model, humanoid: Humanoid, root: BasePart)
+	local position = root.Position
+	local standing = Net.heightAt(position.X, position.Z) + humanoid.HipHeight + root.Size.Y / 2
+	if standing > position.Y then
+		character:PivotTo(character:GetPivot() + Vector3.new(0, standing - position.Y, 0))
+	end
+end
+
 -- Carries the character along its shifts; a shift of another character is dropped.
-local function stepShifts(character: Model, deltaTime: number)
+local function stepShifts(character: Model, humanoid: Humanoid, root: BasePart, deltaTime: number)
 	for index = #shifts, 1, -1 do
 		local shift = shifts[index]
 		if shift.character ~= character then
@@ -250,6 +270,7 @@ local function stepShifts(character: Model, deltaTime: number)
 		shift.elapsed += deltaTime
 		local fraction = math.min(shift.elapsed / shift.duration, 1)
 		character:PivotTo(character:GetPivot() + shift.delta * (fraction - shift.applied))
+		keepAboveGround(character, humanoid, root)
 		shift.applied = fraction
 		if fraction >= 1 then
 			table.remove(shifts, index)
@@ -303,7 +324,7 @@ local function updateAim(root: BasePart)
 	elseif stick.Magnitude > STICK_DEADZONE then
 		lastAim = flat(Vector3.new(stick.X, 0, -stick.Y)) or lastAim
 	elseif mouseAim then
-		local point = groundPoint()
+		local point = groundPoint(root)
 		if point then
 			lastAim = flat(point - root.Position) or lastAim
 		end
@@ -352,7 +373,7 @@ local function update(deltaTime: number)
 	if humanoid.Health <= 0 then
 		return
 	end
-	stepShifts(character, deltaTime)
+	stepShifts(character, humanoid, root, deltaTime)
 	updateAim(root)
 	face(root)
 	sendAim(false)

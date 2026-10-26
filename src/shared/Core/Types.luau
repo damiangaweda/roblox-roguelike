@@ -10,71 +10,6 @@ export type Point = { x: number, z: number }
 -- An axis-aligned rectangle given by its centre and half extents.
 export type Rect = { x: number, z: number, halfWidth: number, halfDepth: number }
 
--- A hand-made room layout (ADR-0008): data the generator reads. Points are
--- relative to the room's centre.
-export type RoomTemplate = {
-	id: string,
-	halfWidth: number,
-	halfDepth: number,
-	-- Where the camp gathers.
-	camp: Point,
-	-- Where a chest stands (stage 2b).
-	chest: Point,
-	-- Cover spots; each hides a player within config.world.coverRadius.
-	cover: { Point },
-}
-
-export type Room = {
-	id: number,
-	-- The grid cell the room occupies.
-	cellX: number,
-	cellZ: number,
-	-- The centre and half extents, in studs.
-	x: number,
-	z: number,
-	halfWidth: number,
-	halfDepth: number,
-	template: string,
-	-- Ids of the corridors leaving the room, and of the rooms they lead to,
-	-- in the same order.
-	corridors: { number },
-	neighbours: { number },
-	-- Corridors to the nearest start room; 0 for a start room.
-	distance: number,
-	-- 1 next to the starts, config.world.maxLevel deepest.
-	level: number,
-	isStart: boolean,
-	-- Whether an extraction zone sits at the room's centre.
-	hasZone: boolean,
-	-- Absolute positions resolved from the template.
-	campX: number,
-	campZ: number,
-	cover: { Point },
-}
-
-export type Corridor = {
-	id: number,
-	roomA: number,
-	roomB: number,
-	x: number,
-	z: number,
-	halfWidth: number,
-	halfDepth: number,
-}
-
-export type World = {
-	rooms: { Room },
-	corridors: { Corridor },
-	startRooms: { number },
-	zoneRooms: { number },
-	-- nextHop[from][to] is the neighbouring room to walk to on the way from
-	-- room `from` to room `to`; nextHop[r][r] is r.
-	nextHop: { { number } },
-	-- hops[from][to] is the number of corridors between the rooms.
-	hops: { { number } },
-	bounds: Rect,
-}
-
 -- A hand-made point layout (ADR-0012): data the generator reads. Positions
 -- are relative to the point's centre.
 export type PointTemplate = {
@@ -151,9 +86,6 @@ export type Map = {
 	pointCells: { [number]: { number } },
 }
 
--- Where a point is: in a room, in a corridor, or outside the walkable world.
-export type Location = { kind: "room" | "corridor" | "outside", id: number }
-
 export type AttackKind = "melee" | "projectile" | "burst" | "heal"
 
 export type AttackConfig = {
@@ -211,7 +143,7 @@ export type CampLevelConfig = {
 	groups: { CampGroup },
 	-- Chance that the camp has a camp leader.
 	leaderChance: number,
-	-- Enemies added when one more player stands in the camp's room, and the
+	-- Enemies added when one more player stands in the camp's point, and the
 	-- health multiplier applied to the living members for each such player.
 	extraPerPlayer: number,
 	healthPerExtraPlayer: number,
@@ -378,34 +310,6 @@ export type Config = {
 		-- How long after the start a newcomer may still join the run.
 		lateJoinSeconds: number,
 	},
-	world: {
-		-- The pitch of the grid rooms sit on; a corridor spans the gap.
-		cellSize: number,
-		corridorHalfWidth: number,
-		roomsPerPlayer: number,
-		minRooms: number,
-		maxRooms: number,
-		-- Corridors a room may have at most.
-		maxExits: number,
-		-- Chance that two adjacent rooms not yet joined get a corridor.
-		loopChance: number,
-		playersPerStart: number,
-		maxStarts: number,
-		-- The fewest corridors between two start rooms.
-		minStartDistance: number,
-		maxLevel: number,
-		playersPerZone: number,
-		minZones: number,
-		maxZones: number,
-		zoneRadius: number,
-		-- How much a room's depth counts against its distance from other zones
-		-- when extraction zones are placed.
-		zoneDepthWeight: number,
-		coverRadius: number,
-		-- A camp in a room with a zone, or none.
-		campsInZoneRooms: boolean,
-		templates: { RoomTemplate },
-	},
 	map: MapConfig,
 	player: {
 		-- How far from a player's centre an attack touches them.
@@ -468,7 +372,7 @@ export type Config = {
 		buffDamageFactor: number,
 		archetypes: { [string]: ArchetypeConfig },
 		campLeader: string,
-		-- Indexed by room level.
+		-- Indexed by point level.
 		camps: { CampLevelConfig },
 		-- Studs from the camp spot that camp members stand at.
 		campSpreadRadius: number,
@@ -483,7 +387,7 @@ export type Config = {
 			pool: { string },
 			latePool: { string },
 			lateMinutes: number,
-			-- A patrol appears at least this many corridors from every player.
+			-- A patrol appears at least this many paths from every player.
 			minHopsFromPlayers: number,
 			-- The pool a lone wanderer is drawn from, and how many roam at start.
 			wandererPool: { string },
@@ -554,8 +458,8 @@ export type Enemy = {
 	aimX: number,
 	aimZ: number,
 	attackReadyAt: number,
-	-- A patrol member's destination room.
-	routeRoom: number?,
+	-- A patrol member's destination point.
+	routePoint: number?,
 	chilledUntil: number,
 	burningUntil: number,
 	-- The player credited with damage from burning, and with the kill.
@@ -570,7 +474,7 @@ export type Enemy = {
 
 export type Camp = {
 	id: number,
-	roomId: number,
+	pointId: number,
 	x: number,
 	z: number,
 	level: number,
@@ -583,14 +487,17 @@ export type Camp = {
 	-- Run time when its last member died; nil while it holds its point.
 	clearedAt: number?,
 	-- Whether the camp comes back after it is cleared (never at an entry).
-	returns: boolean?,
+	returns: boolean,
+	-- Multiplies the health of its members: 1 at the start of the run, the
+	-- patrols' strength for the run time when it returns.
+	strength: number,
 }
 
 export type Patrol = {
 	id: number,
 	members: { number },
-	routeRoom: number,
-	previousRoom: number,
+	routePoint: number,
+	previousPoint: number,
 	-- Multiplies the health of members spawned later in the run.
 	strength: number,
 }
@@ -674,8 +581,9 @@ export type Player = {
 	knockX: number,
 	knockZ: number,
 	knockUntil: number,
-	-- The room the player stands in, refreshed each step; nil in a corridor.
-	roomId: number?,
+	-- The point whose footprint the player stands in, else the nearest point;
+	-- refreshed each step.
+	pointId: number,
 	inCover: boolean,
 }
 
@@ -724,7 +632,9 @@ export type Event =
 	| { kind: "healed", enemyId: number, by: number, amount: number }
 	| { kind: "campAlerted", campId: number }
 	| { kind: "campScaled", campId: number, players: number }
-	| { kind: "patrolSpawned", patrolId: number, roomId: number }
+	| { kind: "patrolSpawned", patrolId: number, pointId: number }
+	-- A cleared camp came back at its point.
+	| { kind: "campReturned", campId: number, pointId: number }
 	| { kind: "dashed", player: number }
 	| { kind: "drinking", player: number }
 	| { kind: "drank", player: number, amount: number }
@@ -746,7 +656,7 @@ export type Run = {
 	config: Config,
 	rng: Rng,
 	time: number,
-	world: World,
+	map: Map,
 	nextEnemyId: number,
 	nextCampId: number,
 	nextPatrolId: number,

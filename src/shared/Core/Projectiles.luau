@@ -1,13 +1,14 @@
 --!strict
 -- Projectiles in flight: player fireballs and enemy spit. Each lands on what
--- it strikes, at a wall, or where its flight ends.
+-- it strikes, at a prop or the map's edge, or where its flight ends; it flies
+-- over water.
 
 local Combat = require("./Combat")
 local Geometry = require("./Geometry")
 local Life = require("./Life")
+local Map = require("./Map")
 local State = require("./State")
 local Types = require("./Types")
-local World = require("./World")
 
 local Projectiles = {}
 
@@ -71,7 +72,7 @@ end
 -- did what landing does); the caller removes it.
 local function collide(run: Types.Run, projectile: Types.Projectile): boolean
 	local x, z = projectile.x, projectile.z
-	-- Stopped at a wall: the flight was cut short by the step.
+	-- Stopped at a prop or the edge: the flight was cut short by the step.
 	local outside = projectile.remaining <= 1e-9
 
 	if projectile.owner == "player" then
@@ -128,9 +129,9 @@ function Projectiles.step(run: Types.Run, dt: number)
 			projectile.x += projectile.dirX * length
 			projectile.z += projectile.dirZ * length
 			projectile.remaining -= length
-			-- A wall is hit at the last point before it, so the burst stays on
-			-- this side of the wall.
-			if World.locate(run.world, projectile.x, projectile.z).kind == "outside" then
+			-- A prop is hit at the last point before it, so the burst stays on
+			-- this side of the prop.
+			if Map.blocksShots(run.map, projectile.x, projectile.z) then
 				projectile.x, projectile.z = lastX, lastZ
 				projectile.remaining = 0
 			end

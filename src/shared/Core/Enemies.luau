@@ -5,9 +5,9 @@
 
 local Geometry = require("./Geometry")
 local Life = require("./Life")
+local Map = require("./Map")
 local State = require("./State")
 local Types = require("./Types")
-local World = require("./World")
 
 local Enemies = {}
 
@@ -26,8 +26,8 @@ local function face(enemy: Types.Enemy, x: number, z: number)
 	end
 end
 
--- Whether `enemy` notices `player`: alive, in the same room or corridor, and
--- within the detection range, which cover halves.
+-- Whether `enemy` notices `player`: alive and within the detection range,
+-- which cover halves. The map is open: nothing else hides a player.
 function Enemies.detects(run: Types.Run, enemy: Types.Enemy, player: Types.Player): boolean
 	if player.state ~= "alive" then
 		return false
@@ -36,13 +36,7 @@ function Enemies.detects(run: Types.Run, enemy: Types.Enemy, player: Types.Playe
 	if player.inCover then
 		range *= run.config.enemies.coverDetectionFactor
 	end
-	if Geometry.distance(enemy.x, enemy.z, player.x, player.z) > range then
-		return false
-	end
-	-- Walls hide players: a short distance across a wall is not seen.
-	local here = World.locate(run.world, enemy.x, enemy.z)
-	local there = World.locate(run.world, player.x, player.z)
-	return here.kind ~= "outside" and here.kind == there.kind and here.id == there.id
+	return Geometry.distance(enemy.x, enemy.z, player.x, player.z) <= range
 end
 
 -- The nearest alive player the enemy notices; a tie goes to the lowest id.
@@ -146,7 +140,8 @@ local function hurtMemberInRadius(
 	return false
 end
 
--- Moves one step toward (toX, toZ) along the world's graph, kept inside it.
+-- Moves one step toward (toX, toZ) along the map's paths, kept on walkable
+-- ground.
 local function walkToward(
 	run: Types.Run,
 	enemy: Types.Enemy,
@@ -154,9 +149,9 @@ local function walkToward(
 	toZ: number,
 	step: number
 )
-	local wx, wz = World.waypointToward(run.world, enemy.x, enemy.z, toX, toZ)
+	local wx, wz = Map.waypointToward(run.map, enemy.x, enemy.z, toX, toZ)
 	local x, z = Geometry.stepToward(enemy.x, enemy.z, wx, wz, step)
-	enemy.x, enemy.z = World.clamp(run.world, x, z)
+	enemy.x, enemy.z = Map.clamp(run.map, x, z)
 end
 
 -- Starts the telegraph of the current attack: the aim is locked now, so a
@@ -364,7 +359,7 @@ local function chase(
 	local step = speed * dt
 	if archetype.preferredRange and distance < archetype.preferredRange then
 		local nx, nz = Geometry.normalize(enemy.x - target.x, enemy.z - target.z)
-		enemy.x, enemy.z = World.clamp(run.world, enemy.x + nx * step, enemy.z + nz * step)
+		enemy.x, enemy.z = Map.clamp(run.map, enemy.x + nx * step, enemy.z + nz * step)
 	elseif distance > attack.range * run.config.enemies.approachFactor then
 		-- Never closer than touching.
 		local gap = archetype.radius + run.config.player.radius
@@ -396,25 +391,25 @@ local function walkHome(
 	walkToward(run, enemy, enemy.homeX, enemy.homeZ, speed * dt)
 end
 
--- Sends the patrol on to a neighbour of its room, not back where it came from
--- unless the room is a dead end.
+-- Sends the patrol on to a neighbour of its point, not back where it came
+-- from unless the point is a dead end.
 local function advancePatrol(run: Types.Run, patrol: Types.Patrol)
-	local room = run.world.rooms[patrol.routeRoom]
+	local point = run.map.points[patrol.routePoint]
 	local options: { number } = {}
-	for _, neighbour in room.neighbours do
-		if neighbour ~= patrol.previousRoom then
+	for _, neighbour in point.neighbours do
+		if neighbour ~= patrol.previousPoint then
 			table.insert(options, neighbour)
 		end
 	end
 	if #options == 0 then
-		options = room.neighbours
+		options = point.neighbours
 	end
 	if #options == 0 then
 		return
 	end
 	local next = if #options > 1 then options[run.rng:integer(1, #options)] else options[1]
-	patrol.previousRoom = patrol.routeRoom
-	patrol.routeRoom = next
+	patrol.previousPoint = patrol.routePoint
+	patrol.routePoint = next
 end
 
 local function patrolWalk(
@@ -428,19 +423,19 @@ local function patrolWalk(
 	if patrol == nil then
 		return
 	end
-	local room = run.world.rooms[patrol.routeRoom]
+	local point = run.map.points[patrol.routePoint]
 	-- One member decides where the patrol goes next, so it stays together.
 	if
 		patrol.members[1] == enemy.id
-		and Geometry.distance(enemy.x, enemy.z, room.x, room.z) <= arriveDistance
+		and Geometry.distance(enemy.x, enemy.z, point.x, point.z) <= arriveDistance
 	then
 		advancePatrol(run, patrol)
-		room = run.world.rooms[patrol.routeRoom]
+		point = run.map.points[patrol.routePoint]
 	end
-	enemy.routeRoom = patrol.routeRoom
-	if Geometry.distance(enemy.x, enemy.z, room.x, room.z) > arriveDistance then
-		face(enemy, room.x, room.z)
-		walkToward(run, enemy, room.x, room.z, speed * dt)
+	enemy.routePoint = patrol.routePoint
+	if Geometry.distance(enemy.x, enemy.z, point.x, point.z) > arriveDistance then
+		face(enemy, point.x, point.z)
+		walkToward(run, enemy, point.x, point.z, speed * dt)
 	end
 end
 
@@ -450,11 +445,12 @@ local function stepEnemy(run: Types.Run, enemy: Types.Enemy, dt: number, context
 	-- The last step of a knockback covers only what is left of it.
 	local knockLeft = math.clamp(enemy.knockUntil - (run.time - dt), 0, dt)
 	if knockLeft > 0 then
-		enemy.x, enemy.z = World.clamp(
-			run.world,
-			enemy.x + enemy.knockX * knockLeft,
-			enemy.z + enemy.knockZ * knockLeft
-		)
+		-- Water or a prop on the way stops the push there.
+		local toX = enemy.x + enemy.knockX * knockLeft
+		local toZ = enemy.z + enemy.knockZ * knockLeft
+		local reach = Map.reach(run.map, enemy.x, enemy.z, toX, toZ)
+		local x, z = Geometry.stepToward(enemy.x, enemy.z, toX, toZ, reach)
+		enemy.x, enemy.z = Map.clamp(run.map, x, z)
 		-- A telegraph in progress still lands on time; nothing else is decided.
 		if enemy.state == "telegraph" and run.time >= enemy.stateUntil then
 			finishTelegraph(run, enemy, context)
@@ -575,7 +571,7 @@ local function separate(run: Types.Run)
 end
 
 -- Advances every enemy by `dt` seconds: knockback, behaviour, separation, and
--- the walls of the world.
+-- back onto walkable ground.
 function Enemies.step(run: Types.Run, dt: number)
 	local players: { Types.Player } = {}
 	for _, player in State.sortedPlayers(run) do
@@ -596,7 +592,7 @@ function Enemies.step(run: Types.Run, dt: number)
 
 	separate(run)
 	for _, enemy in run.enemies do
-		enemy.x, enemy.z = World.clamp(run.world, enemy.x, enemy.z)
+		enemy.x, enemy.z = Map.clamp(run.map, enemy.x, enemy.z)
 	end
 end
 

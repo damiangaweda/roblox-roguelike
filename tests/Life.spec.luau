@@ -3,6 +3,7 @@ local Assert = require("./Assert")
 local Fixtures = require("./Fixtures")
 local Geometry = require("../src/shared/Core/Geometry")
 local Life = require("../src/shared/Core/Life")
+local Map = require("../src/shared/Core/Map")
 local State = require("../src/shared/Core/State")
 local Types = require("../src/shared/Core/Types")
 
@@ -36,13 +37,15 @@ local function downedPair(players: number?): (Types.Run, Types.Player, Types.Pla
 	return run, downed, helper
 end
 
--- A lone player standing in the middle of their start room.
-local function aloneInRoom(): (Types.Run, Types.Player, Types.Room)
+-- A lone player standing at the centre of the first entry, with dry ground
+-- within 30 studs of it.
+local function alone(): (Types.Run, Types.Player, Types.MapPoint)
 	local run = Fixtures.run(1)
 	local player = run.players[1]
-	local room = Fixtures.roomOf(run, player)
-	Fixtures.place(run, player, room.x, room.z)
-	return run, player, room
+	local point = Fixtures.entryOf(run)
+	Fixtures.dry(run, point.x, point.z, 30)
+	Fixtures.place(run, player, point.x, point.z)
+	return run, player, point
 end
 
 return {
@@ -146,7 +149,7 @@ return {
 	end,
 
 	["a knock pushes the player away from the source and says so"] = function()
-		local run, player = aloneInRoom()
+		local run, player = alone()
 		local startX, startZ = player.x, player.z
 		-- The source is behind and below, so the push goes toward +x and +z.
 		Life.knockPlayer(run, player, startX - 3, startZ - 4, 10)
@@ -165,7 +168,7 @@ return {
 	end,
 
 	["a knock needs an alive player and a positive distance"] = function()
-		local run, player = aloneInRoom()
+		local run, player = alone()
 		Life.knockPlayer(run, player, player.x - 1, player.z, 0)
 		Life.knockPlayer(run, player, player.x - 1, player.z, -4)
 		player.state = "downed"
@@ -175,7 +178,7 @@ return {
 	end,
 
 	["a knock moves the player by its distance over the knockback time"] = function()
-		local run, player = aloneInRoom()
+		local run, player = alone()
 		local startX, startZ = player.x, player.z
 		local studs = 8
 		Life.knockPlayer(run, player, startX - 5, startZ, studs)
@@ -193,7 +196,7 @@ return {
 	end,
 
 	["a knock leaves the movement budget alone"] = function()
-		local run, player = aloneInRoom()
+		local run, player = alone()
 		local startX, startZ = player.x, player.z
 		player.moveBudget = 2
 		Life.knockPlayer(run, player, startX, startZ - 5, 6)
@@ -203,36 +206,50 @@ return {
 		Assert.truthy(player.z > startZ)
 	end,
 
-	["a knock does not push the player through a wall"] = function()
-		local run, player, room = aloneInRoom()
-		-- Beside the east wall, off the corridor's line.
-		Fixtures.place(run, player, room.x + room.halfWidth - 0.5, room.z + 7)
+	["a knock does not push the player through a prop"] = function()
+		local run, player, point = alone()
+		local wall = Fixtures.prop(point, point.x + 8, point.z, 1, 6)
+		local edge = wall.x - wall.halfWidth
+		Fixtures.place(run, player, edge - 0.5, point.z)
 		local budget = player.moveBudget
 		Life.knockPlayer(run, player, player.x - 5, player.z, 10)
 		for _ = 1, 30 do
 			run.time += 1 / 30
 			Life.update(run, 1 / 30)
-			Assert.truthy(Geometry.insideRect(room, player.x, player.z), "left the room")
+			Assert.truthy(player.x < edge, "pushed into the prop")
 		end
-		Assert.near(player.x, room.x + room.halfWidth)
-		Assert.near(player.z, room.z + 7)
+		Assert.near(player.x, edge - 0.5)
+		Assert.near(player.z, point.z)
 		Assert.equal(player.moveBudget, budget)
 	end,
 
-	["a knock keeps the player in the walkable world from any wall"] = function()
-		local run, player, room = aloneInRoom()
-		local walls = {
-			{ room.x - room.halfWidth + 0.5, room.z + 7, 1, 0 },
-			{ room.x + 7, room.z - room.halfDepth + 0.5, 0, 1 },
-			{ room.x + 7, room.z + room.halfDepth - 0.5, 0, -1 },
+	["a knock keeps the player on walkable ground"] = function()
+		local run, player, point = alone()
+		Fixtures.prop(point, point.x + 8, point.z, 1, 6)
+		-- Water whose middle is 22 studs from the centre along -z.
+		Fixtures.water(run, point.x, point.z - 22, 12)
+		-- The map's edge nearest the entry, with dry ground beside it.
+		local edgeX, edgeZ, outX, outZ = point.x, point.z, 0, 0
+		if math.abs(point.x) > math.abs(point.z) then
+			edgeX, outX = math.sign(point.x) * (run.map.half - 1), math.sign(point.x)
+		else
+			edgeZ, outZ = math.sign(point.z) * (run.map.half - 1), math.sign(point.z)
+		end
+		Fixtures.dry(run, edgeX, edgeZ, 4)
+		-- Where each push starts and which way it goes: into the prop, the
+		-- water and the edge.
+		local pushes = {
+			{ point.x + 5, point.z, 1, 0 },
+			{ point.x, point.z - 6, 0, -1 },
+			{ edgeX, edgeZ, outX, outZ },
 		}
-		for _, wall in walls do
-			Fixtures.place(run, player, wall[1], wall[2])
+		for index, push in pushes do
+			Fixtures.place(run, player, push[1], push[2])
 			player.knockUntil = 0
-			Life.knockPlayer(run, player, player.x + wall[3], player.z + wall[4], 12)
-			-- The source lies inward of the wall, so the push is into it.
+			-- The source lies behind the player, so the push goes the given way.
+			Life.knockPlayer(run, player, push[1] - push[3], push[2] - push[4], 12)
 			advance(run, 0.5, 1 / 30)
-			Assert.truthy(Geometry.insideRect(room, player.x, player.z), "left the room")
+			Assert.truthy(Map.walkable(run.map, player.x, player.z), "push " .. index)
 		end
 	end,
 

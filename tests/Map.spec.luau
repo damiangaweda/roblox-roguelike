@@ -554,6 +554,54 @@ return {
 		Assert.truthy(sawProp, "no prop checked")
 	end,
 
+	["shots fly over water but stop at props and the map's edge"] = function()
+		local sawWater, sawProp = false, false
+		eachMap(function(map, config, label)
+			-- Water stops a walk, never a shot. Props stand on footprints, which
+			-- keep more than a cell from the water, so a short line to a water
+			-- node meets none.
+			for row, line in map.heights do
+				for col, height in line do
+					local x, z = nodePosition(map, row, col)
+					if
+						height < config.map.waterLevel
+						and math.abs(x) <= map.half - 3
+						and math.abs(z) <= map.half
+					then
+						sawWater = true
+						Assert.falsy(Map.walkable(map, x, z), label)
+						Assert.falsy(Map.blocksShots(map, x, z), label)
+						Assert.falsy(Map.clearPath(map, x - 3, z, x, z), label)
+						Assert.truthy(Map.clearShot(map, x - 3, z, x, z), label)
+					end
+				end
+			end
+			for _, point in map.points do
+				for _, prop in point.props do
+					Assert.truthy(Map.blocksShots(map, prop.x, prop.z), label)
+					local fromX, toX = prop.x - prop.halfWidth - 2, prop.x + prop.halfWidth + 2
+					if
+						Map.pointAt(map, fromX, prop.z) == point
+						and Map.pointAt(map, toX, prop.z) == point
+					then
+						sawProp = true
+						Assert.falsy(Map.clearShot(map, fromX, prop.z, toX, prop.z), label)
+						local reach = Map.shotReach(map, fromX, prop.z, toX, prop.z)
+						Assert.truthy(reach <= 2 + 1e-9, "reach " .. reach .. ", " .. label)
+						Assert.truthy(reach >= 1 - 1e-9, "reach " .. reach .. ", " .. label)
+					end
+				end
+				Assert.falsy(Map.blocksShots(map, point.x, point.z), label)
+			end
+			Assert.truthy(Map.blocksShots(map, map.half + 1, 0), label)
+			local reach = Map.shotReach(map, map.half - 10, 0, map.half + 10, 0)
+			Assert.truthy(reach >= 9 - 1e-9 and reach <= 10 + 1e-9, "edge " .. reach)
+			Assert.equal(Map.shotReach(map, 0, 0, 0, 0), 0)
+		end)
+		Assert.truthy(sawWater, "no water checked")
+		Assert.truthy(sawProp, "no prop checked")
+	end,
+
 	["waypointToward returns the target when clear and the next point otherwise"] = function()
 		local sawBlocked = false
 		eachMap(function(map, _, label)

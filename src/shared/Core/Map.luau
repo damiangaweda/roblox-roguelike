@@ -862,6 +862,59 @@ function Map.clearPath(
 	return Map.reach(map, fromX, fromZ, toX, toZ) >= math.sqrt(dx * dx + dz * dz) - 1e-9
 end
 
+-- Whether a shot stops at (x, z): off the square or inside a prop. Water
+-- does not stop a shot; it flies over.
+function Map.blocksShots(map: Types.Map, x: number, z: number): boolean
+	if math.abs(x) > map.half or math.abs(z) > map.half then
+		return true
+	end
+	local point = Map.pointAt(map, x, z)
+	if point then
+		for _, prop in point.props do
+			if Geometry.insideRect(prop, x, z) then
+				return true
+			end
+		end
+	end
+	return false
+end
+
+-- How far from (fromX, fromZ) toward (toX, toZ) a shot flies, up to the full
+-- distance: a prop or the edge stops it, sampled as reach samples.
+function Map.shotReach(
+	map: Types.Map,
+	fromX: number,
+	fromZ: number,
+	toX: number,
+	toZ: number
+): number
+	local dx, dz = toX - fromX, toZ - fromZ
+	local distance = math.sqrt(dx * dx + dz * dz)
+	if distance < 1e-9 then
+		return 0
+	end
+	local steps = math.ceil(distance / PATH_SAMPLE)
+	for step = 1, steps do
+		local t = math.min(step * PATH_SAMPLE, distance)
+		if Map.blocksShots(map, fromX + dx / distance * t, fromZ + dz / distance * t) then
+			return math.max(0, t - PATH_SAMPLE)
+		end
+	end
+	return distance
+end
+
+-- Whether nothing that stops a shot lies between the two positions.
+function Map.clearShot(
+	map: Types.Map,
+	fromX: number,
+	fromZ: number,
+	toX: number,
+	toZ: number
+): boolean
+	local dx, dz = toX - fromX, toZ - fromZ
+	return Map.shotReach(map, fromX, fromZ, toX, toZ) >= math.sqrt(dx * dx + dz * dz) - 1e-9
+end
+
 function Map.pathBetween(map: Types.Map, a: number, b: number): Types.Path?
 	local point = map.points[a]
 	for index, neighbour in point.neighbours do

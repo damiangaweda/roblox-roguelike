@@ -2,6 +2,8 @@
 local Assert = require("./Assert")
 local Camps = require("../src/shared/Core/Camps")
 local Fixtures = require("./Fixtures")
+local Geometry = require("../src/shared/Core/Geometry")
+local Map = require("../src/shared/Core/Map")
 local State = require("../src/shared/Core/State")
 local Types = require("../src/shared/Core/Types")
 
@@ -24,10 +26,10 @@ local function enemyOf(run: Types.Run, id: number): Types.Enemy
 	return enemy
 end
 
-local function countCamps(run: Types.Run, roomId: number): number
+local function countCamps(run: Types.Run, pointId: number): number
 	local count = 0
 	for _, camp in run.camps do
-		if camp.roomId == roomId then
+		if camp.pointId == pointId then
 			count += 1
 		end
 	end
@@ -95,59 +97,64 @@ local function signature(run: Types.Run): string
 end
 
 -- A camp scaling test bed: one camp, nobody near it, no leader.
-local function campBed(): (Types.Run, Types.Camp, Types.Room)
+local function campBed(): (Types.Run, Types.Camp, Types.MapPoint)
 	local run = build(4, 3, function(config)
 		campsOnly(config)
 		setCamps(config, 0, 2)
 	end)
 	Camps.populate(run)
 	local camp = run.camps[1]
-	return run, camp, run.world.rooms[camp.roomId]
+	return run, camp, run.map.points[camp.pointId]
 end
 
-local function enter(run: Types.Run, playerId: number, room: Types.Room)
-	Fixtures.place(run, run.players[playerId], room.x, room.z)
+local function enter(run: Types.Run, playerId: number, point: Types.MapPoint)
+	Fixtures.place(run, run.players[playerId], point.x, point.z)
+end
+
+-- Removes every member of the camp, as their deaths would.
+local function clear(run: Types.Run, camp: Types.Camp)
+	for _, id in table.clone(camp.members) do
+		State.removeEnemy(run, enemyOf(run, id))
+	end
+end
+
+-- The run time at which a camp cleared at `clearedAt` returns.
+local function returnTime(run: Types.Run, clearedAt: number): number
+	return clearedAt + run.config.map.campReturnMinutes * 60
 end
 
 return {
-	["populate gives every non-start room one camp and no zone room one"] = function()
+	["populate gives every point but the entries one camp, zone points too"] = function()
 		for _, seed in { 1, 2, 3 } do
 			local run = build(8, seed)
 			Camps.populate(run)
-			for _, room in run.world.rooms do
-				local expected = if room.isStart or room.hasZone then 0 else 1
-				Assert.equal(countCamps(run, room.id), expected, "room " .. room.id)
+			local zonePoints = 0
+			for _, point in run.map.points do
+				local expected = if point.isEntry then 0 else 1
+				Assert.equal(countCamps(run, point.id), expected, "point " .. point.id)
+				if point.hasZone then
+					zonePoints += 1
+				end
 			end
+			Assert.truthy(zonePoints > 0)
 		end
 	end,
 
-	["campsInZoneRooms puts a camp in zone rooms too"] = function()
-		local run = build(8, 1, function(config)
-			config.world.campsInZoneRooms = true
-		end)
-		Camps.populate(run)
-		local zoneRooms = 0
-		for _, room in run.world.rooms do
-			Assert.equal(countCamps(run, room.id), if room.isStart then 0 else 1)
-			if room.hasZone then
-				zoneRooms += 1
-			end
-		end
-		Assert.truthy(zoneRooms > 0)
-	end,
-
-	["a camp takes its room's level and the level's groups"] = function()
+	["a camp takes its point's level and the level's groups"] = function()
 		local run = build(8, 2, campsOnly)
 		Camps.populate(run)
 		Assert.truthy(#run.camps > 0)
 		for _, camp in run.camps do
-			local room = run.world.rooms[camp.roomId]
-			local level = run.config.enemies.camps[room.level]
-			Assert.equal(camp.level, room.level)
-			Assert.equal(camp.x, room.campX)
-			Assert.equal(camp.z, room.campZ)
+			local point = run.map.points[camp.pointId]
+			local level = run.config.enemies.camps[point.level]
+			Assert.equal(camp.level, point.level)
+			Assert.equal(camp.x, point.campX :: number)
+			Assert.equal(camp.z, point.campZ :: number)
 			Assert.equal(camp.scaledFor, 0)
 			Assert.falsy(camp.alerted)
+			Assert.truthy(camp.returns)
+			Assert.equal(camp.strength, 1)
+			Assert.equal(camp.clearedAt, nil)
 			local counted = #camp.members
 			for _, group in level.groups do
 				Assert.equal(countArchetype(run, camp, group.archetype) >= group.count, true)
@@ -157,19 +164,22 @@ return {
 		end
 	end,
 
-	["camp members are idle, in their camp and inside the room"] = function()
+	["camp members are idle, in their camp and on its point's footprint"] = function()
 		local run = build(8, 4, campsOnly)
 		Camps.populate(run)
 		for _, camp in run.camps do
-			local room = run.world.rooms[camp.roomId]
+			local point = run.map.points[camp.pointId]
 			Assert.truthy(#camp.members > 0)
 			for _, id in camp.members do
 				local enemy = enemyOf(run, id)
 				Assert.equal(enemy.campId, camp.id)
 				Assert.equal(enemy.state, "idle")
 				Assert.equal(enemy.level, camp.level)
-				Assert.truthy(math.abs(enemy.x - room.x) <= room.halfWidth, "x in room")
-				Assert.truthy(math.abs(enemy.z - room.z) <= room.halfDepth, "z in room")
+				Assert.truthy(
+					Geometry.distance(enemy.x, enemy.z, point.x, point.z) <= point.radius,
+					"on the footprint"
+				)
+				Assert.truthy(Map.walkable(run.map, enemy.x, enemy.z), "on walkable ground")
 			end
 		end
 	end,
@@ -216,9 +226,9 @@ return {
 		end)
 		Camps.populate(run)
 		Assert.equal(#run.enemies, 12)
-		-- Every room still has its camp record, however thin.
-		for _, room in run.world.rooms do
-			Assert.equal(countCamps(run, room.id), if room.isStart or room.hasZone then 0 else 1)
+		-- Every point still has its camp record, however thin.
+		for _, point in run.map.points do
+			Assert.equal(countCamps(run, point.id), if point.isEntry then 0 else 1)
 		end
 	end,
 
@@ -238,14 +248,17 @@ return {
 
 		local groups, wanderers = 0, 0
 		for _, patrol in run.patrols do
-			local previous = run.world.rooms[patrol.previousRoom]
-			Assert.truthy(table.find(previous.neighbours, patrol.routeRoom), "route is a neighbour")
+			local previous = run.map.points[patrol.previousPoint]
+			Assert.truthy(
+				table.find(previous.neighbours, patrol.routePoint),
+				"route is a neighbour"
+			)
 			Assert.equal(patrol.strength, 1)
-			Assert.falsy(previous.isStart)
-			for _, player in run.players do
-				local playerRoom = Fixtures.roomOf(run, player)
+			Assert.falsy(previous.isEntry)
+			for id in run.players do
+				local playerPoint = Fixtures.pointOf(run, id)
 				Assert.truthy(
-					run.world.hops[previous.id][playerRoom.id] >= patrols.minHopsFromPlayers,
+					run.map.hops[previous.id][playerPoint.id] >= patrols.minHopsFromPlayers,
 					"far from the players"
 				)
 			end
@@ -260,7 +273,7 @@ return {
 				local enemy = enemyOf(run, id)
 				Assert.equal(enemy.state, "patrol")
 				Assert.equal(enemy.patrolId, patrol.id)
-				Assert.equal(enemy.routeRoom, patrol.routeRoom)
+				Assert.equal(enemy.routePoint, patrol.routePoint)
 				Assert.equal(enemy.archetype, archetype)
 			end
 		end
@@ -281,12 +294,14 @@ return {
 		end
 	end,
 
-	["spawnPatrol falls back to every non-start room in a small world"] = function()
+	["spawnPatrol falls back to every point but the entries on a small map"] = function()
 		local run = build(4, 2, function(config)
 			config.enemies.patrols.minHopsFromPlayers = 1000
 		end)
 		local patrol = spawn(run, 2, { "grunt" }, 1)
-		Assert.falsy(run.world.rooms[patrol.previousRoom].isStart)
+		Assert.falsy(run.map.points[patrol.previousPoint].isEntry)
+		local event = Assert.findEvent(run.events, "patrolSpawned")
+		Assert.equal(event.pointId, patrol.previousPoint)
 	end,
 
 	["spawnPatrol returns nil at the cap and leaves no record"] = function()
@@ -387,7 +402,7 @@ return {
 	end,
 
 	["a camp grows once when its first player arrives and then stays"] = function()
-		local run, camp, room = campBed()
+		local run, camp, point = campBed()
 		local level = run.config.enemies.camps[camp.level]
 		local base = groupTotal(level)
 		local archetypes = run.config.enemies.archetypes
@@ -397,7 +412,7 @@ return {
 		Assert.equal(#camp.members, base)
 		Assert.equal(camp.scaledFor, 0)
 
-		enter(run, 1, room)
+		enter(run, 1, point)
 		run.events = {}
 		Camps.update(run, 0.1)
 		Assert.equal(camp.scaledFor, 1)
@@ -421,12 +436,12 @@ return {
 	end,
 
 	["a second player adds members and scales the living ones"] = function()
-		local run, camp, room = campBed()
+		local run, camp, point = campBed()
 		local level = run.config.enemies.camps[camp.level]
 		local base = groupTotal(level)
 		local archetypes = run.config.enemies.archetypes
 
-		enter(run, 1, room)
+		enter(run, 1, point)
 		Camps.update(run, 0.1)
 		local before: { [number]: number } = {}
 		for _, id in camp.members do
@@ -436,7 +451,7 @@ return {
 		damaged.health -= 5
 		local healthBefore = damaged.health
 
-		enter(run, 2, room)
+		enter(run, 2, point)
 		run.events = {}
 		Camps.update(run, 0.1)
 		Assert.equal(camp.scaledFor, 2)
@@ -457,49 +472,49 @@ return {
 	end,
 
 	["a player leaving does not shrink the camp, a return does not regrow it"] = function()
-		local run, camp, room = campBed()
-		enter(run, 1, room)
-		enter(run, 2, room)
+		local run, camp, point = campBed()
+		enter(run, 1, point)
+		enter(run, 2, point)
 		Camps.update(run, 0.1)
 		Assert.equal(camp.scaledFor, 2)
 		local size = #camp.members
 
-		Fixtures.place(run, run.players[2], run.world.rooms[run.world.startRooms[1]].x, 0)
-		run.players[2].roomId = nil
+		local entry = Fixtures.entryOf(run)
+		Fixtures.place(run, run.players[2], entry.x, entry.z)
 		run.events = {}
 		Camps.update(run, 0.1)
 		Assert.equal(camp.scaledFor, 2)
 		Assert.equal(#camp.members, size)
 
-		enter(run, 2, room)
+		enter(run, 2, point)
 		Camps.update(run, 0.1)
 		Assert.equal(#camp.members, size)
 		Assert.equal(#eventsOf(run, "campScaled"), 0)
 	end,
 
 	["downed players do not count toward a camp"] = function()
-		local run, camp, room = campBed()
-		enter(run, 1, room)
+		local run, camp, point = campBed()
+		enter(run, 1, point)
 		run.players[1].state = "downed"
 		Camps.update(run, 0.1)
 		Assert.equal(camp.scaledFor, 0)
 	end,
 
 	["a camp with no living members does not grow"] = function()
-		local run, camp, room = campBed()
+		local run, camp, point = campBed()
 		camp.members = {}
-		enter(run, 1, room)
+		enter(run, 1, point)
 		Camps.update(run, 0.1)
 		Assert.equal(camp.scaledFor, 0)
 		Assert.equal(#camp.members, 0)
 		Assert.equal(#eventsOf(run, "campScaled"), 0)
 	end,
 
-	["members added to an alerted camp chase a player in the room"] = function()
-		local run, camp, room = campBed()
+	["members added to an alerted camp chase a player in the point"] = function()
+		local run, camp, point = campBed()
 		camp.alerted = true
-		enter(run, 3, room)
-		enter(run, 2, room)
+		enter(run, 3, point)
+		enter(run, 2, point)
 		Camps.update(run, 0.1)
 		Assert.equal(camp.scaledFor, 2)
 		local chasers = 0
@@ -514,15 +529,170 @@ return {
 	end,
 
 	["camp scaling respects the cap but still strengthens the members"] = function()
-		local run, camp, room = campBed()
+		local run, camp, point = campBed()
 		run.config.enemies.maxAlive = #run.enemies
 		local first = enemyOf(run, camp.members[1])
 		local maxHealth = first.maxHealth
 		local size = #camp.members
-		enter(run, 1, room)
+		enter(run, 1, point)
 		Camps.update(run, 0.1)
 		Assert.equal(#camp.members, size)
 		Assert.equal(camp.scaledFor, 1)
 		Assert.near(first.maxHealth, maxHealth * 1.4, 1e-6)
+	end,
+
+	["a player beside the footprint does not count toward the camp"] = function()
+		local run, camp, point = campBed()
+		-- Nearest to the camp's point, but off its footprint.
+		Fixtures.place(run, run.players[1], point.x + point.radius + 1, point.z)
+		Assert.equal(run.players[1].pointId, point.id)
+		Camps.update(run, 0.1)
+		Assert.equal(camp.scaledFor, 0)
+	end,
+
+	-- Camp return
+
+	["a camp's return clock starts when its last member dies"] = function()
+		local run, camp = campBed()
+		run.time = 30
+		while #camp.members > 1 do
+			State.removeEnemy(run, enemyOf(run, camp.members[1]))
+		end
+		Assert.equal(camp.clearedAt, nil)
+		run.time = 40
+		State.removeEnemy(run, enemyOf(run, camp.members[1]))
+		Assert.equal(camp.clearedAt, 40)
+	end,
+
+	["a cleared camp returns after the configured minutes at the patrols' strength"] = function()
+		local run, camp, point = campBed()
+		local level = run.config.enemies.camps[camp.level]
+		local archetypes = run.config.enemies.archetypes
+		run.time = 90
+		clear(run, camp)
+		Assert.equal(camp.clearedAt, 90)
+
+		run.time = returnTime(run, 90) - 0.1
+		Camps.update(run, 0)
+		Assert.equal(#camp.members, 0)
+		Assert.equal(#eventsOf(run, "campReturned"), 0)
+
+		run.time = returnTime(run, 90)
+		Camps.update(run, 0)
+		Assert.equal(#camp.members, groupTotal(level))
+		Assert.equal(camp.clearedAt, nil)
+		Assert.equal(camp.scaledFor, 0)
+		Assert.falsy(camp.alerted)
+		local strength = 1 + run.config.enemies.patrols.healthGrowthPerMinute * run.time / 60
+		Assert.near(camp.strength, strength)
+		for _, id in camp.members do
+			local enemy = enemyOf(run, id)
+			Assert.equal(enemy.campId, camp.id)
+			Assert.equal(enemy.state, "idle")
+			Assert.near(enemy.maxHealth, archetypes[enemy.archetype].health * strength, 1e-6)
+			Assert.near(enemy.health, enemy.maxHealth)
+			Assert.truthy(
+				Geometry.distance(enemy.x, enemy.z, point.x, point.z) <= point.radius,
+				"on the footprint"
+			)
+		end
+		local events = eventsOf(run, "campReturned")
+		Assert.equal(#events, 1)
+		Assert.equal(events[1].campId, camp.id)
+		Assert.equal(events[1].pointId, point.id)
+	end,
+
+	["a camp returns without its leader"] = function()
+		local run = build(4, 3, function(config)
+			campsOnly(config)
+			setCamps(config, 1, 0)
+		end)
+		Camps.populate(run)
+		local camp = run.camps[1]
+		Assert.truthy(camp.leaderId)
+		clear(run, camp)
+		Assert.equal(camp.leaderId, nil)
+		run.time = returnTime(run, 0)
+		Camps.update(run, 0)
+		Assert.equal(camp.leaderId, nil)
+		Assert.equal(countArchetype(run, camp, run.config.enemies.campLeader), 0)
+		Assert.equal(#camp.members, groupTotal(run.config.enemies.camps[camp.level]))
+	end,
+
+	["a returned camp does not return again until it is cleared again"] = function()
+		local run, camp = campBed()
+		clear(run, camp)
+		run.time = returnTime(run, 0)
+		Camps.update(run, 0)
+		local size = #camp.members
+		Assert.truthy(size > 0)
+
+		-- Alive and long past the delay: nothing more comes.
+		run.time = returnTime(run, run.time) * 2
+		Camps.update(run, 0)
+		Assert.equal(#camp.members, size)
+		Assert.equal(#eventsOf(run, "campReturned"), 1)
+
+		-- Cleared again, it returns again after a full delay from then.
+		local clearedAt = run.time
+		clear(run, camp)
+		run.time = returnTime(run, clearedAt) - 0.1
+		Camps.update(run, 0)
+		Assert.equal(#camp.members, 0)
+		run.time = returnTime(run, clearedAt)
+		Camps.update(run, 0)
+		Assert.equal(#camp.members, size)
+		Assert.equal(#eventsOf(run, "campReturned"), 2)
+	end,
+
+	["a returned camp grows anew for the players at its point"] = function()
+		local run, camp, point = campBed()
+		local level = run.config.enemies.camps[camp.level]
+		local archetypes = run.config.enemies.archetypes
+		enter(run, 1, point)
+		Camps.update(run, 0)
+		Assert.equal(camp.scaledFor, 1)
+
+		clear(run, camp)
+		run.time = returnTime(run, 0)
+		run.events = {}
+		Camps.update(run, 0)
+		Assert.equal(camp.scaledFor, 1)
+		Assert.equal(#camp.members, groupTotal(level) + level.extraPerPlayer)
+		local scaled = Assert.findEvent(run.events, "campScaled")
+		Assert.truthy(scaled)
+		Assert.equal(scaled.players, 1)
+		-- Every member at the camp's strength, grown for the one player.
+		local factor = camp.strength * (1 + level.healthPerExtraPlayer)
+		for _, id in camp.members do
+			local enemy = enemyOf(run, id)
+			Assert.near(enemy.maxHealth, archetypes[enemy.archetype].health * factor, 1e-6)
+		end
+	end,
+
+	["a camp that does not return stays cleared"] = function()
+		local run, camp = campBed()
+		camp.returns = false
+		clear(run, camp)
+		run.time = returnTime(run, 0) * 3
+		Camps.update(run, 0)
+		Assert.equal(#camp.members, 0)
+		Assert.equal(#eventsOf(run, "campReturned"), 0)
+	end,
+
+	["at the cap a returning camp waits for a free slot"] = function()
+		local run, camp = campBed()
+		clear(run, camp)
+		run.config.enemies.maxAlive = #run.enemies
+		run.time = returnTime(run, 0)
+		Camps.update(run, 0)
+		Assert.equal(#camp.members, 0)
+		Assert.equal(camp.clearedAt, 0)
+		Assert.equal(#eventsOf(run, "campReturned"), 0)
+
+		run.config.enemies.maxAlive = 10000
+		Camps.update(run, 0)
+		Assert.truthy(#camp.members > 0)
+		Assert.equal(#eventsOf(run, "campReturned"), 1)
 	end,
 }

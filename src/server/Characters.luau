@@ -15,7 +15,7 @@ local Characters = {}
 -- Presentation constants, not gameplay numbers.
 local DEAD_TRANSPARENCY = 0.7
 local EXTRACTED_TRANSPARENCY = 1
--- Where a teleported character's feet land above the floor.
+-- How far above the ground a teleported character's pivot lands.
 local TELEPORT_HEIGHT = 3.5
 
 type Entry = {
@@ -80,15 +80,27 @@ function Characters.input(player: Player): Types.PlayerInput?
 	return { x = part.Position.X, z = part.Position.Z }
 end
 
--- Puts the character where the run says the player is, keeping its facing.
-function Characters.teleport(player: Player, x: number, z: number)
+-- Puts the character where the run says the player is, on the ground whose
+-- height there is `y`, keeping its facing and letting it move again.
+function Characters.teleport(player: Player, x: number, z: number, y: number)
 	local character = player.Character
 	local part = root(player)
 	if character == nil or part == nil then
 		return
 	end
 	local pivot = character:GetPivot()
-	character:PivotTo(pivot.Rotation + Vector3.new(x, TELEPORT_HEIGHT, z))
+	character:PivotTo(pivot.Rotation + Vector3.new(x, y + TELEPORT_HEIGHT, z))
+	part.AssemblyLinearVelocity = Vector3.zero
+	part.Anchored = false
+end
+
+-- Holds the character still in the air while the map under it is rebuilt;
+-- the next teleport lets it go.
+function Characters.freeze(player: Player)
+	local part = root(player)
+	if part then
+		part.Anchored = true
+	end
 end
 
 -- Hides the character and lets others walk through it.
