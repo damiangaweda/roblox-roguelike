@@ -3,7 +3,7 @@
 `CLAUDE.md` imports this file, so Claude Code and Codex read the same instructions; edit this file only.
 
 ## What this project is
-A roguelike game for Roblox. Its design is not written down yet: the first task is a `/grill-me-with-docs` session that produces the first stage of `docs/plan.md`, the first ADRs and the glossary. Until a stage with acceptance criteria exists, there is nothing to implement.
+A multiplayer action roguelite for Roblox: a world generated for each run, aimed combat, builds from perks, alliances and betrayal, extraction with gear at risk. `docs/plan.md` describes the game and its stages; a stage without acceptance criteria is grilled before anything is implemented.
 
 ## Language
 - Talk to the user in Polish.
