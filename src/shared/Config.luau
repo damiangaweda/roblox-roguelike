@@ -57,7 +57,7 @@ local Config: Types.Config = {
 		bruteShareAtStart = 0,
 		bruteShareGrowthPerMinute = 0.03,
 		bruteShareMax = 0.3,
-		separationRadius = 2.5,
+		separationRadius = 3.2,
 		kinds = {
 			grunt = { health = 20, speed = 10, contactDps = 6, xp = 1, radius = 1.5 },
 			brute = { health = 80, speed = 7, contactDps = 20, xp = 4, radius = 2.5 },

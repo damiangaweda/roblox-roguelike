@@ -252,8 +252,9 @@ return {
 		Horde.move(run, 0)
 		Assert.near(distance(a, b), run.config.horde.separationRadius, 1e-9)
 		-- Half the overlap each, along the line between them.
-		Assert.near(a.x, 49.25)
-		Assert.near(b.x, 51.75)
+		local half = (run.config.horde.separationRadius - 1) / 2
+		Assert.near(a.x, 50 - half)
+		Assert.near(b.x, 51 + half)
 		Assert.near(a.z, 50)
 	end,
 
@@ -267,11 +268,12 @@ return {
 
 	["enemies outside the separation radius are left alone"] = function()
 		local run = Fixtures.run(1)
+		local apart = run.config.horde.separationRadius + 0.1
 		local a = Fixtures.enemy(run, "grunt", 50, 50)
-		local b = Fixtures.enemy(run, "grunt", 52.6, 50)
+		local b = Fixtures.enemy(run, "grunt", 50 + apart, 50)
 		Horde.move(run, 0)
 		Assert.equal(a.x, 50)
-		Assert.equal(b.x, 52.6)
+		Assert.equal(b.x, 50 + apart)
 	end,
 
 	["separation finds neighbours across grid cells"] = function()

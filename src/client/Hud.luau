@@ -611,7 +611,11 @@ function Hud.start()
 		end
 
 		-- Perk choice.
-		showOffer(if selfView then selfView.offer else nil)
+		-- Only a player still in the run can choose; the summary hides the panel.
+		local choosing = view ~= nil
+			and (view.state == "alive" or view.state == "downed")
+			and not summary.Visible
+		showOffer(if selfView and choosing then selfView.offer else nil)
 
 		-- The interact prompt, from where the local character stands.
 		local prompt: string? = nil
