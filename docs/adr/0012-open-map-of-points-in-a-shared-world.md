@@ -1,6 +1,6 @@
 # The world is an open map of points shared by every player in the run
 
-**Status:** proposed; once accepted it supersedes [ADR-0008](0008-generated-room-graph.md) and deprecates [ADR-0011](0011-rooms-on-a-grid-with-straight-corridors.md).
+**Status:** shipped in stages 2b–2d; superseded by [ADR-0014](0014-round-map-with-a-horde-around-the-party.md) and [ADR-0015](0015-extraction-by-a-found-spell.md) once those are accepted.
 
 A run's world is one open map generated for that run: terrain with hills and water, hand-made points (a ruin, a crossing, a grove) placed on it at a minimum spacing, paths between them that patrols walk, and cover in between. Every player in the run shares that one map; a camp cleared by anyone is cleared for everyone and comes back after a delay, stronger with run time. Nothing forces a player to fight: a skipped camp is skipped, and the cost is a weaker character and an empty bag, since experience and perks come only from kills, and potions, chests and keys only from kills and from what the points hold. A point's level is its distance along the paths from the nearest entry, so the leaders sit at the points whose nearest entry is farthest. Extraction zones are not fixed: they open one after another during the run at announced points, a minimum distance apart, and the flood that closes the run advances from the edges inward, taking zones with it.
 

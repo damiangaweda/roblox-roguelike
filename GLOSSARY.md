@@ -1,92 +1,48 @@
 # Roblox roguelike
 
-A multiplayer action roguelite in which players explore a world generated for each run, fight the enemies they choose to, gather a different build each time, and decide whom to trust.
+A co-op survivors-like roguelite in which a party fights a growing horde on a round map, builds a different character from level-up cards every run, and decides when to leave with what it found.
 
 ## Language
 
 ### Run
 
 **Run**:
-One session of play, from the moment players enter the map until each of them extracts or dies, about 15 minutes long.
+One session of play on one map, from the moment a party enters until each player extracts or dies: fifteen minutes and the final boss.
 _Avoid_: Match, round, game, podejście (in code)
 
+**Party**:
+The one to four players who enter a run together, share experience, revive one another and can never harm each other.
+_Avoid_: Alliance, team, squad, group
+
 **Extraction**:
-Leaving a run alive by holding the interact button in an extraction zone; only an extracted player keeps what they carried.
+Leaving a run alive through the portal, or by killing the final boss; only an extracted player keeps the haul.
 _Avoid_: Evacuation, escape, win
 
-**Extraction zone**:
-A place where a player can extract; zones open one after another during a run at announced points and close when the flood reaches them.
-_Avoid_: Exit, evac point, portal
+**Extraction chest**:
+The one chest hidden at a random place on the map that holds the extraction spell.
+_Avoid_: Loot chest, crate, airdrop
 
-**Flood**:
-The horde overrunning the map from its edges inward at the end of a run, which hurts everyone it reaches, closes the zones it covers and kills everyone still in the run when it meets in the middle.
-_Avoid_: Timeout, storm, wipe, ring, circle
+**Extraction spell**:
+What the extraction chest gives: cast whenever its holder chooses, interrupted by a hit, it opens the portal, and it can be cast again once the portal closes.
+_Avoid_: Scroll, key, token
 
-**Run event**:
-Something announced to every player at a moment of the run that draws them to one place: a chest drop, a wandering boss, an incursion wave.
-_Avoid_: Random event, mission, quest
+**Portal**:
+The way out the extraction spell opens, standing for a while for the whole party.
+_Avoid_: Extraction zone, exit, gate
 
-**Chest drop**:
-A run event that places a guarded chest at an announced point.
-_Avoid_: Airdrop, supply drop, care package
-
-**Wandering boss**:
-A run event: one strong enemy announced to everyone, walking the paths between points, which leaves what a camp leader leaves.
-_Avoid_: World boss, raid boss, miniboss
-
-**Incursion wave**:
-A run event: an announced stretch of the run during which patrols grow.
-_Avoid_: Horde wave, surge
+**Haul**:
+The items and utility skills a player has picked up during the current run, kept only by extracting.
+_Avoid_: Bag, loot, inventory
 
 ### World
 
 **Map**:
-The open world of one run: generated terrain with points, paths and cover on it, shared by every player in the run.
-_Avoid_: Level, dungeon, arena, world (the game's setting as a whole)
+A round, bounded ground in its own setting, with its own roster, bosses, final boss and minimum power, on which a run takes place.
+_Avoid_: Zone, arena, level, battleground, world (the game's setting as a whole)
 
-**Point**:
-A hand-made place on the map, built from a template, where a camp, a chest, a clue or cover sits.
-_Avoid_: Room, point of interest, POI, location, tile
-
-**Path**:
-A visible track between two points, which patrols walk.
-_Avoid_: Corridor, road, edge
-
-**Point template**:
-A hand-made layout a point is built from, with marked places for a camp, a chest, a clue and cover.
-_Avoid_: Prefab, tile, blueprint, room template
-
-**Entry**:
-A point at the edge of the map, without a camp, where players begin a run; placed anew for every run.
-_Avoid_: Spawn, start room, lobby, base
-
-**Point level**:
-A point's difficulty, which grows with its distance along the paths from the nearest entry and sets its camp, patrols and loot.
-_Avoid_: Tier (reserved for map tiers), depth, difficulty, room level
-
-**Clue**:
-A thing at a point that, once read, narrows for every player where a camp leader is; a leader's last clue marks its point. A clue is found, and so shown to everyone, once any player has come near it.
-_Avoid_: Hint, marker, objective
-
-**Map screen**:
-The screen on which a player reads the map during a run: its layout and what the run has announced, never what a point holds before a visit, nor other players or enemies.
-_Avoid_: Minimap, overview, radar
-
-**Cover**:
-A place on the map, such as a bush, where a player is detected only from close by.
-_Avoid_: Stealth, hiding spot, shadow
-
-**Chest**:
-A container at a point or from a chest drop that takes a moment to open and holds a perk choice or potions.
-_Avoid_: Loot box, crate, reward
-
-**Key**:
-What a camp leader drops; what it opens is decided with stage 2e.
-_Avoid_: Token, pass
-
-**Altar**:
-A place at a point that offers a trade, such as health for a perk.
-_Avoid_: Shrine, statue
+**Obstacle**:
+A prop scattered on the map anew for every run, which blocks players and enemies and nothing else.
+_Avoid_: Cover, prop, wall
 
 ### Enemies
 
@@ -94,82 +50,94 @@ _Avoid_: Shrine, statue
 A hostile creature of the run; data on the server, drawn by the client.
 _Avoid_: Mob, monster, creature, NPC
 
+**Horde**:
+The mass of grunts that spawns around the players and grows with run time.
+_Avoid_: Wave, mobs, swarm
+
+**Roster**:
+The kinds of grunt a map's horde is drawn from, ordered from weakest to strongest.
+_Avoid_: Spawn table, enemy list
+
 **Archetype**:
-A kind of enemy with its own role, attack and telegraph: grunt, brute, spitter, exploder, shieldbearer, shaman, camp leader.
+A kind of enemy with its own role, attack and telegraph: grunt, brute, spitter, exploder, shieldbearer, shaman.
 _Avoid_: Type, species, class (reserved for players)
 
-**Camp**:
-A group of enemies that holds a point and reacts to players entering its detection range; once cleared, it returns after a delay, stronger with run time.
-_Avoid_: Spawn point, nest, encounter
+**Elite**:
+A rare, stronger enemy of one of the archetypes other than the grunt, appearing in the horde more often as the run goes on.
+_Avoid_: Champion, miniboss, rare
 
-**Camp return**:
-A cleared camp coming back to its point after a delay, as strong as the run time makes it.
-_Avoid_: Respawn, repopulation, reset
+**Boss**:
+A strong enemy that arrives on the run's clock, with telegraphed attacks of its own.
+_Avoid_: Camp leader, world boss, miniboss
 
-**Camp leader**:
-The mini-boss of a camp, which drops a key and a potion.
-_Avoid_: Boss, elite, captain
-
-**Patrol**:
-A group of enemies walking the paths, which grows in number and strength as the run goes on.
-_Avoid_: Wave, roamers
-
-**Wanderer**:
-A lone enemy roaming the map without a camp.
-_Avoid_: Stray, roamer
-
-**Detection range**:
-How close a player must come for an enemy to notice them; halved for a player in cover.
-_Avoid_: Aggro radius, sight
-
-**Leash**:
-How far an enemy chases from its camp before it gives up and walks back.
-_Avoid_: Tether, aggro range
+**Final boss**:
+A map's own boss that ends a run: killing it extracts everyone still alive, and if it lives too long the map closes and everyone left dies.
+_Avoid_: Last boss, raid boss
 
 **Telegraph**:
-The visible wind-up before an enemy's attack, which gives the player time to dodge.
+The visible wind-up before an enemy's attack, which gives the player time to move away.
 _Avoid_: Wind-up, warning, cast
 
-**Horde**:
-Enemies as a mass: the patrols of the late run and the flood.
-_Avoid_: Mobs, wave (unless a wave is meant)
+**Threat**:
+How strongly an enemy wants one player, raised by that player's damage and sharply by a taunt; an enemy chases the player with the most.
+_Avoid_: Aggro, hate, focus
 
 ### Build
 
+**Hero**:
+The character a player controls in a run.
+_Avoid_: Avatar, character, champion
+
+**Class**:
+A character type a player picks before a run, with its own pool of skills, starting skill, health and speed: Mage, Warrior, Archer.
+_Avoid_: Character, role, specialisation
+
 **Skill**:
-A combat move of one class, either its basic attack or an active skill; skills drop as loot, stay in the stash and are never lost.
-_Avoid_: Ability, spell, power
+A combat move of a class that casts itself on its own cooldown at what its targeting picks, gained and ranked from cards during a run and gone when it ends.
+_Avoid_: Ability, spell, power, active skill
 
-**Basic attack**:
-The skill a player fires for as long as its input is held, aimed like every other skill.
-_Avoid_: Auto-attack, primary, left click
+**Skill pool**:
+The skills a class's cards can offer.
+_Avoid_: Deck, spellbook
 
-**Active skill**:
-A skill a player fires by hand, on a cooldown; a class has three.
-_Avoid_: Ability, special, ultimate
+**Targeting**:
+How a skill chooses where it lands: the nearest enemies, the toughest, the densest cluster, a chain, the ground around the hero, and the like.
+_Avoid_: Aim, lock-on
 
-**Dash**:
-The short burst of movement every class has, with charges and a cooldown, which passes through enemies and grants no invulnerability.
-_Avoid_: Dodge, roll (a class's dash may be called one), blink
+**Utility skill**:
+A move a player fires by hand on a cooldown, such as a sprint, a barrier or a heal; up to three are worn, any of them by any class, and they persist between runs in the stash.
+_Avoid_: Active skill, ultimate, spell
 
-**Aim**:
-The direction the character faces and skills fire in: the cursor on PC, the right stick on touch and gamepad.
-_Avoid_: Target, lock-on
+**Passive**:
+An upgrade taken from a card that raises one of the hero's stats until the run ends.
+_Avoid_: Perk, talent, buff
 
-**Perk**:
-An upgrade picked at a level-up or from a chest during a run, which modifies a property skills can have and lasts until the run ends.
-_Avoid_: Skill, upgrade, talent, modifier
+**Rank**:
+How far a skill or a passive has been upgraded in the current run.
+_Avoid_: Level (reserved for the hero), tier, star
+
+**Card**:
+One of the three choices a level-up offers: a new skill, a skill's next rank, a new passive or a passive's next rank.
+_Avoid_: Perk, upgrade, offer
+
+**Crystal**:
+What a killed enemy drops and a player within pickup range draws in, carrying experience.
+_Avoid_: Gem, orb, shard, XP
+
+**Level**:
+The hero's level within the current run, raised by experience from crystals and shared by the party.
+_Avoid_: Rank, class level
 
 **Tag**:
-An element or property a skill carries (fire, ice, lightning, poison, bleed, wind, stun, earth), which synergies key on.
+An element or property a skill carries, such as fire, ice, bleed or stun, which synergies key on.
 _Avoid_: Element, type, category
 
 **Status**:
-A temporary condition a tagged hit puts on an enemy, such as burning, chilled, bleeding or stunned.
+A temporary condition a hit puts on an enemy, such as slowed, rooted, stunned, burning or bleeding.
 _Avoid_: Debuff, effect, condition
 
 **Synergy**:
-A bonus that triggers when skills with matching tags meet, either in one player's build or between members of one alliance.
+A bonus that triggers when skills with matching tags meet on one enemy, from one player's build or from members of one party.
 _Avoid_: Combo, interaction
 
 **Shatter**:
@@ -177,73 +145,57 @@ The synergy in which fire damage to a chilled enemy is multiplied.
 _Avoid_: Combo, crit, freeze-burn
 
 **Build**:
-The skills a player brought into a run together with the perks gathered during it.
+The skills and passives a player gathered during a run, together with the loadout they brought into it.
 _Avoid_: Kit
 
-**Potion**:
-A carried item that restores health when drunk, which takes a moment and damage interrupts; the only healing in a run.
-_Avoid_: Heal, flask, consumable
+**Taunt**:
+A skill that raises an enemy's threat towards its caster sharply.
+_Avoid_: Provoke, aggro pull
 
 **Downed**:
-The state of a player at zero health, during which an ally can revive them before they die.
+The state of a player at zero health in a party, during which another member can revive them before they die.
 _Avoid_: Knocked, dying
 
 **Revive**:
 Raising a downed player back into the run by holding the interact button beside them.
 _Avoid_: Resurrect, respawn
 
-### Gear
+### Progress
 
 **Item**:
-A piece of equipment with a power rating, worn in a slot, which persists outside runs in the stash.
+A piece of equipment worn in one of six slots that raises the hero's stats; a legendary one also changes a skill.
 _Avoid_: Gear piece, equipment, relic
 
 **Loadout**:
-The class, items and skills a player brings into a run.
+The class, items and utility skills a player brings into a run; never lost.
 _Avoid_: Kit, equipment set
 
 **Stash**:
-A player's persistent storage of items and skills between runs.
+A player's persistent storage of items and utility skills between runs.
 _Avoid_: Inventory, vault, bank
 
-**Bound item**:
-An item a player keeps when they die in a run; binding takes a seal and is limited to a number of slots.
-_Avoid_: Insured, soulbound, permanent item
+**Gold**:
+The currency a run earns and a player keeps even in death, spent in the hub.
+_Avoid_: Coins, money, credits, seals
 
-**Bag**:
-The container a dead player's unbound items fall into, which anyone can pick up.
-_Avoid_: Corpse, loot box, drop
+**Class level**:
+A class's persistent level, raised by the experience of runs played with it, which unlocks skills in its pool and utility slots.
+_Avoid_: Mastery, level (reserved for the run)
 
-**Seal**:
-The rare currency that binds an item, dropped occasionally or bought.
-_Avoid_: Binding token, insurance
+**Account level**:
+A player's persistent level across every class, which gives small stats and unlocks classes.
+_Avoid_: Player level, prestige
 
 **Power**:
-A number rating how strong an item, a skill or a class is.
+A number rating how strong a player enters a run, from their account level, items and utility skills.
 _Avoid_: Gear score, item level
 
-**Map tier**:
-A difficulty level of map with its own power limit; higher tiers drop better items.
-_Avoid_: Difficulty, zone, level
+**Minimum power**:
+The power every party member must reach to enter a map.
+_Avoid_: Power limit, gear check, tier
 
-**Power limit**:
-The highest total power of class, items and skills a player may bring into a map tier.
-_Avoid_: Gear cap, power cap
-
-### Players
+### Places
 
 **Hub**:
-The place where players manage their stash and loadout and form alliances between runs.
+The place where players manage their stash and loadout, spend gold and form a party between runs.
 _Avoid_: Lobby, town, menu
-
-**Alliance**:
-Up to three players who cannot harm each other and share synergies; formed before or during a run, and left only deliberately, with every other player told.
-_Avoid_: Party, team, squad, group
-
-**Betrayal**:
-Leaving an alliance during a run, which ends shared synergies and makes former allies valid targets.
-_Avoid_: Backstab, defect
-
-**Class**:
-A character type a player unlocks and picks before a run, with its own stats, basic attack, three active skills and dash: Elementalist, Archer, Warrior.
-_Avoid_: Hero, character, role

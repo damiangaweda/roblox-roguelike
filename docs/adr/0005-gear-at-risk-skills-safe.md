@@ -1,5 +1,7 @@
 # Items are at risk in a run, skills are never lost
 
+**Status:** accepted; superseded by [ADR-0017](0017-only-the-haul-is-at-risk.md) once that one is accepted.
+
 A player who dies in a run drops every unbound item they carry, worn or found, into a bag anyone can pick up; only items bound with a seal survive, and binding is limited to a number of slots. Skills are the opposite: a skill drops only for the picker's class, goes to the stash the moment it is picked up and is never lost. We chose an extraction economy so that trust and betrayal have real stakes, and safe skills so that every run still leaves lasting progress.
 
 ## Considered options
