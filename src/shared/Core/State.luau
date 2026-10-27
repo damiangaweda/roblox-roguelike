@@ -15,11 +15,7 @@ local START_RING_RADIUS = 3
 function State.newRun(config: Types.Config, seed: number, playerCount: number): Types.Run
 	local rng = Rng.new(seed)
 	local map = Map.generate(config, rng, playerCount)
-	local zones: { Types.Zone } = {}
-	for _, id in map.zonePoints do
-		local point = map.points[id]
-		table.insert(zones, { x = point.x, z = point.z, radius = config.map.zoneRadius })
-	end
+	local arc = config.run.arc
 	return {
 		config = config,
 		rng = rng,
@@ -30,6 +26,9 @@ function State.newRun(config: Types.Config, seed: number, playerCount: number): 
 		nextPatrolId = 1,
 		nextProjectileId = 1,
 		nextPickupId = 1,
+		nextZoneId = 1,
+		nextClueId = 1,
+		nextChestId = 1,
 		patrolDebt = 0,
 		enemies = {},
 		camps = {},
@@ -37,7 +36,18 @@ function State.newRun(config: Types.Config, seed: number, playerCount: number): 
 		projectiles = {},
 		pickups = {},
 		players = {},
-		zones = zones,
+		-- No zone is open at the start (stage 2d): they open on the arc's clock.
+		zones = {},
+		nextZoneAt = arc.zones.firstOpenMinute * 60,
+		nextChestDropAt = arc.events.chestDrop.firstMinute * 60,
+		floodHalf = map.half,
+		nextFloodTickAt = arc.flood.startMinute * 60 + arc.flood.tickSeconds,
+		floodStarted = false,
+		clues = {},
+		leaderAreas = {},
+		chests = {},
+		bossSpawned = false,
+		waveStarted = false,
 		flooded = false,
 		ended = false,
 		events = {},
@@ -118,6 +128,8 @@ function State.newPlayer(run: Types.Run, id: number, class: string?): Types.Play
 		downedAt = nil,
 		reviveProgress = 0,
 		extractProgress = 0,
+		clueProgress = 0,
+		chestProgress = 0,
 		level = 1,
 		xp = 0,
 		perks = {},
@@ -190,10 +202,21 @@ function State.newEnemy(
 		knockX = 0,
 		knockZ = 0,
 		knockUntil = 0,
+		boss = false,
 	}
 	run.nextEnemyId += 1
 	table.insert(run.enemies, enemy)
 	return enemy
+end
+
+-- How far from its centre the enemy is hit and touches: its archetype's
+-- radius, the wandering boss's multiplied.
+function State.enemyRadius(run: Types.Run, enemy: Types.Enemy): number
+	local radius = State.archetype(run, enemy).radius
+	if enemy.boss then
+		radius *= run.config.run.arc.events.wanderingBoss.radiusMultiplier
+	end
+	return radius
 end
 
 function State.enemyById(run: Types.Run, id: number): Types.Enemy?

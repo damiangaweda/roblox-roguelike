@@ -1,9 +1,9 @@
 --!strict
 -- The HUD, built in code: health, potions, level and experience, the three
--- active skills and the dash, the run clock, the zone compass, banners, the perk
--- choice and list, the downed, extraction and end-of-run panels, and the touch
--- buttons. It only shows state and sends intents through Net or Input
--- (AGENTS.md rule 1).
+-- active skills and the dash, the run clock, the zone compass, banners, notices
+-- and announcements, the perk choice and list, the downed, extraction and
+-- end-of-run panels, and the touch buttons; the map screen is MapScreen's. It
+-- only shows state and sends intents through Net or Input (AGENTS.md rule 1).
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -14,6 +14,7 @@ local Config = require(ReplicatedStorage.Shared.Config)
 local Protocol = require(ReplicatedStorage.Shared.Protocol)
 local Types = require(ReplicatedStorage.Shared.Core.Types)
 local Input = require(script.Parent.Input)
+local MapScreen = require(script.Parent.MapScreen)
 local Net = require(script.Parent.Net)
 
 local Hud = {}
@@ -66,10 +67,18 @@ local LEVEL_FLASH_SECONDS = 0.6
 -- Camp notices: how long a line stays, the fade at its end, and how many show at once.
 local NOTICE_SECONDS = 2
 local NOTICE_FADE_SECONDS = 0.5
-local MAX_NOTICES = 2
+local MAX_NOTICES = 3
+-- Announcements of the run (zones, the flood, events, clues, chests) share the
+-- notice lines and stay longer.
+local ANNOUNCEMENT_SECONDS = 4
+-- The first notice line's top, clear of the flood note above it, and the step between lines.
+local NOTICE_TOP = 72
+local NOTICE_STEP = 20
 -- "A camp has noticed you" shows only when an enemy this close to the local
 -- character (on the ground plane) woke from idle to chase in the same snapshot.
 local NOTICED_RANGE = 40
+-- "A clue is nearby" shows only when a clue was found this close to the local character.
+local CLUE_NEARBY_RANGE = 40
 -- Downed, dead and extracted screens fade in over this long, to these tint opacities.
 local STATE_FADE_SECONDS = 0.6
 local DOWNED_TINT_ALPHA = 0.15
@@ -78,6 +87,11 @@ local STATE_PANEL_TRANSPARENCY = 0.3
 local COMPASS_RADIUS = 110
 -- A zone this close (edge to character) is on screen; its arrow is hidden.
 local COMPASS_HIDE_STUDS = 25
+-- "No zone yet" (or "No zone left") sits where the arrow would point straight up, this faint.
+local NO_ZONE_TRANSPARENCY = 0.3
+-- The touch Map button, under the stats panel.
+local MAP_BUTTON_SIZE = Vector2.new(76, 44)
+local MAP_BUTTON_TOP = 144
 local MAX_SKILL_SLOTS = 3
 local SKILL_KEYS = { "Q", "E", "R" }
 local POTION_SLOT_SIZE = 22
@@ -126,6 +140,9 @@ local HEALTH_PULSE_COLOR = Color3.fromRGB(255, 96, 86)
 local LEVEL_COLOR = Color3.fromRGB(255, 214, 90)
 local DRANK_COLOR = Color3.fromRGB(110, 220, 120)
 local NOTICE_COLOR = Color3.fromRGB(225, 225, 232)
+local ANNOUNCEMENT_COLOR = Color3.fromRGB(255, 226, 140)
+local CLUE_COLOR = Color3.fromRGB(90, 170, 255)
+local MAP_COLOR = Color3.fromRGB(70, 90, 80)
 local FONT = Enum.Font.GothamMedium
 local FONT_BOLD = Enum.Font.GothamBold
 
@@ -160,10 +177,22 @@ type Arrow = {
 	distance: TextLabel,
 }
 
--- A camp notice line and the os.clock() it was shown at.
+-- A notice line, the os.clock() it was shown at, how long it stays and its colour.
 type Notice = {
 	text: string,
 	at: number,
+	seconds: number,
+	color: Color3,
+}
+
+-- What each announcement says.
+local ANNOUNCEMENTS: { [string]: string } = {
+	zoneOpened = "A zone has opened",
+	zoneClosed = "A zone was lost to the flood",
+	chestDrop = "A chest fell",
+	wanderingBoss = "A boss is roaming",
+	incursionWave = "An incursion wave begins",
+	floodStarted = "The flood begins",
 }
 
 local function round(parent: GuiObject, radius: number)
@@ -327,11 +356,17 @@ end
 
 local started = false
 
+-- Opens or closes the map screen (M, or the touch Map button).
+function Hud.toggleMap()
+	MapScreen.toggle()
+end
+
 function Hud.start()
 	if started then
 		return
 	end
 	started = true
+	MapScreen.start()
 
 	local player = Players.LocalPlayer
 	local userId = player.UserId
@@ -440,14 +475,14 @@ function Hud.start()
 		16,
 		FONT
 	)
-	-- Camp notices: short lines under the flood note, the newest last.
+	-- Camp notices and announcements: short lines under the flood note, the newest last.
 	local noticeLabels: { TextLabel } = {}
 	for index = 1, MAX_NOTICES do
 		local label = newLabel(
 			root,
 			"Notice" .. index,
-			UDim2.fromOffset(460, 20),
-			UDim2.new(0.5, -230, 0, 52 + (index - 1) * 20),
+			UDim2.fromOffset(460, NOTICE_STEP),
+			UDim2.new(0.5, -230, 0, NOTICE_TOP + (index - 1) * NOTICE_STEP),
 			16,
 			FONT
 		)
@@ -459,26 +494,21 @@ function Hud.start()
 		root,
 		"Banner",
 		UDim2.fromOffset(560, 48),
-		UDim2.new(0.5, -280, 0, 52 + MAX_NOTICES * 20),
+		UDim2.new(0.5, -280, 0, NOTICE_TOP + MAX_NOTICES * NOTICE_STEP),
 		28,
 		FONT_BOLD
 	)
 	bannerLabel.TextColor3 = EXTRACT_COLOR
 	bannerLabel.Visible = false
 
-	-- The zone compass: one arrow per extraction zone on a ring around the screen centre.
+	-- The zone compass: an arrow toward the nearest open zone on a ring around
+	-- the screen centre, or "No zone yet" while none is open ("No zone left"
+	-- once the flood has started).
 	local compass =
 		newFrame(root, "Compass", UDim2.fromOffset(0, 0), UDim2.fromScale(0.5, 0.5), PANEL_COLOR, 1)
-	local arrows: { Arrow } = {}
-	local function newArrow(index: number): Arrow
-		local frame = newFrame(
-			compass,
-			"Zone" .. index,
-			UDim2.fromOffset(56, 48),
-			UDim2.new(),
-			PANEL_COLOR,
-			1
-		)
+	local function newArrow(): Arrow
+		local frame =
+			newFrame(compass, "Zone", UDim2.fromOffset(56, 48), UDim2.new(), PANEL_COLOR, 1)
 		frame.AnchorPoint = Vector2.new(0.5, 0.5)
 		local arrow = newLabel(frame, "Arrow", UDim2.fromOffset(56, 28), UDim2.new(), 26, FONT_BOLD)
 		arrow.Text = "▲"
@@ -494,8 +524,23 @@ function Hud.start()
 		distance.TextColor3 = EXTRACT_COLOR
 		return { root = frame, arrow = arrow, distance = distance }
 	end
+	local zoneArrow = newArrow()
+	zoneArrow.root.Visible = false
+	local noZoneLabel = newLabel(
+		compass,
+		"NoZone",
+		UDim2.fromOffset(160, 22),
+		UDim2.fromOffset(0, -COMPASS_RADIUS),
+		16,
+		FONT_BOLD
+	)
+	noZoneLabel.AnchorPoint = Vector2.new(0.5, 0.5)
+	noZoneLabel.Text = "No zone yet"
+	noZoneLabel.TextColor3 = EXTRACT_COLOR
+	noZoneLabel.TextTransparency = NO_ZONE_TRANSPARENCY
+	noZoneLabel.Visible = false
 
-	-- Extraction progress, above the middle of the screen.
+	-- Extraction, reading a clue or opening a chest: one bar above the middle of the screen.
 	local extractBar = newBar(
 		root,
 		"Extraction",
@@ -648,6 +693,25 @@ function Hud.start()
 			Input.drink()
 		end)
 		potionButton = potion
+
+		local map = Instance.new("TextButton")
+		map.Name = "MapButton"
+		map.Position = UDim2.fromOffset(16, MAP_BUTTON_TOP)
+		map.Size = UDim2.fromOffset(MAP_BUTTON_SIZE.X, MAP_BUTTON_SIZE.Y)
+		map.BackgroundColor3 = MAP_COLOR
+		map.BackgroundTransparency = 0.15
+		map.BorderSizePixel = 0
+		map.AutoButtonColor = true
+		map.Font = FONT_BOLD
+		map.TextSize = 15
+		map.TextColor3 = WHITE
+		map.TextStrokeTransparency = 0.6
+		map.Text = "Map"
+		map.Parent = root
+		round(map, 10)
+		map.Activated:Connect(function()
+			Hud.toggleMap()
+		end)
 
 		local interact = newButton("InteractButton", "HOLD", EXTRACT_COLOR, 2, 1)
 		interact.MouseButton1Down:Connect(function()
@@ -807,16 +871,21 @@ function Hud.start()
 		table.clear(notices)
 	end
 
-	-- Adds a camp notice line, dropping the oldest beyond MAX_NOTICES; the same
-	-- line again only refreshes the newest.
-	local function pushNotice(text: string)
+	-- Adds a notice line, dropping the oldest beyond MAX_NOTICES; the same line
+	-- again only refreshes the newest. Announcements stay longer, in their own colour.
+	local function pushNotice(text: string, announcement: boolean?)
 		local now = os.clock()
 		local newest = notices[#notices]
 		if newest and newest.text == text then
 			newest.at = now
 			return
 		end
-		table.insert(notices, { text = text, at = now })
+		table.insert(notices, {
+			text = text,
+			at = now,
+			seconds = if announcement then ANNOUNCEMENT_SECONDS else NOTICE_SECONDS,
+			color = if announcement then ANNOUNCEMENT_COLOR else NOTICE_COLOR,
+		})
 		while #notices > MAX_NOTICES do
 			table.remove(notices, 1)
 		end
@@ -859,6 +928,25 @@ function Hud.start()
 				if dx * dx + dz * dz <= NOTICED_RANGE * NOTICED_RANGE then
 					return true
 				end
+			end
+		end
+		return false
+	end
+
+	-- Whether a clue just found stands near the local character. The server
+	-- sends a tick's snapshot before its events, so the latest one holds the clue.
+	local function clueNearby(clueId: number): boolean
+		local latest = Net.latest
+		local character = Players.LocalPlayer.Character
+		local ownRoot = if character then character:FindFirstChild("HumanoidRootPart") else nil
+		if latest == nil or ownRoot == nil or not ownRoot:IsA("BasePart") then
+			return false
+		end
+		local here = ownRoot.Position
+		for _, clue in latest.world.clues do
+			if clue.id == clueId then
+				local dx, dz = clue.x - here.X, clue.z - here.Z
+				return dx * dx + dz * dz <= CLUE_NEARBY_RANGE * CLUE_NEARBY_RANGE
 			end
 		end
 		return false
@@ -925,6 +1013,27 @@ function Hud.start()
 			elseif event.kind == "campReturned" then
 				-- The client does not know where points are, so there is no "nearby" filter.
 				pushNotice("A camp has returned")
+			elseif event.kind == "announcement" then
+				local text = ANNOUNCEMENTS[event.what]
+				if text then
+					pushNotice(text, true)
+				end
+			elseif event.kind == "clueFound" then
+				-- The clue itself appears on the ground and the map screen once the
+				-- world view carries it.
+				if clueNearby(event.clueId) then
+					pushNotice("A clue is nearby")
+				end
+			elseif event.kind == "clueRead" then
+				pushNotice(
+					string.format("A clue narrows the leader's area (%d left)", event.remaining),
+					true
+				)
+			elseif event.kind == "chestOpened" and event.playerId == userId then
+				pushNotice(
+					if event.reward == "perk" then "Chest: a perk" else "Chest: potions",
+					true
+				)
 			elseif event.kind == "levelUp" and event.player == userId then
 				levelUpAt = os.clock()
 				levelPopup.Text = "Level " .. event.level
@@ -1208,41 +1317,52 @@ function Hud.start()
 		end
 	end
 
-	-- Points one arrow per zone from the character toward it; none for a zone already on screen.
+	-- Points the arrow from the character toward the nearest open zone, hidden
+	-- when that zone is already on screen; with none open, "No zone yet", or
+	-- "No zone left" once the flood has started and every zone is closed.
 	local function updateCompass(
 		snapshot: Net.Snapshot?,
 		view: Protocol.PlayerView?,
 		ownRoot: BasePart?
 	)
-		local zones = if snapshot
-				and view
-				and view.state == "alive"
-				and ownRoot
-			then snapshot.world.zones
-			else {}
-		for index = #arrows + 1, #zones do
-			arrows[index] = newArrow(index)
-		end
-		for index, arrow in arrows do
-			local zone = zones[index]
-			local visible = false
-			if zone and ownRoot then
-				local dx = zone.x - ownRoot.Position.X
-				local dz = zone.z - ownRoot.Position.Z
-				local distance = math.sqrt(dx * dx + dz * dz)
-				if distance - zone.radius > COMPASS_HIDE_STUDS and distance > 0 then
-					visible = true
-					arrow.root.Position = UDim2.fromOffset(
-						dx / distance * COMPASS_RADIUS,
-						dz / distance * COMPASS_RADIUS
-					)
-					-- World +x is screen right and +z screen down; the arrow points up at 0.
-					arrow.arrow.Rotation = math.deg(math.atan2(dx, -dz))
-					arrow.distance.Text = tostring(math.floor(distance + 0.5))
+		local showing = snapshot ~= nil and view ~= nil and view.state == "alive" and ownRoot ~= nil
+		local nearest: Types.Zone? = nil
+		local nearestDistance = math.huge
+		local dx, dz = 0, 0
+		if snapshot and ownRoot then
+			local here = ownRoot.Position
+			for _, zone in snapshot.world.zones do
+				if zone.open then
+					local zx, zz = zone.x - here.X, zone.z - here.Z
+					local distance = math.sqrt(zx * zx + zz * zz)
+					if distance < nearestDistance then
+						nearest = zone
+						nearestDistance = distance
+						dx, dz = zx, zz
+					end
 				end
 			end
-			arrow.root.Visible = visible
 		end
+		noZoneLabel.Visible = showing and nearest == nil
+		if snapshot and nearest == nil then
+			local map = Net.map
+			local flooding = map ~= nil and snapshot.world.floodHalf < map.half
+			noZoneLabel.Text = if flooding then "No zone left" else "No zone yet"
+		end
+		local visible = false
+		if showing and nearest and nearestDistance > 0 then
+			if nearestDistance - nearest.radius > COMPASS_HIDE_STUDS then
+				visible = true
+				zoneArrow.root.Position = UDim2.fromOffset(
+					dx / nearestDistance * COMPASS_RADIUS,
+					dz / nearestDistance * COMPASS_RADIUS
+				)
+				-- World +x is screen right and +z screen down; the arrow points up at 0.
+				zoneArrow.arrow.Rotation = math.deg(math.atan2(dx, -dz))
+				zoneArrow.distance.Text = tostring(math.floor(nearestDistance + 0.5))
+			end
+		end
+		zoneArrow.root.Visible = visible
 	end
 
 	local function render(deltaTime: number)
@@ -1341,16 +1461,36 @@ function Hud.start()
 			end
 		end
 		clockLabel.Text = formatTime(runTime)
-		floodLabel.Text = if runTime < duration
-			then "flood in " .. formatTime(duration - runTime)
-			else ""
+		-- Before the flood: when it begins; while it advances: when it meets
+		-- at the centre, in red while the local character stands in it.
+		local floodStart = Config.run.arc.flood.startMinute * 60
+		-- The flood reaches the centre as the run ends.
+		local floodEnd = duration
+		local character = Players.LocalPlayer.Character
+		local ownRoot = if character then character:FindFirstChild("HumanoidRootPart") else nil
+		local ownPart = if ownRoot and ownRoot:IsA("BasePart") then ownRoot else nil
+		local flooded = false
+		if snapshot and ownPart and view and view.state == "alive" and runTime >= floodStart then
+			local here = ownPart.Position
+			flooded = math.max(math.abs(here.X), math.abs(here.Z)) > snapshot.world.floodHalf
+		end
+		if runTime < floodStart then
+			floodLabel.Text = "flood in " .. formatTime(floodStart - runTime)
+		elseif runTime < floodEnd then
+			floodLabel.Text = (if flooded then "You are in the flood! " else "")
+				.. "The flood meets in "
+				.. formatTime(floodEnd - runTime)
+		else
+			floodLabel.Text = ""
+		end
+		floodLabel.TextColor3 = if flooded then HURT_COLOR else WHITE
 		if bannerLabel.Visible and now >= bannerUntil then
 			bannerLabel.Visible = false
 		end
 
-		-- Camp notices, fading out at the end of their time.
+		-- Notices, fading out at the end of their time.
 		for index = #notices, 1, -1 do
-			if now - notices[index].at >= NOTICE_SECONDS then
+			if now - notices[index].at >= notices[index].seconds then
 				table.remove(notices, index)
 			end
 		end
@@ -1359,7 +1499,8 @@ function Hud.start()
 			label.Visible = notice ~= nil
 			if notice then
 				label.Text = notice.text
-				local left = NOTICE_SECONDS - (now - notice.at)
+				label.TextColor3 = notice.color
+				local left = notice.seconds - (now - notice.at)
 				setTextAlpha(label, math.clamp(left / NOTICE_FADE_SECONDS, 0, 1))
 			end
 		end
@@ -1375,16 +1516,36 @@ function Hud.start()
 			and not summary.Visible
 		showOffer(if selfView and choosing then selfView.offer else nil)
 
-		-- The interact prompt and the zone compass, from where the local character stands.
+		-- The interact prompt and the zone compass, from where the local character
+		-- stands. What holding does, as the run decides it: extract in an open
+		-- zone, else read a clue, else open a chest; reviving wins over all.
 		local prompt: string? = nil
-		local character = Players.LocalPlayer.Character
-		local ownRoot = if character then character:FindFirstChild("HumanoidRootPart") else nil
-		local ownPart = if ownRoot and ownRoot:IsA("BasePart") then ownRoot else nil
 		if view and view.state == "alive" and snapshot and ownPart then
 			local here = ownPart.Position
+			local function near(x: number, z: number, radius: number): boolean
+				local dx, dz = x - here.X, z - here.Z
+				return dx * dx + dz * dz <= radius * radius
+			end
 			for _, zone in snapshot.world.zones do
-				if (Vector3.new(zone.x, here.Y, zone.z) - here).Magnitude <= zone.radius then
+				if zone.open and near(zone.x, zone.z, zone.radius) then
 					prompt = holdWord .. " to extract"
+				end
+			end
+			if prompt == nil then
+				for _, clue in snapshot.world.clues do
+					if not clue.read and near(clue.x, clue.z, Config.run.arc.clues.readRadius) then
+						prompt = holdWord .. " to read the clue"
+					end
+				end
+			end
+			if prompt == nil then
+				for _, chest in snapshot.world.chests do
+					if
+						not chest.opened
+						and near(chest.x, chest.z, Config.run.arc.events.chest.openRadius)
+					then
+						prompt = holdWord .. " to open the chest"
+					end
 				end
 			end
 			for _, other in snapshot.world.players do
@@ -1410,12 +1571,29 @@ function Hud.start()
 		interactPrompt.Text = prompt or ""
 		updateCompass(if summary.Visible then nil else snapshot, view, ownPart)
 
-		-- Extraction progress.
-		local extracting = view ~= nil and view.state == "alive" and view.extractProgress > 0
-		extractBar.root.Visible = extracting
-		if view and extracting then
-			setBar(extractBar, view.extractProgress / Config.run.extractSeconds, "Extracting...")
+		-- Extracting, reading or opening: the one bar, whichever is held.
+		local holding = false
+		if view and view.state == "alive" then
+			local arc = Config.run.arc
+			if view.extractProgress > 0 then
+				holding = true
+				extractBar.fill.BackgroundColor3 = EXTRACT_COLOR
+				setBar(
+					extractBar,
+					view.extractProgress / Config.run.extractSeconds,
+					"Extracting..."
+				)
+			elseif view.clueProgress > 0 then
+				holding = true
+				extractBar.fill.BackgroundColor3 = CLUE_COLOR
+				setBar(extractBar, view.clueProgress / arc.clues.readSeconds, "Reading...")
+			elseif view.chestProgress > 0 then
+				holding = true
+				extractBar.fill.BackgroundColor3 = EXTRACT_COLOR
+				setBar(extractBar, view.chestProgress / arc.events.chest.openSeconds, "Opening...")
+			end
 		end
+		extractBar.root.Visible = holding
 
 		-- Downed, dead, extracted: the tint and the panel fade in when the state begins.
 		local state: Types.PlayerState = if view then view.state else "alive"

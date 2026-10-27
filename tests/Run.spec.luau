@@ -1,7 +1,10 @@
 --!strict
 -- Whole runs through Run.step, the way the server adapter drives them.
+local Arc = require("../src/shared/Core/Arc")
 local Assert = require("./Assert")
+local Config = require("../src/shared/Config")
 local Fixtures = require("./Fixtures")
+local Geometry = require("../src/shared/Core/Geometry")
 local Life = require("../src/shared/Core/Life")
 local Map = require("../src/shared/Core/Map")
 local Run = require("../src/shared/Core/Run")
@@ -18,9 +21,9 @@ local function populated(playerCount: number, config: Types.Config?, seed: numbe
 	return run
 end
 
--- A map with nothing on it but the players, and dry ground within 30 studs of
--- the first entry.
-local function quiet(playerCount: number, config: Types.Config?, seed: number?): Types.Run
+-- Config for a map with nothing on it but the players: no camp members,
+-- leaders, patrols, chest guards or wandering boss.
+local function quietConfig(config: Types.Config?): Types.Config
 	local settings = config or Fixtures.config()
 	for _, level in settings.enemies.camps do
 		level.groups = {}
@@ -30,7 +33,14 @@ local function quiet(playerCount: number, config: Types.Config?, seed: number?):
 	settings.enemies.patrols.groupsAtStart = 0
 	settings.enemies.patrols.groupsPerMinute = 0
 	settings.enemies.patrols.wanderersAtStart = 0
-	local run = populated(playerCount, settings, seed)
+	settings.run.arc.events.chestDrop.guardSize = 0
+	settings.run.arc.events.wanderingBoss.minute = math.huge
+	return settings
+end
+
+-- A quiet map, with dry ground within 30 studs of the first entry.
+local function quiet(playerCount: number, config: Types.Config?, seed: number?): Types.Run
+	local run = populated(playerCount, quietConfig(config), seed)
 	local entry = Fixtures.entryOf(run)
 	Fixtures.dry(run, entry.x, entry.z, 30)
 	return run
@@ -106,7 +116,15 @@ return {
 		Assert.equal(#run.camps, campPoints)
 		Assert.truthy(#run.patrols >= run.config.enemies.patrols.groupsAtStart)
 		Assert.truthy(#run.enemies > 0)
-		Assert.equal(#run.zones, #run.map.zonePoints)
+		-- No zone yet; the clues to every leader are placed.
+		Assert.equal(#run.zones, 0)
+		local leaders = 0
+		for _, camp in run.camps do
+			if camp.leaderId then
+				leaders += 1
+			end
+		end
+		Assert.equal(#run.clues, leaders * run.config.run.arc.clues.perLeader)
 		for id = 1, 4 do
 			local point = Fixtures.pointOf(run, id)
 			Assert.truthy(point.isEntry, "player " .. id .. " does not start at an entry")
@@ -170,26 +188,286 @@ return {
 		Assert.truthy(run.ended)
 	end,
 
-	["zones are open from the start and a player who reaches one extracts"] = function()
+	["a zone opens at the configured minute and a player who reaches it extracts"] = function()
 		local run = quiet(1)
 		local player = run.players[1]
-		Assert.truthy(#run.zones > 0)
+		local opensAt = run.config.run.arc.zones.firstOpenMinute * 60
+		advance(run, opensAt - 1)
+		Assert.equal(#run.zones, 0)
+		local events = advance(run, 1)
+		Assert.equal(#run.zones, 1)
 		local zone = run.zones[1]
+		Assert.near(zone.openedAt, opensAt, STEP + 1e-6)
+		local announced = Assert.findEvent(events, "announcement")
+		Assert.truthy(announced)
+		Assert.equal(announced.what, "zoneOpened")
+		Assert.equal(announced.id, zone.id)
 		walkTo(run, player, zone.x, zone.z)
+		Assert.truthy(zone.open)
 		Run.setInteracting(run, 1, true)
-		local events =
+		events =
 			advance(run, run.config.run.extractSeconds + 1, { [1] = { x = zone.x, z = zone.z } })
 		Assert.truthy(Assert.findEvent(events, "extracted"))
 		Assert.truthy(Assert.findEvent(events, "ended"))
 		Assert.equal(player.state, "extracted")
 	end,
 
-	["the flood ends the run at its duration"] = function()
+	["the flood meets at the centre at the run's end and kills everyone left"] = function()
 		local run = quiet(2)
-		local events = advance(run, run.config.run.durationSeconds + 1)
+		-- At the very centre the flood reaches them only as it meets.
+		for id = 1, 2 do
+			Fixtures.place(run, run.players[id], 0, 0)
+		end
+		local events = advance(run, run.config.run.durationSeconds - 1)
+		Assert.falsy(Assert.findEvent(events, "flood"))
+		Assert.falsy(Assert.findEvent(events, "playerHurt"))
+		events = advance(run, 2)
 		Assert.truthy(Assert.findEvent(events, "flood"))
 		Assert.equal(count(events, "died"), 2)
 		Assert.truthy(run.ended)
+		Assert.equal(run.floodHalf, 0)
+	end,
+
+	["the flood hurts a player at the edge every second, then closes their zone"] = function()
+		local config = Fixtures.config()
+		config.player.maxHealth = 1e9
+		local run = quiet(1, config)
+		local player = run.players[1]
+		-- The zone at the point nearest the edge, the player standing in it
+		-- without extracting.
+		local edgeMost: Types.MapPoint? = nil
+		for _, point in run.map.points do
+			local reach = math.max(math.abs(point.x), math.abs(point.z))
+			if
+				not point.isEntry
+				and (
+					edgeMost == nil
+					or reach > math.max(math.abs(edgeMost.x), math.abs(edgeMost.z))
+				)
+			then
+				edgeMost = point
+			end
+		end
+		assert(edgeMost, "no point")
+		local zone = Arc.openZone(run, edgeMost.id)
+		-- Sitting at the zone's edge nearest the map's edge.
+		local reach = math.max(math.abs(zone.x), math.abs(zone.z))
+		local sx = if math.abs(zone.x) >= math.abs(zone.z) then math.sign(zone.x) else 0
+		local sz = if sx == 0 then math.sign(zone.z) else 0
+		local x, z = zone.x + sx * (zone.radius - 1), zone.z + sz * (zone.radius - 1)
+		Fixtures.place(run, player, x, z)
+		local flood = config.run.arc.flood
+		advance(run, flood.startMinute * 60 - 1)
+		Assert.equal(player.health, player.maxHealth)
+
+		local events: { any } = {}
+		local hurt = false
+		while not hurt and run.time < config.run.durationSeconds do
+			for _, event in advance(run, 1) do
+				table.insert(events, event)
+				if event.kind == "playerHurt" then
+					Assert.equal(event.cause, "flood")
+					hurt = true
+				end
+			end
+		end
+		Assert.truthy(hurt, "the flood never reached the player")
+		Assert.truthy(run.floodHalf < reach + zone.radius)
+		local before = player.health
+		advance(run, 1)
+		Assert.near(before - player.health, flood.damagePerSecond, 1e-6)
+		-- The flood touched the zone before it reached the player inside it.
+		Assert.falsy(zone.open)
+		local closed = nil
+		for _, event in events do
+			if event.kind == "announcement" and event.what == "zoneClosed" then
+				closed = event
+			end
+		end
+		Assert.truthy(closed, "no zoneClosed announcement")
+		Assert.equal(closed.id, zone.id)
+		-- A closed zone does not extract.
+		Run.setInteracting(run, 1, true)
+		advance(run, run.config.run.extractSeconds + 1, { [1] = { x = x, z = z } })
+		Assert.equal(player.state, "alive")
+	end,
+
+	["three clues read mark the leader's point for every player"] = function()
+		local config = quietConfig()
+		config.player.maxHealth = 1e9
+		-- Leaders at the farthest camps, who notice nobody.
+		config.enemies.camps[config.map.maxLevel].leaderChance = 1
+		config.enemies.archetypes.campLeader.detectionRange = 0
+		local run = populated(2, config)
+		local camp: Types.Camp? = nil
+		for _, candidate in run.camps do
+			if candidate.leaderId then
+				camp = candidate
+				break
+			end
+		end
+		assert(camp, "no leader")
+		local clues = {}
+		for _, clue in run.clues do
+			if clue.campId == camp.id then
+				table.insert(clues, clue)
+			end
+		end
+		Assert.equal(#clues, config.run.arc.clues.perLeader)
+		Assert.equal(run.leaderAreas[camp.id], nil)
+
+		local function read(id: number, clue: Types.Clue): { any }
+			local player = run.players[id]
+			Fixtures.place(run, player, clue.x, clue.z)
+			Run.setInteracting(run, id, true)
+			local events = advance(
+				run,
+				config.run.arc.clues.readSeconds + 0.5,
+				{ [id] = { x = clue.x, z = clue.z } }
+			)
+			Run.setInteracting(run, id, false)
+			return events
+		end
+
+		-- Player 1 reads two; the area narrows and still holds the point.
+		local point = run.map.points[camp.pointId]
+		read(1, clues[1])
+		local first = run.leaderAreas[camp.id]
+		Assert.equal(first.radius, config.run.arc.clues.areaRadii[1])
+		Assert.truthy(Geometry.distance(first.x, first.z, point.x, point.z) <= first.radius)
+		read(1, clues[2])
+		local second = run.leaderAreas[camp.id]
+		Assert.equal(second.radius, config.run.arc.clues.areaRadii[2])
+		Assert.truthy(Geometry.distance(second.x, second.z, point.x, point.z) <= second.radius)
+		-- Player 2 reads the last one: the point is marked, for everyone.
+		local events = read(2, clues[3])
+		local event = Assert.findEvent(events, "clueRead")
+		Assert.truthy(event)
+		Assert.equal(event.playerId, 2)
+		Assert.equal(event.remaining, 0)
+		local area = run.leaderAreas[camp.id]
+		Assert.equal(area.radius, 0)
+		Assert.equal(area.x, point.x)
+		Assert.equal(area.z, point.z)
+		-- A clue read is read for everyone: reading it again does nothing.
+		events = read(2, clues[1])
+		Assert.falsy(Assert.findEvent(events, "clueRead"))
+	end,
+
+	["a chest from a chest drop gives a perk choice or potions"] = function()
+		local run = quiet(1)
+		local player = run.players[1]
+		local drop = run.config.run.arc.events.chestDrop
+		local events = advance(run, drop.firstMinute * 60 + 1)
+		Assert.equal(#run.chests, 1)
+		local chest = run.chests[1]
+		local announced = nil
+		for _, event in events do
+			if event.kind == "announcement" and event.what == "chestDrop" then
+				announced = event
+			end
+		end
+		Assert.truthy(announced)
+		Assert.equal(announced.id, chest.id)
+		Assert.equal(announced.x, chest.x)
+		Fixtures.place(run, player, chest.x, chest.z)
+		Run.setInteracting(run, 1, true)
+		events = advance(
+			run,
+			run.config.run.arc.events.chest.openSeconds + 0.5,
+			{ [1] = { x = chest.x, z = chest.z } }
+		)
+		local opened = Assert.findEvent(events, "chestOpened")
+		Assert.truthy(opened)
+		Assert.truthy(chest.opened)
+		if opened.reward == "perk" then
+			Assert.equal(#player.offers, 1)
+			Assert.truthy(Assert.findEvent(events, "offer"))
+		else
+			Assert.equal(opened.reward, "potions")
+			Assert.equal(player.potions, run.config.run.arc.events.chest.potions)
+		end
+	end,
+
+	["the wandering boss comes at its minute far from the players, multiplied"] = function()
+		local run = quiet(2)
+		local settings = run.config.run.arc.events.wanderingBoss
+		settings.minute = Config.run.arc.events.wanderingBoss.minute
+		local events = advance(run, settings.minute * 60 - 1)
+		Assert.equal(#run.enemies, 0)
+		for _, event in advance(run, 1) do
+			table.insert(events, event)
+		end
+		Assert.equal(#run.enemies, 1)
+		local boss = run.enemies[1]
+		Assert.truthy(boss.boss)
+		Assert.equal(boss.archetype, settings.archetype)
+		local base = run.config.enemies.archetypes[settings.archetype].health
+		Assert.near(boss.maxHealth, base * settings.healthMultiplier)
+		local announced = nil
+		for _, event in events do
+			if event.kind == "announcement" and event.what == "wanderingBoss" then
+				announced = event
+			end
+		end
+		Assert.truthy(announced)
+		Assert.equal(announced.id, boss.id)
+		-- Its point is the one whose nearest player is farthest away.
+		local function nearestPlayer(x: number, z: number): number
+			local best = math.huge
+			for _, player in run.players do
+				best = math.min(best, Geometry.distance(x, z, player.x, player.z))
+			end
+			return best
+		end
+		local patrol = run.patrols[1]
+		Assert.falsy(patrol.wanders)
+		local start = run.map.points[patrol.previousPoint]
+		for _, point in run.map.points do
+			if not point.isEntry then
+				Assert.truthy(
+					nearestPlayer(point.x, point.z) <= nearestPlayer(start.x, start.z),
+					"point " .. point.id .. " is farther from the players"
+				)
+			end
+		end
+	end,
+
+	["the incursion wave doubles the patrols' growth for its seconds"] = function()
+		local config = Fixtures.config()
+		config.player.maxHealth = 1e9
+		local run = quiet(1, config)
+		config.enemies.patrols.groupsPerMinute = 0.6
+		local wave = config.run.arc.events.incursionWave
+		-- Groups owed over a stretch: those spawned and the change in the debt.
+		local events: { any } = {}
+		local function owedOver(seconds: number): number
+			local debt = run.patrolDebt
+			local spawned = 0
+			for _, event in advance(run, seconds) do
+				table.insert(events, event)
+				if event.kind == "patrolSpawned" then
+					spawned += 1
+				end
+			end
+			return spawned + run.patrolDebt - debt
+		end
+		owedOver(wave.minute * 60 - 60)
+		local normal = owedOver(60)
+		local during = owedOver(wave.seconds)
+		local after = owedOver(60)
+		-- The window's edges fall within a step.
+		local slack = 0.6 / 60 * STEP * wave.factor
+		Assert.near(normal, 0.6, slack)
+		Assert.near(during, 0.6 * wave.seconds / 60 * wave.factor, slack)
+		Assert.near(after, 0.6, slack)
+		local announced = 0
+		for _, event in events do
+			if event.kind == "announcement" and event.what == "incursionWave" then
+				announced += 1
+			end
+		end
+		Assert.equal(announced, 1)
 	end,
 
 	["the same seed replays the same run"] = function()

@@ -23,7 +23,6 @@ local function smallMap(): Types.Map
 				distance = 0,
 				level = 1,
 				isEntry = true,
-				hasZone = false,
 				campX = nil,
 				campZ = nil,
 				cover = { { x = 2, z = 2 } },
@@ -32,7 +31,6 @@ local function smallMap(): Types.Map
 		},
 		paths = { { id = 1, a = 1, b = 2, halfWidth = 4 } },
 		entries = { 1 },
-		zonePoints = {},
 		nextHop = {},
 		hops = {},
 		heights = { { 0, 1.25, 23.96 }, { 4, 4.04, 12.3 } },
@@ -134,6 +132,8 @@ return {
 		leader.buffedUntil = 6
 		leader.level = 3
 		leader.state = "chase"
+		grunt.boss = false
+		leader.boss = true
 
 		local decoded = Protocol.decodeEnemies(Protocol.encodeEnemies(run, names), names)
 		Assert.truthy(decoded)
@@ -150,6 +150,7 @@ return {
 		Assert.equal(decoded[1].burning, false)
 		Assert.equal(decoded[1].brittle, true)
 		Assert.equal(decoded[1].buffed, false)
+		Assert.equal(decoded[1].boss, false)
 		Assert.equal(decoded[2].archetype, "campLeader")
 		Assert.equal(decoded[2].level, 3)
 		Assert.near(decoded[2].x, -1199.9, 0.05)
@@ -158,6 +159,21 @@ return {
 		Assert.equal(decoded[2].burning, true)
 		Assert.equal(decoded[2].buffed, true)
 		Assert.equal(decoded[2].chilled, false)
+		Assert.equal(decoded[2].boss, true)
+	end,
+
+	["the boss flag leaves the other flags alone"] = function()
+		local run = Fixtures.run(1)
+		local names = Protocol.archetypeNames(run.config)
+		local boss = Fixtures.enemy(run, "campLeader", 0, 0)
+		boss.boss = true
+		local decoded = Protocol.decodeEnemies(Protocol.encodeEnemies(run, names), names)
+		assert(decoded, "decoding failed")
+		Assert.equal(decoded[1].boss, true)
+		Assert.equal(decoded[1].chilled, false)
+		Assert.equal(decoded[1].burning, false)
+		Assert.equal(decoded[1].brittle, false)
+		Assert.equal(decoded[1].buffed, false)
 	end,
 
 	["a malformed enemy buffer is rejected"] = function()
@@ -239,7 +255,71 @@ return {
 		Assert.equal(#view.zones, #run.zones)
 	end,
 
-	["the map view carries only the ground, its heights to the tenth"] = function()
+	["the world view carries the flood, zones, progress, clues, leader areas and chests"] = function()
+		local run = Fixtures.run(2)
+		run.time = 700
+		run.floodHalf = 123.5
+		run.players[1].clueProgress = 1.25
+		run.players[2].chestProgress = 0.5
+		run.zones = {
+			{ id = 1, pointId = 3, x = 10, z = -20, radius = 12, open = true, openedAt = 300 },
+			{ id = 2, pointId = 5, x = -400, z = 0, radius = 12, open = false, openedAt = 480 },
+		}
+		run.clues = {
+			{ id = 1, x = 5, z = 6, pointId = 2, campId = 4, found = true, read = true },
+			{ id = 2, x = -7, z = 8, pointId = 3, campId = 4, found = true, read = false },
+			{ id = 3, x = 9, z = -9, pointId = 4, campId = 2, found = false, read = false },
+		}
+		run.leaderAreas = {
+			[4] = { x = 50, z = 60, radius = 60 },
+			[2] = { x = -10, z = 20, radius = 0 },
+		}
+		run.chests = {
+			{ id = 1, x = 30, z = 40, pointId = 6, opened = true, patrolId = nil },
+			{ id = 2, x = -30, z = -40, pointId = 7, opened = false, patrolId = 9 },
+		}
+
+		local view = Protocol.worldView(run)
+		Assert.equal(view.floodHalf, 123.5)
+		Assert.equal(view.players[1].clueProgress, 1.25)
+		Assert.equal(view.players[1].chestProgress, 0)
+		Assert.equal(view.players[2].chestProgress, 0.5)
+
+		Assert.equal(#view.zones, 2)
+		Assert.equal(view.zones[1].id, 1)
+		Assert.equal(view.zones[1].open, true)
+		Assert.equal(view.zones[2].id, 2)
+		Assert.equal(view.zones[2].open, false)
+
+		-- An unfound clue is not sent.
+		Assert.equal(#view.clues, 2)
+		Assert.equal(view.clues[1].id, 1)
+		Assert.equal(view.clues[1].read, true)
+		Assert.equal(view.clues[2].x, -7)
+		Assert.equal(view.clues[2].z, 8)
+		Assert.equal(view.clues[2].id, 2)
+		Assert.equal(view.clues[2].read, false)
+		-- Which camp a clue points at is learned by reading it.
+		Assert.equal((view.clues[2] :: any).campId, nil)
+		Assert.equal((view.clues[2] :: any).pointId, nil)
+
+		Assert.equal(#view.leaderAreas, 2)
+		Assert.equal(view.leaderAreas[1].campId, 2)
+		Assert.equal(view.leaderAreas[1].radius, 0)
+		Assert.equal(view.leaderAreas[2].campId, 4)
+		Assert.equal(view.leaderAreas[2].x, 50)
+		Assert.equal(view.leaderAreas[2].z, 60)
+		Assert.equal(view.leaderAreas[2].radius, 60)
+
+		Assert.equal(#view.chests, 2)
+		Assert.equal(view.chests[1].opened, true)
+		Assert.equal(view.chests[2].id, 2)
+		Assert.equal(view.chests[2].x, -30)
+		Assert.equal(view.chests[2].opened, false)
+		Assert.equal((view.chests[2] :: any).patrolId, nil)
+	end,
+
+	["the map view carries the ground, its heights to the tenth"] = function()
 		local view = Protocol.mapView(smallMap())
 		Assert.equal(view.rows, 2)
 		Assert.equal(view.cols, 3)
@@ -255,13 +335,53 @@ return {
 		Assert.near(heights[1][3], 24, 1e-9)
 		Assert.near(heights[2][2], 4, 1e-9)
 		Assert.near(heights[2][3], 12.3, 1e-9)
-		-- Nothing about the points travels: a zone not yet open stays hidden.
+	end,
+
+	["the map view carries the layout of points and paths, nothing more"] = function()
+		local view = Protocol.mapView(smallMap())
 		local fields = {}
 		for key in view :: any do
 			table.insert(fields, key)
 		end
 		table.sort(fields)
-		Assert.equal(table.concat(fields, ","), "cols,half,heightCell,heights,rows,waterLevel")
+		Assert.equal(
+			table.concat(fields, ","),
+			"cols,half,heightCell,heights,paths,points,rows,waterLevel"
+		)
+		Assert.equal(#view.points, 1)
+		local point = view.points[1]
+		Assert.equal(point.id, 1)
+		Assert.equal(point.x, 1)
+		Assert.equal(point.z, -2)
+		Assert.equal(point.radius, 6)
+		Assert.equal(point.isEntry, true)
+		-- No level, template or camp: the layout, not what holds it.
+		local pointFields = {}
+		for key in point :: any do
+			table.insert(pointFields, key)
+		end
+		table.sort(pointFields)
+		Assert.equal(table.concat(pointFields, ","), "id,isEntry,radius,x,z")
+		Assert.equal(#view.paths, 1)
+		Assert.equal(view.paths[1].a, 1)
+		Assert.equal(view.paths[1].b, 2)
+		local pathFields = {}
+		for key in view.paths[1] :: any do
+			table.insert(pathFields, key)
+		end
+		table.sort(pathFields)
+		Assert.equal(table.concat(pathFields, ","), "a,b")
+	end,
+
+	["a generated map's view lists every point and path"] = function()
+		local map = Map.generate(Config, Rng.new(7), 2)
+		local view = Protocol.mapView(map)
+		Assert.equal(#view.points, #map.points)
+		Assert.equal(#view.paths, #map.paths)
+		for index, point in map.points do
+			Assert.equal(view.points[index].id, point.id)
+			Assert.equal(view.points[index].isEntry, point.isEntry)
+		end
 	end,
 
 	["a map view whose heights do not match its grid is rejected"] = function()
@@ -305,7 +425,31 @@ return {
 		Assert.truthy(Protocol.isPrivate({ kind = "knockback", player = 4, dx = 1, dz = 0 }))
 		Assert.falsy(Protocol.isPrivate({ kind = "died", player = 4 }))
 		Assert.falsy(Protocol.isPrivate({ kind = "flood" }))
+		Assert.truthy(
+			Protocol.isPrivate({ kind = "playerHurt", player = 4, amount = 1, enemyId = nil })
+		)
 		Assert.equal(Protocol.eventPlayer({ kind = "levelUp", player = 9, level = 2 }), 9)
 		Assert.equal(Protocol.eventPlayer({ kind = "ended" }), nil)
+	end,
+
+	["announcements, clues found and read and chests opened go to everyone"] = function()
+		Assert.falsy(
+			Protocol.isPrivate({ kind = "announcement", what = "zoneOpened", x = 1, z = 2, id = 1 })
+		)
+		Assert.falsy(Protocol.isPrivate({ kind = "announcement", what = "floodStarted" }))
+		Assert.falsy(Protocol.isPrivate({ kind = "clueFound", clueId = 1 }))
+		Assert.falsy(Protocol.isPrivate({
+			kind = "clueRead",
+			clueId = 1,
+			campId = 2,
+			playerId = 4,
+			remaining = 2,
+		}))
+		Assert.falsy(Protocol.isPrivate({
+			kind = "chestOpened",
+			chestId = 1,
+			playerId = 4,
+			reward = "potions",
+		}))
 	end,
 }

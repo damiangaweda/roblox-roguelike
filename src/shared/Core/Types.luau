@@ -43,7 +43,6 @@ export type MapPoint = {
 	-- 1 next to the entries, config.map.maxLevel farthest.
 	level: number,
 	isEntry: boolean,
-	hasZone: boolean,
 	-- Absolute positions resolved from the template; campX/campZ nil for an
 	-- entry.
 	campX: number?,
@@ -68,7 +67,6 @@ export type Map = {
 	points: { MapPoint },
 	paths: { Path },
 	entries: { number },
-	zonePoints: { number },
 	-- nextHop[from][to] is the neighbouring point to walk to on the way from
 	-- point `from` to point `to`; nextHop[p][p] is p. hops[from][to] is the
 	-- number of paths between the points.
@@ -282,16 +280,8 @@ export type MapConfig = {
 	-- Entries at least this far apart, in studs.
 	minEntrySpacing: number,
 	maxLevel: number,
-	playersPerZone: number,
-	minZones: number,
-	maxZones: number,
+	-- The radius of an extraction zone, opened at a point's centre (Arc).
 	zoneRadius: number,
-	-- How much a point's distance from the entries counts against its
-	-- distance from other zones when extraction zones are placed.
-	zoneDistanceWeight: number,
-	-- Zones go only to points at least this share of the farthest point's
-	-- distance from the entries, while there are enough of them.
-	zoneMinDistanceFraction: number,
 	coverRadius: number,
 	-- Bushes scattered between points, per point, and how far they keep
 	-- from footprints and path bands.
@@ -320,6 +310,74 @@ export type MapConfig = {
 	entryTemplate: PointTemplate,
 }
 
+-- The run's arc (stage 2d): zones on a clock, the flood, clues, chests and
+-- the run events. Minutes are run minutes since the start.
+export type ArcConfig = {
+	zones: {
+		-- No zone is open before this; then one every intervalMinutes.
+		firstOpenMinute: number,
+		intervalMinutes: number,
+		-- Centre to centre, between a new zone and every open one.
+		minZoneDistance: number,
+	},
+	flood: {
+		-- The flood leaves the edges at startMinute and reaches the centre at
+		-- run.durationSeconds, where the run ends.
+		startMinute: number,
+		-- To a player inside the flood, dealt once every tickSeconds; it
+		-- interrupts nothing.
+		damagePerSecond: number,
+		tickSeconds: number,
+	},
+	clues: {
+		perLeader: number,
+		readSeconds: number,
+		-- How close to the clue a player stands to read it.
+		readRadius: number,
+		-- How close an alive player comes to a clue to find it; a clue is
+		-- shown to nobody before it is found.
+		findRadius: number,
+		-- The leader's area after each clue read but the last, which marks the
+		-- point; past the end of the list the last radius holds.
+		areaRadii: { number },
+		-- How far from the leader's point the first area's centre may lie, as
+		-- a share of its radius.
+		areaOffsetFraction: number,
+	},
+	events: {
+		chestDrop: {
+			firstMinute: number,
+			intervalMinutes: number,
+			-- The patrol that stays by the dropped chest.
+			guardSize: number,
+			guardPool: { string },
+		},
+		chest: {
+			openSeconds: number,
+			-- How close to the chest a player stands to open it.
+			openRadius: number,
+			-- Chance of a perk choice; else potions, up to the capacity.
+			perkChance: number,
+			potions: number,
+		},
+		wanderingBoss: {
+			minute: number,
+			archetype: string,
+			healthMultiplier: number,
+			damageMultiplier: number,
+			-- Multiplies its archetype's radius: how far from its centre it is
+			-- hit, and how big it is drawn.
+			radiusMultiplier: number,
+		},
+		-- From `minute`, for `seconds`, patrols grow `factor` times faster.
+		incursionWave: {
+			minute: number,
+			seconds: number,
+			factor: number,
+		},
+	},
+}
+
 export type Config = {
 	run: {
 		durationSeconds: number,
@@ -327,6 +385,7 @@ export type Config = {
 		summarySeconds: number,
 		-- How long after the start a newcomer may still join the run.
 		lateJoinSeconds: number,
+		arc: ArcConfig,
 	},
 	map: MapConfig,
 	player: {
@@ -501,6 +560,9 @@ export type Enemy = {
 	knockX: number,
 	knockZ: number,
 	knockUntil: number,
+	-- The wandering boss: its damage is multiplied and it drops what a camp
+	-- leader drops.
+	boss: boolean,
 }
 
 export type Camp = {
@@ -537,6 +599,8 @@ export type Patrol = {
 	wanderX: number,
 	wanderZ: number,
 	wanderUntil: number,
+	-- A chest's guard: it stays at routePoint until the chest is opened.
+	stays: boolean,
 }
 
 export type Projectile = {
@@ -587,6 +651,10 @@ export type Player = {
 	downedAt: number?,
 	reviveProgress: number,
 	extractProgress: number,
+	-- Seconds the interact button has been held reading a clue or opening a
+	-- chest; a hit resets them as it resets extraction.
+	clueProgress: number,
+	chestProgress: number,
 	level: number,
 	xp: number,
 	-- Perk id to the number of stacks taken.
@@ -610,9 +678,10 @@ export type Player = {
 	boost: number,
 	boostUntil: number,
 	-- Whether the player holds the interact button, which revives a downed
-	-- player nearby or extracts in a zone.
+	-- player nearby, else, first that applies, extracts in an open zone,
+	-- reads a clue or opens a chest.
 	interacting: boolean,
-	-- Run time of the last damage taken; a hit interrupts reviving.
+	-- Run time of the last damage that interrupts; a hit interrupts reviving.
 	hurtAt: number,
 	-- Knockback velocity in studs per second, applied until knockUntil.
 	knockX: number,
@@ -624,11 +693,54 @@ export type Player = {
 	inCover: boolean,
 }
 
+-- An extraction zone, opened at a point during the run; the flood closes it.
 export type Zone = {
+	id: number,
+	pointId: number,
 	x: number,
 	z: number,
 	radius: number,
+	open: boolean,
+	openedAt: number,
 }
+
+-- A clue to where a camp leader is, standing at another point.
+export type Clue = {
+	id: number,
+	x: number,
+	z: number,
+	pointId: number,
+	-- The camp whose leader it points at.
+	campId: number,
+	-- An alive player has come within findRadius of it; only then is it
+	-- shown, or can it be read.
+	found: boolean,
+	read: boolean,
+}
+
+-- What every player knows of where a camp leader is: a circle that holds its
+-- point; radius 0 once the point itself is known.
+export type LeaderArea = { x: number, z: number, radius: number }
+
+export type Chest = {
+	id: number,
+	x: number,
+	z: number,
+	pointId: number,
+	opened: boolean,
+	-- The patrol guarding it, if one was spawned.
+	patrolId: number?,
+}
+
+-- What a run event or the arc announces to everyone, with where it happened
+-- and the zone, chest or enemy id when there is one.
+export type Announcement =
+	"zoneOpened"
+	| "zoneClosed"
+	| "chestDrop"
+	| "wanderingBoss"
+	| "incursionWave"
+	| "floodStarted"
 
 export type Event =
 	{
@@ -642,7 +754,8 @@ export type Event =
 		blocked: boolean,
 	}
 	| { kind: "kill", source: number, enemyId: number, archetype: string }
-	| { kind: "playerHurt", player: number, amount: number, enemyId: number? }
+	-- `cause` is "flood" when the flood did it.
+	| { kind: "playerHurt", player: number, amount: number, enemyId: number?, cause: "flood"? }
 	| { kind: "knockback", player: number, dx: number, dz: number }
 	| { kind: "levelUp", player: number, level: number }
 	| { kind: "offer", player: number, perks: { string } }
@@ -681,6 +794,11 @@ export type Event =
 	| { kind: "skillUsed", player: number, skill: string, x: number, z: number, facing: number }
 	-- A projectile or ring landed: the area to draw.
 	| { kind: "burst", x: number, z: number, radius: number, skill: string }
+	| { kind: "announcement", what: Announcement, x: number?, z: number?, id: number? }
+	-- `remaining` clues of the camp are still unread.
+	| { kind: "clueFound", clueId: number }
+	| { kind: "clueRead", clueId: number, campId: number, playerId: number, remaining: number }
+	| { kind: "chestOpened", chestId: number, playerId: number, reward: "perk" | "potions" }
 
 export type Rng = {
 	-- A float in [0, 1).
@@ -699,6 +817,9 @@ export type Run = {
 	nextPatrolId: number,
 	nextProjectileId: number,
 	nextPickupId: number,
+	nextZoneId: number,
+	nextClueId: number,
+	nextChestId: number,
 	-- Patrol groups owed by the spawn rate, carried between steps.
 	patrolDebt: number,
 	enemies: { Enemy },
@@ -707,7 +828,25 @@ export type Run = {
 	projectiles: { Projectile },
 	pickups: { Pickup },
 	players: { [number]: Player },
+	-- Every zone opened so far, open or closed by the flood.
 	zones: { Zone },
+	-- When the next zone is due and the next chest drop; each waits while no
+	-- point qualifies (a drop also while its guard does not fit under the
+	-- cap), and the next one is due an interval after it came.
+	nextZoneAt: number,
+	nextChestDropAt: number,
+	-- The half side of the square the flood has not reached.
+	floodHalf: number,
+	-- When the flood next hurts the players inside it.
+	nextFloodTickAt: number,
+	floodStarted: boolean,
+	clues: { Clue },
+	-- Keyed by the camp id; absent until one of its clues is read.
+	leaderAreas: { [number]: LeaderArea },
+	chests: { Chest },
+	bossSpawned: boolean,
+	waveStarted: boolean,
+	-- The flood reached the centre: everyone left died.
 	flooded: boolean,
 	ended: boolean,
 	-- Events produced since the adapter last drained them.

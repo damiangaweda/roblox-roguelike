@@ -2,6 +2,7 @@
 -- One run, advanced by the server adapter in fixed steps (ADR-0002). The core
 -- never reads time, randomness or the engine itself: the adapter passes them in.
 
+local Arc = require("./Arc")
 local Camps = require("./Camps")
 local Combat = require("./Combat")
 local Enemies = require("./Enemies")
@@ -15,11 +16,12 @@ local Types = require("./Types")
 
 local Run = {}
 
--- A run for `playerCount` players: the map is generated for that many and
--- populated with camps and patrols.
+-- A run for `playerCount` players: the map is generated for that many,
+-- populated with camps and patrols, and given the clues to its leaders.
 function Run.new(config: Types.Config, seed: number, playerCount: number): Types.Run
 	local run = State.newRun(config, seed, playerCount)
 	Camps.populate(run)
+	Arc.placeClues(run)
 	return run
 end
 
@@ -240,7 +242,10 @@ local function checkEnded(run: Types.Run)
 end
 
 -- Advances the run by `dt` seconds. `inputs` carries the positions and
--- facings of players the adapter reports; only alive players move.
+-- facings of players the adapter reports; only alive players move. The arc
+-- (zones, the flood and its damage, run events) follows the moves, so the
+-- flood hurts where players stand and its deaths go through Life.update.
+-- The run ends when the flood meets at the centre, or at its duration.
 function Run.step(run: Types.Run, dt: number, inputs: { [number]: Types.PlayerInput })
 	if run.ended then
 		return
@@ -255,13 +260,14 @@ function Run.step(run: Types.Run, dt: number, inputs: { [number]: Types.PlayerIn
 		end
 	end
 
+	Arc.update(run, dt)
 	Camps.update(run, dt)
 	Enemies.step(run, dt)
 	Projectiles.step(run, dt)
 	Combat.burn(run, dt)
 	Life.update(run, dt)
 	Extraction.update(run, dt)
-	if run.time >= run.config.run.durationSeconds then
+	if run.floodHalf <= 0 or run.time >= run.config.run.durationSeconds then
 		Extraction.flood(run)
 	end
 	checkEnded(run)

@@ -124,19 +124,14 @@ local function returnTime(run: Types.Run, clearedAt: number): number
 end
 
 return {
-	["populate gives every point but the entries one camp, zone points too"] = function()
+	["populate gives every point but the entries one camp"] = function()
 		for _, seed in { 1, 2, 3 } do
 			local run = build(8, seed)
 			Camps.populate(run)
-			local zonePoints = 0
 			for _, point in run.map.points do
 				local expected = if point.isEntry then 0 else 1
 				Assert.equal(countCamps(run, point.id), expected, "point " .. point.id)
-				if point.hasZone then
-					zonePoints += 1
-				end
 			end
-			Assert.truthy(zonePoints > 0)
 		end
 	end,
 
@@ -344,6 +339,8 @@ return {
 		local run = build(8, 9, function(config)
 			campsOnly(config)
 			config.enemies.patrols.groupsPerMinute = 0.6
+			-- The incursion wave's faster growth is Arc.spec's.
+			config.run.arc.events.incursionWave.factor = 1
 		end)
 		for _ = 1, 600 do
 			run.time += 1

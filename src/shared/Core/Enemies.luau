@@ -219,6 +219,9 @@ local function land(run: Types.Run, enemy: Types.Enemy, context: Context): boole
 	if run.time < enemy.buffedUntil then
 		damage *= config.enemies.buffDamageFactor
 	end
+	if enemy.boss then
+		damage *= config.run.arc.events.wanderingBoss.damageMultiplier
+	end
 	local reach = attack.radius + config.player.radius
 
 	if attack.kind == "melee" then
@@ -390,7 +393,7 @@ local function chase(
 		enemy.x, enemy.z = Map.clamp(run.map, enemy.x + nx * step, enemy.z + nz * step)
 	elseif distance > attack.range * run.config.enemies.approachFactor then
 		-- Never closer than touching.
-		local gap = archetype.radius + run.config.player.radius
+		local gap = State.enemyRadius(run, enemy) + run.config.player.radius
 		local allowed = math.min(step, math.max(0, distance - gap))
 		if allowed > 0 then
 			found = walkToward(run, enemy, target.x, target.z, allowed)
@@ -430,8 +433,11 @@ local function walkHome(
 end
 
 -- Sends the patrol on to a neighbour of its point, not back where it came
--- from unless the point is a dead end.
+-- from unless the point is a dead end. A chest's guard stays.
 local function advancePatrol(run: Types.Run, patrol: Types.Patrol)
+	if patrol.stays then
+		return
+	end
 	local point = run.map.points[patrol.routePoint]
 	local options: { number } = {}
 	for _, neighbour in point.neighbours do

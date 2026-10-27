@@ -1,7 +1,7 @@
 --!strict
 -- Raw input: the character faces the aim (the server reads the facing from the
 -- root part, so facing the aim is sending it), the basic attack fires while held,
--- three active skills, the dash, drinking and interacting. PC, touch (an aim pad on
+-- three active skills, the dash, drinking, interacting and the map screen. PC, touch (an aim pad on
 -- the right of the screen) and gamepad. The client only sends intents and moves its
 -- own character; the server decides what happens (AGENTS.md rule 1). The Hud's
 -- on-screen buttons call the exported functions. The local player's Blink and
@@ -15,6 +15,7 @@ local UserInputService = game:GetService("UserInputService")
 
 local Config = require(ReplicatedStorage.Shared.Config)
 local Effects = require(script.Parent.Effects)
+local MapScreen = require(script.Parent.MapScreen)
 local Net = require(script.Parent.Net)
 
 local Input = {}
@@ -58,6 +59,11 @@ local DRINK_KEYS: { [Enum.KeyCode]: boolean } = {
 local INTERACT_KEYS: { [Enum.KeyCode]: boolean } = {
 	[Enum.KeyCode.F] = true,
 	[Enum.KeyCode.ButtonA] = true,
+}
+-- Open or close the map screen (the same as Hud.toggleMap, which requires this module).
+local MAP_KEYS: { [Enum.KeyCode]: boolean } = {
+	[Enum.KeyCode.M] = true,
+	[Enum.KeyCode.DPadUp] = true,
 }
 -- The last input type that makes the mouse the aim source.
 local MOUSE_TYPES: { [Enum.UserInputType]: boolean } = {
@@ -487,6 +493,8 @@ local function onInputBegan(input: InputObject, _gameProcessed: boolean)
 		Input.drink()
 	elseif INTERACT_KEYS[key] then
 		Input.interact(true)
+	elseif MAP_KEYS[key] then
+		MapScreen.toggle()
 	end
 end
 

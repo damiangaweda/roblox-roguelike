@@ -136,8 +136,13 @@ export type EnemyView = {
 	burning: boolean,
 	brittle: boolean,
 	buffed: boolean,
+	-- The wandering boss, drawn bigger.
+	boss: boolean,
 }
 
+-- One enemy on the wire, after a u16 count:
+--   0 u32 id, 4 u8 archetype index, 5 i16 x, 7 i16 z, 9 u8 facing,
+--   10 u8 state index, 11 u8 health share, 12 u8 flags, 13 u8 level.
 local ENEMY_BYTES = 14
 -- Positions travel in tenths of a stud as int16, which covers +-3276 studs.
 local POSITION_SCALE = 10
@@ -145,6 +150,7 @@ local FLAG_CHILLED = 1
 local FLAG_BURNING = 2
 local FLAG_BRITTLE = 4
 local FLAG_BUFFED = 8
+local FLAG_BOSS = 16
 
 local function writePosition(out: buffer, offset: number, value: number)
 	buffer.writei16(out, offset, math.clamp(math.round(value * POSITION_SCALE), -32768, 32767))
@@ -180,6 +186,9 @@ function Protocol.encodeEnemies(run: Types.Run, archetypeNames: { string }): buf
 		end
 		if run.time < enemy.buffedUntil then
 			flags += FLAG_BUFFED
+		end
+		if enemy.boss then
+			flags += FLAG_BOSS
 		end
 		buffer.writeu32(out, offset, enemy.id)
 		buffer.writeu8(out, offset + 4, index[enemy.archetype] or 0)
@@ -221,6 +230,7 @@ function Protocol.decodeEnemies(data: any, archetypeNames: { string }): { EnemyV
 			burning = bit32.band(flags, FLAG_BURNING) ~= 0,
 			brittle = bit32.band(flags, FLAG_BRITTLE) ~= 0,
 			buffed = bit32.band(flags, FLAG_BUFFED) ~= 0,
+			boss = bit32.band(flags, FLAG_BOSS) ~= 0,
 		}
 	end
 	return enemies
@@ -292,18 +302,36 @@ export type PlayerView = {
 	maxHealth: number,
 	reviveProgress: number,
 	extractProgress: number,
+	-- Seconds held reading a clue and opening a chest.
+	clueProgress: number,
+	chestProgress: number,
 	downedFor: number,
 	potions: number,
 	-- Seconds left of the drink, 0 when not drinking.
 	drinkingFor: number,
 }
 
+export type ClueView = { id: number, x: number, z: number, read: boolean }
+
+-- What everyone knows of a camp leader's whereabouts; radius 0 marks the point.
+export type LeaderAreaView = { campId: number, x: number, z: number, radius: number }
+
+export type ChestView = { id: number, x: number, z: number, opened: boolean }
+
 export type WorldView = {
 	time: number,
 	durationSeconds: number,
+	-- The half side of the square the flood has not reached.
+	floodHalf: number,
 	players: { PlayerView },
+	-- Every zone opened so far; one the flood closed has open false.
 	zones: { Types.Zone },
 	pickups: { Types.Pickup },
+	-- Only the clues someone has found: an unfound clue stays on the server.
+	clues: { ClueView },
+	-- In camp id order.
+	leaderAreas: { LeaderAreaView },
+	chests: { ChestView },
 }
 
 function Protocol.worldView(run: Types.Run): WorldView
@@ -316,6 +344,8 @@ function Protocol.worldView(run: Types.Run): WorldView
 			maxHealth = player.maxHealth,
 			reviveProgress = player.reviveProgress,
 			extractProgress = player.extractProgress,
+			clueProgress = player.clueProgress,
+			chestProgress = player.chestProgress,
 			downedFor = if player.downedAt then run.time - player.downedAt else 0,
 			potions = player.potions,
 			drinkingFor = if player.drinkingUntil
@@ -326,12 +356,33 @@ function Protocol.worldView(run: Types.Run): WorldView
 	table.sort(players, function(a, b)
 		return a.id < b.id
 	end)
+	local clues = {}
+	for _, clue in run.clues do
+		if clue.found then
+			table.insert(clues, { id = clue.id, x = clue.x, z = clue.z, read = clue.read })
+		end
+	end
+	local leaderAreas = {}
+	for campId, area in run.leaderAreas do
+		table.insert(leaderAreas, { campId = campId, x = area.x, z = area.z, radius = area.radius })
+	end
+	table.sort(leaderAreas, function(a, b)
+		return a.campId < b.campId
+	end)
+	local chests = table.create(#run.chests)
+	for _, chest in run.chests do
+		table.insert(chests, { id = chest.id, x = chest.x, z = chest.z, opened = chest.opened })
+	end
 	return {
 		time = run.time,
 		durationSeconds = run.config.run.durationSeconds,
+		floodHalf = run.floodHalf,
 		players = players,
 		zones = run.zones,
 		pickups = run.pickups,
+		clues = clues,
+		leaderAreas = leaderAreas,
+		chests = chests,
 	}
 end
 
@@ -362,10 +413,17 @@ export type SelfView = {
 	potionCapacity: number,
 }
 
--- The map as the client draws it: only the ground, since everything else
--- the client sees (props, cover, markers) is built by the server as parts.
--- Heights travel as u16 tenths of a stud, row-major: heights[row][col], row
--- along z, col along x, both from -half, spaced heightCell apart.
+-- A point as the map screen draws it: where it is and whether it is an
+-- entry; its level, template and camp stay on the server.
+export type MapPointView = { id: number, x: number, z: number, radius: number, isEntry: boolean }
+
+export type MapPathView = { a: number, b: number }
+
+-- The map as the client draws it: the ground and the layout of points and
+-- paths, since everything else the client sees in the world (props, cover,
+-- markers) is built by the server as parts. Heights travel as u16 tenths of
+-- a stud, row-major: heights[row][col], row along z, col along x, both from
+-- -half, spaced heightCell apart.
 export type MapView = {
 	half: number,
 	heightCell: number,
@@ -373,6 +431,8 @@ export type MapView = {
 	rows: number,
 	cols: number,
 	heights: buffer,
+	points: { MapPointView },
+	paths: { MapPathView },
 }
 
 local HEIGHT_SCALE = 10
@@ -392,6 +452,20 @@ function Protocol.mapView(map: Types.Map): MapView
 			)
 		end
 	end
+	local points = table.create(#map.points)
+	for _, point in map.points do
+		table.insert(points, {
+			id = point.id,
+			x = point.x,
+			z = point.z,
+			radius = point.radius,
+			isEntry = point.isEntry,
+		})
+	end
+	local paths = table.create(#map.paths)
+	for _, path in map.paths do
+		table.insert(paths, { a = path.a, b = path.b })
+	end
 	return {
 		half = map.half,
 		heightCell = map.heightCell,
@@ -399,6 +473,8 @@ function Protocol.mapView(map: Types.Map): MapView
 		rows = rows,
 		cols = cols,
 		heights = heights,
+		points = points,
+		paths = paths,
 	}
 end
 
@@ -452,6 +528,8 @@ function Protocol.heightAt(
 end
 
 -- Whether an event goes to every client or only to the player it is about.
+-- Announcements, clues found and read and chests opened go to everyone: what
+-- one player learns of a leader's whereabouts narrows it for all.
 function Protocol.isPrivate(event: Types.Event): boolean
 	local kind = event.kind
 	return kind == "offer"

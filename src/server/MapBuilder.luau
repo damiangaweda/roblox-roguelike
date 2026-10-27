@@ -139,6 +139,8 @@ local ENTRY_STONE_SINK = 0.2
 local ENTRY_STONE_COLOR = Color3.fromRGB(118, 118, 110)
 
 local folder: Folder? = nil
+-- The markers of the open zones, by zone id; zones open during the run.
+local zoneMarkers: { [number]: Model } = {}
 
 local function distanceToSegment(
 	x: number,
@@ -578,19 +580,19 @@ end
 local function buildZoneMarker(
 	map: Types.Map,
 	name: string,
-	point: Types.MapPoint,
-	radius: number,
+	zone: Types.Zone,
 	parent: Instance
-)
-	local y = Map.heightAt(map, point.x, point.z) + MARKER_LIFT
+): Model
+	local x, z, radius = zone.x, zone.z, zone.radius
+	local y = Map.heightAt(map, x, z) + MARKER_LIFT
 	local model = Instance.new("Model")
 	model.Name = name
 	local length = 2 * math.pi * radius / ZONE_RING_SEGMENTS * ZONE_RING_OVERLAP
 	ring(
 		"Ring",
-		point.x,
+		x,
 		y,
-		point.z,
+		z,
 		radius,
 		ZONE_RING_SEGMENTS,
 		Vector3.new(ZONE_RING_WIDTH, ZONE_RING_HEIGHT, length),
@@ -600,8 +602,8 @@ local function buildZoneMarker(
 	)
 	local beam = column(
 		"Beam",
-		point.x,
-		point.z,
+		x,
+		z,
 		y,
 		y + ZONE_BEAM_HEIGHT,
 		ZONE_BEAM_RADIUS,
@@ -616,6 +618,7 @@ local function buildZoneMarker(
 		end
 	end
 	model.Parent = parent
+	return model
 end
 
 -- An entry's marker: a circle of low standing stones.
@@ -750,9 +753,6 @@ function MapBuilder.build(map: Types.Map, config: Types.Config)
 		covers += 1
 		buildBush(map, config, "Cover" .. covers, spot, root, random)
 	end
-	for index, id in map.zonePoints do
-		buildZoneMarker(map, "Zone" .. index, map.points[id], config.map.zoneRadius, root)
-	end
 	for index, id in map.entries do
 		buildEntryMarker(map, "Entry" .. index, map.points[id], root)
 	end
@@ -767,6 +767,30 @@ function MapBuilder.build(map: Types.Map, config: Types.Config)
 	buildWaterBarriers(map, bottom, top, barrierFolder)
 end
 
+-- Marks the zones that are open and unmarks the ones the flood closed; the
+-- run opens them on its clock, so the server calls this every frame.
+function MapBuilder.syncZones(map: Types.Map, zones: { Types.Zone })
+	local root = folder
+	if root == nil then
+		return
+	end
+	local open: { [number]: boolean } = {}
+	for _, zone in zones do
+		if zone.open then
+			open[zone.id] = true
+			if not zoneMarkers[zone.id] then
+				zoneMarkers[zone.id] = buildZoneMarker(map, "Zone" .. zone.id, zone, root)
+			end
+		end
+	end
+	for id, marker in zoneMarkers do
+		if not open[id] then
+			marker:Destroy()
+			zoneMarkers[id] = nil
+		end
+	end
+end
+
 -- Removes the terrain and the parts of the current map, the barriers among
 -- them, and what a default place brings: the baseplate and any spawn
 -- location. Characters reach the map through the run's teleport.
@@ -776,6 +800,8 @@ function MapBuilder.clear()
 		folder:Destroy()
 		folder = nil
 	end
+	-- The folder took the zone markers with it.
+	zoneMarkers = {}
 	local baseplate = workspace:FindFirstChild("Baseplate")
 	if baseplate then
 		baseplate:Destroy()

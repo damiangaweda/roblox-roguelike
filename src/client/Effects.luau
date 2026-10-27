@@ -1,9 +1,10 @@
 --!strict
 -- Combat and world effects: skills, hits, bursts, telegraphs, projectiles,
--- pickups, zones. Everything here is drawn from events and snapshots the server
--- sent; nothing is decided on the client (AGENTS.md rule 1). Every effect comes
--- from a pool with a cap, particles are thrown in bursts from pooled hosts and
--- lights are capped, so the frame budget holds however much fires at once.
+-- pickups, zones and their opening, the flood's edge, chests and clues.
+-- Everything here is drawn from events and snapshots the server sent; nothing
+-- is decided on the client (AGENTS.md rule 1). Every effect comes from a pool
+-- with a cap, particles are thrown in bursts from pooled hosts and lights are
+-- capped, so the frame budget holds however much fires at once.
 -- Nothing here is a gameplay number: every constant is a look.
 
 local Players = game:GetService("Players")
@@ -71,10 +72,11 @@ local DISC_POOL = 32
 local GROUND_POOL = 16
 local SHARD_POOL = 48
 local NUMBER_POOL = 40
--- Flash lights at once. With TRACKED_LIGHTS and the zones' (at most
--- Config.map.maxZones) this keeps the PointLights alive near a dozen.
+-- Flash lights at once. With TRACKED_LIGHTS and ZONE_LIGHTS this keeps the
+-- PointLights alive near a dozen, however many zones are open.
 local LIGHT_POOL = 5
 local TRACKED_LIGHTS = 4
+local ZONE_LIGHTS = 3
 
 -- Streaks: neon bars between two points (bolts, slashes, lightning, Blink).
 -- They end this share of their width wide; anything shorter is not drawn.
@@ -556,6 +558,21 @@ local PRESETS: { [string]: Preset } = {
 		whiten = 0,
 		locked = true,
 	},
+	-- Flood mist: big, dark, slow puffs drifting up the flood's wall.
+	floodMist = {
+		texture = SMOKE_TEXTURE,
+		size = curve({ 8, 14 }),
+		transparency = curve({ 1, 0.55, 1 }),
+		lifetime = NumberRange.new(5, 8),
+		speed = NumberRange.new(0.5, 1.5),
+		spread = Vector2.new(30, 30),
+		acceleration = Vector3.new(0, 0.6, 0),
+		drag = 0.5,
+		rotSpeed = NumberRange.new(-10, 10),
+		lightEmission = 0,
+		whiten = 0,
+		locked = false,
+	},
 }
 -- A burst host's size when it throws from a point.
 local EMIT_POINT = Vector3.new(0.2, 0.2, 0.2)
@@ -665,6 +682,69 @@ local STYLES: { [string]: Style } = {
 		},
 	},
 }
+-- Chests and clues stand still; a chest opened or a clue read is dimmed.
+local CHEST_COLOR = Color3.fromRGB(240, 190, 60)
+local CLUE_COLOR = Color3.fromRGB(90, 170, 255)
+local SPENT_COLOR = Color3.fromRGB(88, 84, 80)
+local CHEST_STYLE: Style = {
+	shape = Enum.PartType.Block,
+	size = Vector3.new(3, 2, 2),
+	color = CHEST_COLOR,
+	material = NEON,
+	transparency = 0,
+	glow = CHEST_COLOR,
+	height = 1,
+	lightRange = 12,
+	upright = false,
+	bob = 0,
+	trail = 0,
+	streams = {
+		{ preset = "halo", color = CHEST_COLOR, rate = 2 },
+		{ preset = "shimmer", color = CHEST_COLOR, rate = 5 },
+	},
+}
+local OPENED_CHEST_STYLE: Style = {
+	shape = Enum.PartType.Block,
+	size = Vector3.new(3, 2, 2),
+	color = SPENT_COLOR,
+	material = Enum.Material.SmoothPlastic,
+	transparency = 0,
+	glow = SPENT_COLOR,
+	height = 1,
+	upright = false,
+	bob = 0,
+	trail = 0,
+	streams = {},
+}
+local CLUE_STYLE: Style = {
+	shape = BALL,
+	size = Vector3.new(1.4, 1, 1.4),
+	color = CLUE_COLOR,
+	material = NEON,
+	transparency = 0,
+	glow = CLUE_COLOR,
+	height = 0.5,
+	upright = false,
+	bob = 0,
+	trail = 0,
+	streams = {
+		{ preset = "halo", color = CLUE_COLOR, rate = 2 },
+		{ preset = "shimmer", color = CLUE_COLOR, rate = 3 },
+	},
+}
+local READ_CLUE_STYLE: Style = {
+	shape = BALL,
+	size = Vector3.new(1.4, 1, 1.4),
+	color = SPENT_COLOR,
+	material = Enum.Material.Slate,
+	transparency = 0,
+	glow = SPENT_COLOR,
+	height = 0.5,
+	upright = false,
+	bob = 0,
+	trail = 0,
+	streams = {},
+}
 local BOB_HERTZ = 0.5
 
 local ZONE_COLOR = Color3.fromRGB(80, 255, 140)
@@ -674,6 +754,34 @@ local DOWNED_COLOR = Color3.fromRGB(255, 50, 50)
 local DOWNED_HEIGHT = 0.15
 -- Pixels of the square canvas the downed ring is drawn on.
 local DOWNED_CANVAS = 256
+
+-- A zone opening: a green beam from the ground, a core inside it, rings
+-- widening past the zone, a light and motes. A zone the snapshot does not show
+-- yet uses the configured radius.
+local ZONE_BEAM_HEIGHT = 70
+local ZONE_BEAM_WIDTH = 4
+local ZONE_BEAM_CORE_WIDTH = 1.2
+local ZONE_BEAM_SECONDS = 1.4
+local ZONE_BEAM_FADE = 0.15
+local ZONE_RING_SECONDS = 1
+local ZONE_RING_GROWTH = 2.5
+local ZONE_RING_STUDS = 0.8
+local ZONE_RING_RISE = 3
+local ZONE_LIGHT_BRIGHTNESS = 6
+local ZONE_LIGHT_RANGE = 40
+local ZONE_MOTES = 30
+
+-- The flood's edge: four dark, translucent walls standing on the sides of the
+-- safe square, from below the lowest ground to above the highest hill, with a
+-- few slow puffs of mist. Shown only while the flood is advancing.
+local FLOOD_WALL_COLOR = Color3.fromRGB(22, 18, 36)
+local FLOOD_MIST_COLOR = Color3.fromRGB(40, 32, 60)
+local FLOOD_WALL_TRANSPARENCY = 0.45
+local FLOOD_WALL_THICKNESS = 2
+local FLOOD_WALL_BOTTOM = -4
+local FLOOD_WALL_RISE = 12
+-- Puffs per second per stud of wall.
+local FLOOD_MIST_RATE = 0.02
 
 local random = Random.new()
 local UP = Vector3.yAxis
@@ -1639,8 +1747,8 @@ local function stepMarkers()
 	end
 end
 
--- Projectiles and pickups: pooled parts, one per id, drawn from the
--- snapshots. A part keeps its style for life, so its trail and particles are
+-- Projectiles, pickups, chests and clues: pooled parts, one per id, drawn
+-- from the snapshots. A part keeps its style for life, so its trail and particles are
 -- built once; a part let go is hidden in place so its smoke can die out.
 type Tracked = {
 	part: Part,
@@ -1661,6 +1769,8 @@ end
 
 local projectileTracker = newTracker()
 local pickupTracker = newTracker()
+local chestTracker = newTracker()
+local clueTracker = newTracker()
 local trackGeneration = 0
 -- The previous snapshot's projectiles by id.
 local previousProjectiles: { [number]: Protocol.ProjectileView } = {}
@@ -1723,11 +1833,39 @@ local function buildTracked(style: Style): Tracked
 	return { part = part, style = style, light = light, trail = trail, streams = streams }
 end
 
--- The part drawing `id`, taken from the pool the first time it is seen.
+-- Hides a part let go and hands it back to its style's pool.
+local function release(tracker: Tracker, id: number, tracked: Tracked)
+	tracker.live[id] = nil
+	tracker.stamps[id] = nil
+	tracked.part.Transparency = 1
+	if tracked.trail then
+		tracked.trail.Enabled = false
+	end
+	for _, stream in tracked.streams do
+		stream.Enabled = false
+	end
+	if tracked.light then
+		tracked.light.Enabled = false
+	end
+	local free = tracker.free[tracked.style]
+	if free == nil then
+		free = {}
+		tracker.free[tracked.style] = free
+	end
+	table.insert(free, tracked)
+end
+
+-- The part drawing `id`, taken from the pool the first time it is seen or
+-- when its style changes (a chest opened, a clue read).
 local function trackPart(tracker: Tracker, id: number, style: Style, x: number, z: number)
 	tracker.stamps[id] = trackGeneration
-	if tracker.live[id] then
-		return
+	local live = tracker.live[id]
+	if live then
+		if live.style == style then
+			return
+		end
+		release(tracker, id, live)
+		tracker.stamps[id] = trackGeneration
 	end
 	local free = tracker.free[style]
 	local tracked = (if free then table.remove(free) else nil) or buildTracked(style)
@@ -1748,24 +1886,7 @@ end
 local function sweep(tracker: Tracker)
 	for id, tracked in tracker.live do
 		if tracker.stamps[id] ~= trackGeneration then
-			tracker.live[id] = nil
-			tracker.stamps[id] = nil
-			tracked.part.Transparency = 1
-			if tracked.trail then
-				tracked.trail.Enabled = false
-			end
-			for _, stream in tracked.streams do
-				stream.Enabled = false
-			end
-			if tracked.light then
-				tracked.light.Enabled = false
-			end
-			local free = tracker.free[tracked.style]
-			if free == nil then
-				free = {}
-				tracker.free[tracked.style] = free
-			end
-			table.insert(free, tracked)
+			release(tracker, id, tracked)
 		end
 	end
 end
@@ -1802,9 +1923,47 @@ local function syncTracked(snapshot: Net.Snapshot)
 		local style = STYLES[pickup.kind] or DEFAULT_PROJECTILE
 		trackPart(pickupTracker, pickup.id, style, pickup.x, pickup.z)
 	end
+	-- Chests and clues stand where trackPart puts them; placeStill re-grounds them.
+	for _, chest in snapshot.world.chests do
+		local style = if chest.opened then OPENED_CHEST_STYLE else CHEST_STYLE
+		trackPart(chestTracker, chest.id, style, chest.x, chest.z)
+	end
+	for _, clue in snapshot.world.clues do
+		trackPart(
+			clueTracker,
+			clue.id,
+			if clue.read then READ_CLUE_STYLE else CLUE_STYLE,
+			clue.x,
+			clue.z
+		)
+	end
 	sweep(projectileTracker)
 	sweep(pickupTracker)
-	lightTracked(pickupTracker, lightTracked(projectileTracker, 0))
+	sweep(chestTracker)
+	sweep(clueTracker)
+	lightTracked(chestTracker, lightTracked(pickupTracker, lightTracked(projectileTracker, 0)))
+end
+
+-- Stands every chest and clue on the ground again: the map came after them.
+local function placeStill()
+	local latest = Net.latest
+	if latest == nil then
+		return
+	end
+	for _, chest in latest.world.chests do
+		local tracked = chestTracker.live[chest.id]
+		if tracked then
+			local y = Net.heightAt(chest.x, chest.z) + tracked.style.height
+			tracked.part.CFrame = CFrame.new(chest.x, y, chest.z)
+		end
+	end
+	for _, clue in latest.world.clues do
+		local tracked = clueTracker.live[clue.id]
+		if tracked then
+			local y = Net.heightAt(clue.x, clue.z) + tracked.style.height
+			tracked.part.CFrame = CFrame.new(clue.x, y, clue.z)
+		end
+	end
 end
 
 -- Moves the projectiles (glided like enemies) and the pickups (bobbing).
@@ -2391,6 +2550,127 @@ local function onHealed(enemyId: number)
 	end
 end
 
+-- A zone opening at (x, z): the zone `id` from the latest snapshot gives its size.
+local function showZoneOpened(x: number, z: number, id: number?)
+	local ground = groundAt(x, z, 0)
+	if not onScreen(ground) then
+		return
+	end
+	local radius = Config.map.zoneRadius
+	local latest = Net.latest
+	if latest and id then
+		for _, zone in latest.world.zones do
+			if zone.id == id then
+				radius = zone.radius
+			end
+		end
+	end
+	local top = ground + UP * ZONE_BEAM_HEIGHT
+	showStreak(
+		streaks,
+		ground,
+		top,
+		ZONE_COLOR,
+		ZONE_BEAM_WIDTH,
+		ZONE_BEAM_FADE,
+		ZONE_BEAM_SECONDS,
+		"fade"
+	)
+	showStreak(streaks, ground, top, WHITE, ZONE_BEAM_CORE_WIDTH, 0, ZONE_BEAM_SECONDS, "fade")
+	local diameter = radius * 2
+	showRing(
+		x,
+		z,
+		ZONE_COLOR,
+		diameter * 0.5,
+		diameter * ZONE_RING_GROWTH,
+		ZONE_RING_STUDS,
+		0,
+		0,
+		ZONE_RING_SECONDS
+	)
+	showRing(
+		x,
+		z,
+		ZONE_COLOR,
+		diameter,
+		diameter * 1.2,
+		ZONE_RING_STUDS,
+		0.2,
+		ZONE_RING_RISE,
+		ZONE_RING_SECONDS
+	)
+	showLight(
+		ground + UP * 3,
+		ZONE_COLOR,
+		ZONE_LIGHT_BRIGHTNESS,
+		ZONE_LIGHT_RANGE,
+		ZONE_BEAM_SECONDS
+	)
+	emit("motes", ZONE_COLOR, ground + UP, ZONE_MOTES, Vector3.new(diameter, 2, diameter))
+end
+
+-- The flood's four walls (north, south, west, east) and their mist.
+local floodWalls: { Part } = {}
+local floodMists: { ParticleEmitter } = {}
+
+local function buildFloodWalls()
+	for index = 1, 4 do
+		local wall = newEffectPart()
+		wall.Name = "FloodWall"
+		wall.Material = Enum.Material.SmoothPlastic
+		wall.Color = FLOOD_WALL_COLOR
+		wall.Transparency = FLOOD_WALL_TRANSPARENCY
+		local mist = Instance.new("ParticleEmitter")
+		configureEmitter(mist, PRESETS.floodMist, FLOOD_MIST_COLOR)
+		mist.Rate = 0
+		mist.Parent = wall
+		floodWalls[index] = wall
+		floodMists[index] = mist
+	end
+end
+
+-- Stands the walls at the flood's edge, glided between snapshots like the
+-- enemies; hidden while the whole map is still safe.
+local function renderFlood()
+	local map = Net.map
+	local latest = Net.latest
+	local safe = if latest then latest.world.floodHalf else math.huge
+	local previous = Net.previous
+	if latest and previous then
+		safe = previous.world.floodHalf
+			+ (latest.world.floodHalf - previous.world.floodHalf) * EnemyView.interpolation()
+	end
+	if map == nil or safe >= map.half then
+		for _, wall in floodWalls do
+			wall.Parent = nil
+		end
+		return
+	end
+	safe = math.max(safe, 0)
+	local top = Config.map.maxHeight + FLOOD_WALL_RISE
+	local height = top - FLOOD_WALL_BOTTOM
+	local y = (top + FLOOD_WALL_BOTTOM) / 2
+	local length = 2 * safe + FLOOD_WALL_THICKNESS
+	local along = Vector3.new(length, height, FLOOD_WALL_THICKNESS)
+	local across = Vector3.new(FLOOD_WALL_THICKNESS, height, length)
+	for index, wall in floodWalls do
+		-- North and south run along x, west and east along z.
+		local side = if index % 2 == 1 then -safe else safe
+		if index <= 2 then
+			wall.Size = along
+			wall.CFrame = CFrame.new(0, y, side)
+		else
+			wall.Size = across
+			wall.CFrame = CFrame.new(side, y, 0)
+		end
+		floodMists[index].Rate = length * FLOOD_MIST_RATE
+		if wall.Parent ~= folder then
+			wall.Parent = folder
+		end
+	end
+end
+
 local function onEvents(events: { Types.Event })
 	table.clear(chainEnds)
 	local localId = Players.LocalPlayer.UserId
@@ -2436,6 +2716,11 @@ local function onEvents(events: { Types.Event })
 			end
 		elseif event.kind == "drank" then
 			onDrank(event.player)
+		elseif event.kind == "announcement" then
+			local x, z = event.x, event.z
+			if event.what == "zoneOpened" and x and z then
+				showZoneOpened(x, z, event.id)
+			end
 		elseif event.kind == "playerHurt" then
 			if event.player == localId then
 				local root = characterRoot(localId)
@@ -2448,12 +2733,13 @@ local function onEvents(events: { Types.Event })
 	end
 end
 
--- Zones: one neon cylinder with a light per open zone.
+-- Zones: one neon cylinder per open zone, the newest ZONE_LIGHTS of them
+-- with a light; a zone the flood closed is no longer drawn.
 type ZoneVisual = { zone: Types.Zone, part: Part }
 local zoneVisuals: { ZoneVisual } = {}
 
 local function sameZone(a: Types.Zone, b: Types.Zone): boolean
-	return a.x == b.x and a.z == b.z and a.radius == b.radius
+	return a.id == b.id and a.x == b.x and a.z == b.z and a.radius == b.radius
 end
 
 -- Stands the zone's cylinder on the ground at its centre; its axis (X) points up.
@@ -2463,7 +2749,7 @@ local function placeZone(visual: ZoneVisual)
 	visual.part.CFrame = CFrame.new(zone.x, y, zone.z) * CFrame.Angles(0, 0, math.pi / 2)
 end
 
-local function buildZone(zone: Types.Zone): ZoneVisual
+local function buildZone(zone: Types.Zone, lit: boolean): ZoneVisual
 	local part = newEffectPart()
 	part.Name = "ExtractionZone"
 	part.Shape = Enum.PartType.Cylinder
@@ -2471,11 +2757,13 @@ local function buildZone(zone: Types.Zone): ZoneVisual
 	part.Transparency = ZONE_TRANSPARENCY
 	part.Size = Vector3.new(ZONE_HEIGHT, zone.radius * 2, zone.radius * 2)
 
-	local light = Instance.new("PointLight")
-	light.Color = ZONE_COLOR
-	light.Range = zone.radius * 2
-	light.Brightness = 2
-	light.Parent = part
+	if lit then
+		local light = Instance.new("PointLight")
+		light.Color = ZONE_COLOR
+		light.Range = zone.radius * 2
+		light.Brightness = 2
+		light.Parent = part
+	end
 
 	local visual = { zone = zone, part = part }
 	placeZone(visual)
@@ -2483,7 +2771,17 @@ local function buildZone(zone: Types.Zone): ZoneVisual
 	return visual
 end
 
-local function syncZones(zones: { Types.Zone })
+-- Reused every snapshot: the zones still open.
+local openZones: { Types.Zone } = {}
+
+local function syncZones(all: { Types.Zone })
+	table.clear(openZones)
+	for _, zone in all do
+		if zone.open then
+			table.insert(openZones, zone)
+		end
+	end
+	local zones = openZones
 	local unchanged = #zones == #zoneVisuals
 	if unchanged then
 		for index, zone in zones do
@@ -2500,8 +2798,9 @@ local function syncZones(zones: { Types.Zone })
 		visual.part:Destroy()
 	end
 	table.clear(zoneVisuals)
-	for _, zone in zones do
-		table.insert(zoneVisuals, buildZone(zone))
+	-- Zones open in order, so the newest are last.
+	for index, zone in zones do
+		table.insert(zoneVisuals, buildZone(zone, index > #zones - ZONE_LIGHTS))
 	end
 end
 
@@ -2585,13 +2884,16 @@ function Effects.start()
 	folder.Name = "ClientEffects"
 	folder.Parent = workspace
 
+	buildFloodWalls()
 	Net.onEvents(onEvents)
 	Net.onWorld(onWorld)
-	-- Zones drawn before the map came stand at 0; the map puts them on the ground.
+	-- Zones, chests and clues drawn before the map came stand at 0; the map
+	-- puts them on the ground.
 	Net.onMap(function()
 		for _, visual in zoneVisuals do
 			placeZone(visual)
 		end
+		placeStill()
 	end)
 	local latest = Net.latest
 	if latest then
@@ -2605,6 +2907,7 @@ function Effects.start()
 		stepMarkers()
 		followDowned()
 		renderTracked()
+		renderFlood()
 		sampleRoots()
 	end)
 end

@@ -3,8 +3,11 @@
 -- centre.
 --   points (ADR-0012): discs flattened on the terrain with marked places for
 --     the camp, a chest, a clue and cover, and solid props. Props keep at
---     least 6 studs from the centre and from the camp, so neither the start
---     ring nor a camp is ever inside one, and lie inside the radius.
+--     least 6 studs from the centre, the camp and the clue, so neither the
+--     start ring nor a camp nor a reader is ever inside one, and lie inside
+--     the radius. The clue lies farther from the centre than the zone radius
+--     plus the read radius, so standing at it inside an open zone reads it
+--     instead of extracting.
 --   entry: the template of every entry, without a camp.
 
 local Types = require("./Core/Types")
@@ -34,7 +37,7 @@ local points: { Types.PointTemplate } = {
 		radius = 14,
 		camp = { x = 4, z = 4 },
 		chest = { x = -9, z = -9 },
-		clue = { x = 8, z = -8 },
+		clue = { x = 9, z = -9 },
 		cover = { { x = -9, z = 7 } },
 		-- A pillar.
 		props = { { x = -8, z = 0, halfWidth = 1.5, halfDepth = 1.5 } },
@@ -72,7 +75,7 @@ local points: { Types.PointTemplate } = {
 		radius = 16,
 		camp = { x = 0, z = 0 },
 		chest = { x = 10, z = 10 },
-		clue = { x = -12, z = 0 },
+		clue = { x = -13, z = 0 },
 		cover = { { x = -10, z = -10 }, { x = 10, z = -10 }, { x = -10, z = 10 } },
 		-- A well.
 		props = { { x = 0, z = 10, halfWidth = 2, halfDepth = 2 } },
@@ -82,7 +85,7 @@ local points: { Types.PointTemplate } = {
 		radius = 22,
 		camp = { x = -10, z = 0 },
 		chest = { x = 20, z = 0 },
-		clue = { x = 0, z = 8 },
+		clue = { x = 0, z = 15 },
 		cover = { { x = 0, z = -7 }, { x = 10, z = 7 } },
 		-- A pillar.
 		props = { { x = 10, z = -6, halfWidth = 1, halfDepth = 1 } },
@@ -103,7 +106,7 @@ local entry: Types.PointTemplate = {
 	radius = 14,
 	camp = nil,
 	chest = { x = 8, z = 6 },
-	clue = { x = -8, z = 6 },
+	clue = { x = -9, z = 9 },
 	cover = { { x = -7, z = -7 }, { x = 7, z = -7 } },
 	props = {},
 }

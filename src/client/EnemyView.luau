@@ -368,6 +368,18 @@ local PARKED = CFrame.new(0, -10000, 0)
 -- Roblox draws at most 31 Highlights; the nearest buffed enemies in range get
 -- the green rim, the rest keep only their tint.
 local MAX_RIMS = 24
+-- The wandering boss: its look this many times bigger, inside a red glow as
+-- tall as the scaled look times AURA_SHARE, pulsing between two transparencies,
+-- with a red light. The scale matches the boss's hit radius on the server
+-- (the wandering boss's radiusMultiplier in Config).
+local BOSS_SCALE = 1.6
+local BOSS_AURA_COLOR = Color3.fromRGB(255, 40, 40)
+local BOSS_AURA_SHARE = 1.15
+local BOSS_AURA_HZ = 0.8
+local BOSS_AURA_MIN = 0.72
+local BOSS_AURA_MAX = 0.88
+local BOSS_LIGHT_BRIGHTNESS = 2
+local BOSS_LIGHT_RANGE = 18
 
 -- Enemies are drawn one snapshot interval behind the newest data, so there is
 -- always a next position to glide to.
@@ -410,6 +422,12 @@ type Rig = {
 	stamp: number,
 	-- The green rim of a buffed enemy.
 	rim: Highlight?,
+	-- How many times bigger than its look it is drawn: BOSS_SCALE for the boss.
+	size: number,
+	-- The boss's red glow, and how high its centre sits and how wide it is.
+	aura: Part?,
+	auraRise: number,
+	auraDiameter: number,
 	-- The latest snapshot's position.
 	x: number,
 	z: number,
@@ -429,6 +447,7 @@ local freeDetails: { Part } = {}
 local freeGlows: { Part } = {}
 local freeModels: { Model } = {}
 local freeRims: { Highlight } = {}
+local freeAuras: { Part } = {}
 local rigs: { [number]: Rig } = {}
 local dying: { Dying } = {}
 local shortestTelegraphs: { [string]: number } = {}
@@ -518,15 +537,16 @@ local function setChevrons(rig: Rig, level: number)
 	end
 	table.clear(rig.chevronOffsets)
 	local chevrons = rig.look.chevrons
-	local size = CHEVRON_SIZE * chevrons.scale
+	local size = CHEVRON_SIZE * chevrons.scale * rig.size
 	local on = rig.frames[chevrons.on] or rig.root
 	for step = 1, math.clamp(level, 1, MAX_CHEVRONS) do
 		local part = take("glow")
 		part.Shape = BLOCK
 		part.Size = size
 		part.Transparency = 0
-		local offset =
-			CFrame.new(chevrons.at - Vector3.new(0, 0, (step - 1) * CHEVRON_GAP * chevrons.scale))
+		local offset = CFrame.new(
+			(chevrons.at - Vector3.new(0, 0, (step - 1) * CHEVRON_GAP * chevrons.scale)) * rig.size
+		)
 		local index = first + step - 1
 		-- A parked enemy's new chevrons wait with its other parts.
 		part.CFrame = if rig.parked then PARKED else on * offset
@@ -583,7 +603,7 @@ local function layout(rig: Rig, now: number, pulse: number, dt: number)
 		end
 		if scale ~= rig.scales[index] then
 			rig.scales[index] = scale
-			rig.parts[index].Size = piece.size * scale
+			rig.parts[index].Size = piece.size * scale * rig.size
 		end
 		local on = piece.on
 		if on then
@@ -607,6 +627,10 @@ local function layout(rig: Rig, now: number, pulse: number, dt: number)
 			offset = CFrame.new(0, bob * math.sin((now * BOB_HZ + rig.phase) * 2 * math.pi), 0)
 				* offset
 		end
+		-- A bigger look: every step from the root grows alike, so the whole scales about it.
+		if rig.size ~= 1 then
+			offset = offset.Rotation + offset.Position * rig.size
+		end
 
 		rig.frames[index] = (if on then rig.frames[on] else rig.root) * offset
 	end
@@ -622,8 +646,74 @@ local function layout(rig: Rig, now: number, pulse: number, dt: number)
 	end
 end
 
+-- How tall a look stands: the top of its highest piece resting on the ground.
+local function heightOf(look: Look): number
+	local top = 0
+	for _, piece in look.pieces do
+		if piece.on == nil then
+			top = math.max(top, piece.offset.Position.Y + piece.size.Y / 2)
+		end
+	end
+	return top
+end
+
+local function newAura(): Part
+	local aura = Instance.new("Part")
+	aura.Name = "BossAura"
+	aura.Anchored = true
+	aura.CanCollide = false
+	aura.CanQuery = false
+	aura.CanTouch = false
+	aura.CastShadow = false
+	aura.Shape = BALL
+	aura.Material = Enum.Material.Neon
+	aura.Color = BOSS_AURA_COLOR
+	aura.Transparency = BOSS_AURA_MAX
+	local light = Instance.new("PointLight")
+	light.Color = BOSS_AURA_COLOR
+	light.Brightness = BOSS_LIGHT_BRIGHTNESS
+	light.Range = BOSS_LIGHT_RANGE
+	light.Shadows = false
+	light.Parent = aura
+	return aura
+end
+
+-- Gives the boss its glow or takes it back.
+local function setAura(rig: Rig, on: boolean)
+	local aura = rig.aura
+	if on and aura == nil then
+		local fresh = table.remove(freeAuras) or newAura()
+		local diameter = rig.auraDiameter
+		fresh.Size = Vector3.new(diameter, diameter, diameter)
+		fresh.CFrame = if rig.parked then PARKED else rig.root + Vector3.new(0, rig.auraRise, 0)
+		fresh.Parent = rig.model
+		rig.aura = fresh
+	elseif not on and aura then
+		aura.Parent = nil
+		table.insert(freeAuras, aura)
+		rig.aura = nil
+	end
+end
+
+-- Draws the rig at its look's size or the boss's, rebuilding the chevrons and the glow.
+local function setBoss(rig: Rig, boss: boolean)
+	rig.size = if boss then BOSS_SCALE else 1
+	local height = heightOf(rig.look) * rig.size
+	rig.auraRise = height / 2
+	rig.auraDiameter = height * BOSS_AURA_SHARE
+	for index, piece in rig.look.pieces do
+		rig.parts[index].Size = piece.size * rig.scales[index] * rig.size
+	end
+	setChevrons(rig, rig.level)
+	setAura(rig, false)
+	if boss then
+		setAura(rig, true)
+	end
+end
+
 local function spawnRig(id: number, enemy: Protocol.EnemyView): Rig
 	local look = LOOKS[enemy.archetype] or GRUNT
+	local size = if enemy.boss then BOSS_SCALE else 1
 	local model = table.remove(freeModels) or Instance.new("Model")
 	model.Name = enemy.archetype
 	local rig: Rig = {
@@ -652,6 +742,10 @@ local function spawnRig(id: number, enemy: Protocol.EnemyView): Rig
 		holdUntil = 0,
 		stamp = generation,
 		rim = nil,
+		size = size,
+		aura = nil,
+		auraRise = 0,
+		auraDiameter = 0,
 		x = enemy.x,
 		z = enemy.z,
 		culled = false,
@@ -661,7 +755,7 @@ local function spawnRig(id: number, enemy: Protocol.EnemyView): Rig
 	for index, piece in look.pieces do
 		local part = take(piece.role)
 		part.Shape = piece.shape
-		part.Size = piece.size
+		part.Size = piece.size * size
 		part.Transparency = piece.transparency or 0
 		part.Parent = model
 		rig.parts[index] = part
@@ -677,6 +771,9 @@ local function spawnRig(id: number, enemy: Protocol.EnemyView): Rig
 		part.CFrame = rig.frames[index]
 	end
 	setChevrons(rig, enemy.level)
+	if enemy.boss then
+		setBoss(rig, true)
+	end
 	model.Parent = folder
 	rigs[id] = rig
 	departed[id] = nil
@@ -769,6 +866,7 @@ local function kill(id: number, rig: Rig, now: number)
 	departedAt[id] = now
 	rigs[id] = nil
 	setRim(rig, false)
+	setAura(rig, false)
 	if rig.parked then
 		-- Out of sight: no collapse to draw.
 		departed[id] = groundPosition(rig)
@@ -842,7 +940,11 @@ local function sync(snapshot: Net.Snapshot)
 			rig.distance = 0
 		end
 		rig.culled = rig.distance > range
-		if enemy.buffed and not rig.culled then
+		if enemy.boss ~= (rig.aura ~= nil) then
+			setBoss(rig, enemy.boss)
+		end
+		-- The boss's glow says more than the green rim.
+		if enemy.buffed and not enemy.boss and not rig.culled then
 			table.insert(rimCandidates, rig)
 		end
 
@@ -998,6 +1100,12 @@ local function render(dt: number)
 						moveParts[count] = part
 						moveFrames[count] = PARKED
 					end
+					local aura = rig.aura
+					if aura then
+						count += 1
+						moveParts[count] = aura
+						moveFrames[count] = PARKED
+					end
 				end
 			elseif rig then
 				-- The hit-stop: the enemy stays where it was drawn; one coming
@@ -1018,6 +1126,15 @@ local function render(dt: number)
 					count += 1
 					moveParts[count] = part
 					moveFrames[count] = rig.frames[index]
+				end
+				local aura = rig.aura
+				if aura then
+					count += 1
+					moveParts[count] = aura
+					moveFrames[count] = rig.root + Vector3.new(0, rig.auraRise, 0)
+					local wave = 0.5
+						+ 0.5 * math.sin((now * BOSS_AURA_HZ + rig.phase) * 2 * math.pi)
+					aura.Transparency = BOSS_AURA_MIN + (BOSS_AURA_MAX - BOSS_AURA_MIN) * wave
 				end
 				paint(rig, enemy, now, pulse)
 			end

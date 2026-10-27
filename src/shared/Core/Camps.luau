@@ -19,8 +19,8 @@ local function full(run: Types.Run): boolean
 end
 
 -- The strength patrols spawn with at the current run time; a returning camp
--- comes back at it too.
-local function strengthNow(run: Types.Run): number
+-- and a chest's guard come with it too.
+function Camps.strengthNow(run: Types.Run): number
 	return 1 + run.config.enemies.patrols.healthGrowthPerMinute * run.time / 60
 end
 
@@ -160,20 +160,26 @@ local function eligiblePoints(run: Types.Run): { Types.MapPoint }
 	return if #far > 0 then far else any
 end
 
--- Spawns a patrol of `size` at a point away from the players, heading for a
--- neighbour; with `wanders`, a wanderer that roams the open ground instead.
+-- Spawns a patrol of `size` at a point away from the players, or at `at`,
+-- heading for a neighbour; with `wanders`, a wanderer that roams the open
+-- ground instead.
 function Camps.spawnPatrol(
 	run: Types.Run,
 	size: number,
 	pool: { string },
 	strength: number,
-	wanders: boolean?
+	wanders: boolean?,
+	at: Types.MapPoint?
 ): Types.Patrol?
-	local candidates = eligiblePoints(run)
-	if #candidates == 0 then
-		return nil
+	local point = at
+	if point == nil then
+		local candidates = eligiblePoints(run)
+		if #candidates == 0 then
+			return nil
+		end
+		point = candidates[run.rng:integer(1, #candidates)]
 	end
-	local point = candidates[run.rng:integer(1, #candidates)]
+	assert(point, "a patrol needs a point")
 	local routePoint = point.id
 	if #point.neighbours > 0 then
 		routePoint = point.neighbours[run.rng:integer(1, #point.neighbours)]
@@ -190,6 +196,7 @@ function Camps.spawnPatrol(
 		wanderX = point.x,
 		wanderZ = point.z,
 		wanderUntil = run.time,
+		stays = false,
 	}
 	run.nextPatrolId += 1
 	table.insert(run.patrols, patrol)
@@ -219,10 +226,22 @@ function Camps.spawnPatrol(
 	return patrol
 end
 
+-- Patrol groups per minute now: the configured rate, times the incursion
+-- wave's factor while the wave lasts.
+local function patrolRate(run: Types.Run): number
+	local rate = run.config.enemies.patrols.groupsPerMinute
+	local wave = run.config.run.arc.events.incursionWave
+	local from = wave.minute * 60
+	if run.time >= from and run.time < from + wave.seconds then
+		rate *= wave.factor
+	end
+	return rate
+end
+
 local function growPatrols(run: Types.Run, dt: number)
 	local patrols = run.config.enemies.patrols
 	local minutes = run.time / 60
-	run.patrolDebt += patrols.groupsPerMinute / 60 * dt
+	run.patrolDebt += patrolRate(run) / 60 * dt
 	while run.patrolDebt >= 1 do
 		-- At the cap only the fraction stays, so a freed slot does not release a burst.
 		if full(run) then
@@ -234,7 +253,7 @@ local function growPatrols(run: Types.Run, dt: number)
 			patrols.maxSize,
 			math.floor(patrols.sizeAtStart + patrols.sizeGrowthPerMinute * minutes)
 		)
-		local strength = strengthNow(run)
+		local strength = Camps.strengthNow(run)
 		local pool = if minutes >= patrols.lateMinutes then patrols.latePool else patrols.pool
 		Camps.spawnPatrol(run, size, pool, strength)
 	end
@@ -309,7 +328,7 @@ local function returnCamp(run: Types.Run, camp: Types.Camp)
 	camp.clearedAt = nil
 	camp.alerted = false
 	camp.scaledFor = 0
-	camp.strength = strengthNow(run)
+	camp.strength = Camps.strengthNow(run)
 	fillCamp(run, camp)
 	table.insert(run.events, { kind = "campReturned", campId = camp.id, pointId = camp.pointId })
 end
