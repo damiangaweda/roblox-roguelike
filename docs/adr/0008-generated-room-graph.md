@@ -1,5 +1,7 @@
 # The world is a graph of rooms generated for each run
 
+**Status:** accepted; superseded by [ADR-0012](0012-open-map-of-points-in-a-shared-world.md) once that one is accepted.
+
 Every run gets its own world: a graph of rooms joined by corridors, generated on the server from a seed, where each room is one of a set of hand-made templates and the room count follows the player count. Enemies live in camps inside rooms and on patrol in corridors, and a room's difficulty is its distance from the nearest start room. We chose this over a horde that spawns around the players because the user found that loop senseless: nothing asked the player to move, read the map or choose a fight. We chose templates over fully procedural rooms so that every room is a space combat was designed for.
 
 ## Considered options

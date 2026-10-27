@@ -7,7 +7,7 @@ A multiplayer action roguelite in which players explore a world generated for ea
 ### Run
 
 **Run**:
-One session of play, from the moment players enter the world until each of them extracts or dies, about 15 minutes long.
+One session of play, from the moment players enter the map until each of them extracts or dies, about 15 minutes long.
 _Avoid_: Match, round, game, podejście (in code)
 
 **Extraction**:
@@ -15,49 +15,77 @@ Leaving a run alive by holding the interact button in an extraction zone; only a
 _Avoid_: Evacuation, escape, win
 
 **Extraction zone**:
-One of the few places in a run's world where a player can extract, open for the whole run.
+A place where a player can extract; zones open one after another during a run at announced points and close when the flood reaches them.
 _Avoid_: Exit, evac point, portal
 
 **Flood**:
-The horde overrunning the whole world at the end of a run, which kills everyone still in it.
-_Avoid_: Timeout, storm, wipe
+The horde overrunning the map from its edges inward at the end of a run, which hurts everyone it reaches, closes the zones it covers and kills everyone still in the run when it meets in the middle.
+_Avoid_: Timeout, storm, wipe, ring, circle
+
+**Run event**:
+Something announced to every player at a moment of the run that draws them to one place: a chest drop, a wandering boss, an incursion wave.
+_Avoid_: Random event, mission, quest
+
+**Chest drop**:
+A run event that places a guarded chest at an announced point.
+_Avoid_: Airdrop, supply drop, care package
+
+**Wandering boss**:
+A run event: one strong enemy announced to everyone, walking the paths between points, which leaves what a camp leader leaves.
+_Avoid_: World boss, raid boss, miniboss
+
+**Incursion wave**:
+A run event: an announced stretch of the run during which patrols grow.
+_Avoid_: Horde wave, surge
 
 ### World
 
-**Room**:
-One space of a run's world, built from a template, where camps, chests and cover sit.
-_Avoid_: Zone, area, tile, cell
+**Map**:
+The open world of one run: generated terrain with points, paths and cover on it, shared by every player in the run.
+_Avoid_: Level, dungeon, arena, world (the game's setting as a whole)
 
-**Corridor**:
-A passage joining two rooms, where patrols walk.
-_Avoid_: Hallway, path, edge
+**Point**:
+A hand-made place on the map, built from a template, where a camp, a chest, a clue or cover sits.
+_Avoid_: Room, point of interest, POI, location, tile
 
-**Room template**:
-A hand-made layout a room is built from, with marked places for a camp, a chest and cover.
-_Avoid_: Prefab, tile, blueprint
+**Path**:
+A visible track between two points, which patrols walk.
+_Avoid_: Corridor, road, edge
 
-**Start room**:
-A room at the edge of the world where players begin a run.
-_Avoid_: Spawn, lobby room, base
+**Point template**:
+A hand-made layout a point is built from, with marked places for a camp, a chest, a clue and cover.
+_Avoid_: Prefab, tile, blueprint, room template
 
-**Room level**:
-A room's difficulty, which grows with its distance from the nearest start room and sets its camp, patrols and loot.
-_Avoid_: Tier (reserved for map tiers), depth, difficulty
+**Entry**:
+A point at the edge of the map, without a camp, where players begin a run; placed anew for every run.
+_Avoid_: Spawn, start room, lobby, base
+
+**Point level**:
+A point's difficulty, which grows with its distance along the paths from the nearest entry and sets its camp, patrols and loot.
+_Avoid_: Tier (reserved for map tiers), depth, difficulty, room level
+
+**Clue**:
+A thing at a point that, once read, narrows for every player where a camp leader is; a leader's last clue marks its point. A clue is found, and so shown to everyone, once any player has come near it.
+_Avoid_: Hint, marker, objective
+
+**Map screen**:
+The screen on which a player reads the map during a run: its layout and what the run has announced, never what a point holds before a visit, nor other players or enemies.
+_Avoid_: Minimap, overview, radar
 
 **Cover**:
-A place in a room, such as a bush, where a player is detected only from close by.
+A place on the map, such as a bush, where a player is detected only from close by.
 _Avoid_: Stealth, hiding spot, shadow
 
 **Chest**:
-A container in a room that takes a moment to open and holds a perk choice or a potion.
+A container at a point or from a chest drop that takes a moment to open and holds a perk choice or potions.
 _Avoid_: Loot box, crate, reward
 
 **Key**:
-What a camp leader drops to open a locked door.
+What a camp leader drops; what it opens is decided with stage 2e.
 _Avoid_: Token, pass
 
 **Altar**:
-A place in a room that offers a trade, such as health for a perk.
+A place at a point that offers a trade, such as health for a perk.
 _Avoid_: Shrine, statue
 
 ### Enemies
@@ -71,19 +99,23 @@ A kind of enemy with its own role, attack and telegraph: grunt, brute, spitter, 
 _Avoid_: Type, species, class (reserved for players)
 
 **Camp**:
-A group of enemies that holds a room and reacts to players entering its detection range.
+A group of enemies that holds a point and reacts to players entering its detection range; once cleared, it returns after a delay, stronger with run time.
 _Avoid_: Spawn point, nest, encounter
+
+**Camp return**:
+A cleared camp coming back to its point after a delay, as strong as the run time makes it.
+_Avoid_: Respawn, repopulation, reset
 
 **Camp leader**:
 The mini-boss of a camp, which drops a key and a potion.
 _Avoid_: Boss, elite, captain
 
 **Patrol**:
-A group of enemies walking the corridors, which grows in number and strength as the run goes on.
+A group of enemies walking the paths, which grows in number and strength as the run goes on.
 _Avoid_: Wave, roamers
 
 **Wanderer**:
-A lone enemy roaming the world without a camp.
+A lone enemy roaming the map without a camp.
 _Avoid_: Stray, roamer
 
 **Detection range**:
