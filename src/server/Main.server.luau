@@ -331,6 +331,7 @@ local function onHeartbeat(dt: number)
 			stepAccumulator %= STEP_SECONDS
 		end
 	end
+	MapBuilder.syncZones(current.map, current.zones)
 
 	for id, player in members do
 		local core = current.players[id]

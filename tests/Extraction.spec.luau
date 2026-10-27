@@ -1,4 +1,5 @@
 --!strict
+local Arc = require("../src/shared/Core/Arc")
 local Assert = require("./Assert")
 local Extraction = require("../src/shared/Core/Extraction")
 local Fixtures = require("./Fixtures")
@@ -13,8 +14,24 @@ local function advance(run: Types.Run, seconds: number, dt: number)
 	end
 end
 
--- Puts player `id` in the middle of zone `index`, holding the interact button.
+-- Opens a zone at each of the first `count` points that are not entries.
+local function openZones(run: Types.Run, count: number?)
+	for _, point in run.map.points do
+		if #run.zones >= (count or 1) then
+			return
+		end
+		if not point.isEntry then
+			Arc.openZone(run, point.id)
+		end
+	end
+end
+
+-- Puts player `id` in the middle of zone `index`, opening one first when
+-- none is, holding the interact button.
 local function enterZone(run: Types.Run, id: number, index: number?)
+	if #run.zones == 0 then
+		openZones(run)
+	end
 	local zone = run.zones[index or 1]
 	Fixtures.place(run, run.players[id], zone.x, zone.z)
 	run.players[id].interacting = true
@@ -31,23 +48,35 @@ local function count(events: { Types.Event }, kind: string): number
 end
 
 return {
-	["zones exist from the start of the run, at the map's zone points"] = function()
-		for _, players in { 1, 4, 8, 12 } do
-			for seed = 1, 10 do
+	["no zone is open at the start of the run"] = function()
+		for _, players in { 1, 4, 12 } do
+			for seed = 1, 5 do
 				local run = Fixtures.run(players, nil, seed)
-				local label = "seed " .. seed .. ", " .. players .. " players"
-				Assert.truthy(#run.zones > 0, "no zones, " .. label)
-				Assert.equal(run.time, 0)
-				Assert.equal(#run.zones, #run.map.zonePoints, label)
-				for index, id in run.map.zonePoints do
-					local point = run.map.points[id]
-					local zone = run.zones[index]
-					Assert.equal(zone.x, point.x, label)
-					Assert.equal(zone.z, point.z, label)
-					Assert.equal(zone.radius, run.config.map.zoneRadius, label)
-				end
+				Assert.equal(#run.zones, 0, "seed " .. seed .. ", " .. players .. " players")
 			end
 		end
+	end,
+
+	["a zone opens at its point's centre with the configured radius"] = function()
+		local run = Fixtures.run(1)
+		openZones(run)
+		local zone = run.zones[1]
+		local point = run.map.points[zone.pointId]
+		Assert.equal(zone.x, point.x)
+		Assert.equal(zone.z, point.z)
+		Assert.equal(zone.radius, run.config.map.zoneRadius)
+		Assert.truthy(zone.open)
+	end,
+
+	["a closed zone does not extract"] = function()
+		local run = Fixtures.run(1)
+		enterZone(run, 1)
+		advance(run, 2, 1)
+		run.zones[1].open = false
+		advance(run, 1, 1)
+		Assert.equal(run.players[1].extractProgress, 0)
+		advance(run, run.config.run.extractSeconds, 1)
+		Assert.equal(run.players[1].state, "alive")
 	end,
 
 	["a player is extracted after five seconds in a zone"] = function()
@@ -67,6 +96,8 @@ return {
 
 	["every zone extracts"] = function()
 		local run = Fixtures.run(1)
+		openZones(run, 3)
+		Assert.equal(#run.zones, 3)
 		for index = 1, #run.zones do
 			run.players[1].state = "alive"
 			run.players[1].extractProgress = 0
@@ -78,6 +109,7 @@ return {
 
 	["the zone reaches as far as its radius"] = function()
 		local run = Fixtures.run(1)
+		openZones(run)
 		local zone = run.zones[1]
 		local radius = run.config.map.zoneRadius
 		enterZone(run, 1)
@@ -92,8 +124,8 @@ return {
 	["outside a zone nothing happens"] = function()
 		local run = Fixtures.run(1)
 		local player = run.players[1]
-		-- Entries hold no zone.
-		Assert.falsy(run.map.points[run.map.zonePoints[1]].isEntry)
+		-- Zones open only at points other than the entries.
+		openZones(run, 3)
 		player.interacting = true
 		advance(run, run.config.run.extractSeconds * 2, 1)
 		Assert.equal(player.state, "alive")

@@ -38,7 +38,8 @@ local function nearest(
 	return best
 end
 
--- The enemy's end of a kill: removal, credit, experience and the camp leader's drop.
+-- The enemy's end of a kill: removal, credit, experience and the drop of a
+-- camp leader or the wandering boss.
 local function kill(run: Types.Run, enemy: Types.Enemy, source: number?)
 	local config = run.config
 	local archetype = State.archetype(run, enemy)
@@ -60,7 +61,7 @@ local function kill(run: Types.Run, enemy: Types.Enemy, source: number?)
 		)
 	end
 
-	if enemy.archetype == config.enemies.campLeader then
+	if enemy.archetype == config.enemies.campLeader or enemy.boss then
 		State.newPickup(run, "potion", enemy.x, enemy.z)
 		table.insert(run.events, { kind = "dropped", x = enemy.x, z = enemy.z, pickup = "potion" })
 	end

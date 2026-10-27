@@ -35,23 +35,35 @@ local function findReviver(run: Types.Run, downed: Types.Player): Types.Player?
 end
 
 -- Damages an alive player; at zero health the player is downed. `enemyId`
--- names the attacker when one did it.
-function Life.damage(run: Types.Run, player: Types.Player, amount: number, enemyId: number?)
+-- names the attacker when one did it, `cause` the flood when it did.
+function Life.damage(
+	run: Types.Run,
+	player: Types.Player,
+	amount: number,
+	enemyId: number?,
+	cause: "flood"?
+)
 	if player.state ~= "alive" or amount <= 0 then
 		return
 	end
 	player.health -= amount
-	-- Damage interrupts extraction, drinking, and reviving (see Life.update).
+	-- Damage interrupts extraction, reading a clue, opening a chest, drinking,
+	-- and reviving (see Life.update).
 	player.extractProgress = 0
+	player.clueProgress = 0
+	player.chestProgress = 0
 	player.hurtAt = run.time
 	if player.drinkingUntil ~= nil then
 		player.drinkingUntil = nil
 		table.insert(run.events, { kind = "drinkInterrupted", player = player.id })
 	end
-	table.insert(
-		run.events,
-		{ kind = "playerHurt", player = player.id, amount = amount, enemyId = enemyId }
-	)
+	table.insert(run.events, {
+		kind = "playerHurt",
+		player = player.id,
+		amount = amount,
+		enemyId = enemyId,
+		cause = cause,
+	})
 
 	if player.health <= 0 then
 		player.health = 0

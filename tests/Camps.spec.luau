@@ -344,6 +344,8 @@ return {
 		local run = build(8, 9, function(config)
 			campsOnly(config)
 			config.enemies.patrols.groupsPerMinute = 0.6
+			-- The incursion wave's faster growth is Arc.spec's.
+			config.run.arc.events.incursionWave.factor = 1
 		end)
 		for _ = 1, 600 do
 			run.time += 1

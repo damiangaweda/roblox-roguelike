@@ -55,6 +55,50 @@ local Config: Types.Config = {
 		extractSeconds = 5,
 		summarySeconds = 10,
 		lateJoinSeconds = 60,
+		arc = {
+			zones = {
+				firstOpenMinute = 5,
+				intervalMinutes = 3,
+				minZoneDistance = 120,
+			},
+			flood = {
+				startMinute = 11,
+				endMinute = 15,
+				damagePerSecond = 8,
+			},
+			clues = {
+				perLeader = 3,
+				readSeconds = 2,
+				readRadius = 4,
+				areaRadii = { 120, 60 },
+				areaOffsetFraction = 0.6,
+			},
+			events = {
+				chestDrop = {
+					firstMinute = 4,
+					intervalMinutes = 4,
+					guardSize = 3,
+					guardPool = { "grunt", "spitter" },
+				},
+				chest = {
+					openSeconds = 2,
+					openRadius = 4,
+					perkChance = 0.5,
+					potions = 2,
+				},
+				wanderingBoss = {
+					minute = 7,
+					archetype = "campLeader",
+					healthMultiplier = 3,
+					damageMultiplier = 1.5,
+				},
+				incursionWave = {
+					minute = 9,
+					seconds = 60,
+					factor = 2,
+				},
+			},
+		},
 	},
 	map = {
 		studsPerPlayer = 40,
