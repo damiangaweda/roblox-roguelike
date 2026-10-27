@@ -162,13 +162,19 @@ export type RankConfig = {
 	totemOffset: number,
 	totemFirstShotSeconds: number,
 	totemShotSeconds: number,
-	-- The heal fires below this share of max health; thorns and immune-like
-	-- skills fire when the nearest enemy is within this distance.
+	-- The heal fires below this share of max health.
 	healBelowShare: number,
-	thornsTriggerRange: number,
 	-- Ground kinds consider at most this many nearest enemies for the cluster.
 	clusterCandidates: number,
 	critMultiplier: number,
+	-- How much of an enemy's body counts toward a skill's reach: the nearest
+	-- kinds count it whole, areas half.
+	nearestBodyShare: number,
+	areaBodyShare: number,
+	-- Scatter picks its targets from this many times `count` nearest enemies.
+	scatterPoolFactor: number,
+	-- A shield or thorns skill fires only when the nearest enemy is within this distance.
+	selfTriggerRange: number,
 }
 
 -- A stat passives raise (GLOSSARY: passive).
@@ -311,9 +317,9 @@ export type AttackConfig = {
 export type EnemyKindConfig = {
 	id: string,
 	name: string,
-	-- The silhouette the client draws: grunt, brute, spitter, exploder,
-	-- shieldbearer, shaman, or a boss's own look.
-	archetype: string,
+	-- The silhouette the client draws: an archetype's (grunt, brute, spitter,
+	-- exploder, shieldbearer, shaman) or a boss's own.
+	look: string,
 	role: "grunt" | "elite" | "boss" | "finalBoss",
 	health: number,
 	speed: number,
@@ -422,6 +428,8 @@ export type HordeConfig = {
 	foodHeal: number,
 	-- How far an enemy walks past an obstacle's edge when steering around it.
 	steerMargin: number,
+	-- A grunt's contact hit reaches this far beyond the touching bodies.
+	contactMargin: number,
 }
 
 export type StatusConfig = {
@@ -453,8 +461,8 @@ export type ProgressionConfig = {
 	-- A crystal carries the enemy's xp times this.
 	crystalFactor: number,
 	maxCrystals: number,
-	-- How close to the hero a crystal must be to be collected after it flies.
-	collectRadius: number,
+	-- How far beyond the hero's body food is eaten.
+	eatRadius: number,
 }
 
 export type ExtractionConfig = {

@@ -304,8 +304,11 @@ local function fire(
 		})
 		return true
 	elseif targeting == "shield" then
-		player.barrier = skill.damage
-		player.barrierUntil = run.time + skill.durationSeconds
+		-- Its condition: an enemy close enough to matter.
+		if #Targeting.nearest(run, x, z, ranks.selfTriggerRange, 1, false) == 0 then
+			return false
+		end
+		Hero.raiseBarrier(run, player, skill.damage, skill.durationSeconds)
 		announce(run, player, skill, x, z, nil, nil, {})
 		return true
 	elseif targeting == "heal" then
@@ -319,7 +322,7 @@ local function fire(
 		announce(run, player, skill, x, z, nil, nil, {})
 		return true
 	elseif targeting == "thorns" then
-		if #Targeting.nearest(run, x, z, ranks.thornsTriggerRange, 1, false) == 0 then
+		if #Targeting.nearest(run, x, z, ranks.selfTriggerRange, 1, false) == 0 then
 			return false
 		end
 		player.thorns = skill.damage

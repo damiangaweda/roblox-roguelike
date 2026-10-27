@@ -126,6 +126,15 @@ function Hero.knock(run: Types.Run, player: Types.Player, dx: number, dz: number
 end
 
 -- Fires utility button `index`. Returns false when the player cannot use it now.
+-- Raises a barrier of `amount` for `seconds`: a barrier already up keeps
+-- whatever is larger, its absorb and its time, so a utility and a shield
+-- skill never cut each other down.
+function Hero.raiseBarrier(run: Types.Run, player: Types.Player, amount: number, seconds: number)
+	local active = player.barrierUntil > run.time and player.barrier > 0
+	player.barrier = if active then math.max(player.barrier, amount) else amount
+	player.barrierUntil = math.max(if active then player.barrierUntil else 0, run.time + seconds)
+end
+
 function Hero.useUtility(run: Types.Run, playerId: number, index: number): boolean
 	local player = run.players[playerId]
 	local utility = run.config.utilities[index]
@@ -142,8 +151,7 @@ function Hero.useUtility(run: Types.Run, playerId: number, index: number): boole
 		player.sprintUntil = run.time + (utility.seconds or 0)
 		player.sprintFactor = utility.factor or 1
 	elseif utility.kind == "barrier" then
-		player.barrier = utility.amount or 0
-		player.barrierUntil = run.time + (utility.seconds or 0)
+		Hero.raiseBarrier(run, player, utility.amount or 0, utility.seconds or 0)
 	elseif utility.kind == "heal" then
 		Hero.heal(run, player, utility.amount or 0)
 	end

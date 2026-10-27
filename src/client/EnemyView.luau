@@ -736,11 +736,11 @@ local function lookOf(kind: Types.EnemyKindConfig?): (Look, number)
 	if kind == nil then
 		return GRUNT, 0
 	end
-	local boss = BossLooks.looks[kind.archetype]
+	local boss = BossLooks.looks[kind.look]
 	if boss then
 		return boss, 0
 	end
-	local look = LOOKS[kind.archetype]
+	local look = LOOKS[kind.look]
 	if look == nil or look == GRUNT then
 		return GRUNT, GRUNT_BLEND
 	end

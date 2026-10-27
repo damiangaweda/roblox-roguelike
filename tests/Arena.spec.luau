@@ -62,12 +62,38 @@ return {
 			run.arena.obstacles,
 			{ id = 1, kind = "rock", x = 20, z = 0, radius = 3, rotation = 0 }
 		)
-		Assert.near(Arena.reach(run.arena, 0, 0, 40, 0, 1.5), 20 - 4.5, 1e-6)
+		Assert.near(Arena.reach(run.arena, 0, 0, 40, 0, 1.5), 20 - 4.5, 2e-3)
 		Assert.near(Arena.reach(run.arena, 0, 10, 40, 10, 1.5), 40, 1e-6)
 		Assert.truthy(Arena.blocking(run.arena, 19, 0, 1.5) ~= nil)
 		Assert.truthy(Arena.blocking(run.arena, 0, 0, 1.5) == nil)
 		-- Already inside: not held.
 		Assert.near(Arena.reach(run.arena, 20, 0, 40, 0, 1.5), 20, 1e-6)
+	end,
+
+	["a body at the contact point never walks into the obstacle"] = function()
+		local run = Fixtures.run()
+		Fixtures.clearObstacles(run)
+		table.insert(
+			run.arena.obstacles,
+			{ id = 1, kind = "rock", x = 20, z = 0, radius = 3, rotation = 0 }
+		)
+		local x, z = 0, 0
+		for step = 1, 200 do
+			-- Pushing into the rock with a little jitter, as a held key does.
+			local tx, tz = x + 2, z + math.sin(step) * 0.3
+			local reach = Arena.reach(run.arena, x, z, tx, tz, 1.5)
+			local dx, dz = tx - x, tz - z
+			local length = math.sqrt(dx * dx + dz * dz)
+			x += dx / length * reach
+			z += dz / length * reach
+			Assert.truthy(
+				Arena.blocking(run.arena, x, z, 1.5) == nil,
+				"inside the rock at step " .. step
+			)
+		end
+		Assert.truthy(x > 15, "reached the rock: " .. x)
+		-- Backing away is always free.
+		Assert.truthy(Arena.reach(run.arena, x, z, x - 5, z, 1.5) > 4.9)
 	end,
 
 	["the edge clamps and stops a walk"] = function()

@@ -49,7 +49,7 @@ local function enemy(id: string, name: string, fields: { [string]: any }): Types
 	local base: Types.EnemyKindConfig = {
 		id = id,
 		name = name,
-		archetype = "grunt",
+		look = "grunt",
 		role = "grunt",
 		health = 10,
 		speed = 9,
@@ -364,7 +364,7 @@ end
 -- Elite archetypes (stage 2a's telegraphs), stronger than grunts and rarer.
 local elites: { Types.EnemyKindConfig } = {
 	enemy("brute", "Oak Brute", {
-		archetype = "brute",
+		look = "brute",
 		role = "elite",
 		health = 160,
 		speed = 8.5,
@@ -387,7 +387,7 @@ local elites: { Types.EnemyKindConfig } = {
 		},
 	}),
 	enemy("spitter", "Bog Spitter", {
-		archetype = "spitter",
+		look = "spitter",
 		role = "elite",
 		health = 60,
 		speed = 10,
@@ -412,7 +412,7 @@ local elites: { Types.EnemyKindConfig } = {
 		},
 	}),
 	enemy("exploder", "Spore Bloater", {
-		archetype = "exploder",
+		look = "exploder",
 		role = "elite",
 		health = 40,
 		speed = 15,
@@ -435,7 +435,7 @@ local elites: { Types.EnemyKindConfig } = {
 		},
 	}),
 	enemy("shieldbearer", "Barkshield", {
-		archetype = "shieldbearer",
+		look = "shieldbearer",
 		role = "elite",
 		health = 140,
 		speed = 9,
@@ -459,7 +459,7 @@ local elites: { Types.EnemyKindConfig } = {
 		},
 	}),
 	enemy("shaman", "Moss Shaman", {
-		archetype = "shaman",
+		look = "shaman",
 		role = "elite",
 		health = 80,
 		speed = 10,
@@ -564,7 +564,7 @@ local roster: { Types.EnemyKindConfig } = {
 -- telegraphed attacks (ADR-0015). Health and damage grow with the horde.
 local bosses: { Types.EnemyKindConfig } = {
 	enemy("thornback", "Thornback", {
-		archetype = "thornback",
+		look = "thornback",
 		role = "boss",
 		health = 700,
 		speed = 11.5,
@@ -597,7 +597,7 @@ local bosses: { Types.EnemyKindConfig } = {
 		},
 	}),
 	enemy("mossmaw", "Mossmaw", {
-		archetype = "mossmaw",
+		look = "mossmaw",
 		role = "boss",
 		health = 1800,
 		speed = 9,
@@ -660,16 +660,6 @@ local bosses: { Types.EnemyKindConfig } = {
 				radius = 8,
 				summonCount = 8,
 			}),
-			attack("melee", {
-				telegraphSeconds = 0.7,
-				recoverSeconds = 0.5,
-				cooldownSeconds = 3,
-				range = 8,
-				damage = 40,
-				radius = 9,
-				knockback = 8,
-				arcDegrees = 180,
-			}),
 		},
 	}),
 	enemy("brambleMatron", "Bramble Matron", {
@@ -694,15 +684,6 @@ local bosses: { Types.EnemyKindConfig } = {
 				projectileSpeed = 40,
 				projectileCount = 3,
 				spreadDegrees = 30,
-			}),
-			attack("summon", {
-				telegraphSeconds = 1.2,
-				recoverSeconds = 0.5,
-				cooldownSeconds = 12,
-				range = 60,
-				damage = 0,
-				radius = 8,
-				summonCount = 6,
 			}),
 			attack("leap", {
 				telegraphSeconds = 1,
@@ -746,16 +727,6 @@ local bosses: { Types.EnemyKindConfig } = {
 				projectileCount = 8,
 				spreadDegrees = 360,
 			}),
-			attack("ground", {
-				telegraphSeconds = 0.9,
-				recoverSeconds = 0.4,
-				cooldownSeconds = 6,
-				range = 30,
-				damage = 10,
-				radius = 8,
-				groundSeconds = 5,
-				groundTickSeconds = 0.5,
-			}),
 		},
 	}),
 	enemy("ashenStag", "Ashen Stag", {
@@ -790,15 +761,6 @@ local bosses: { Types.EnemyKindConfig } = {
 				groundSeconds = 8,
 				groundTickSeconds = 0.5,
 			}),
-			attack("burst", {
-				telegraphSeconds = 1,
-				recoverSeconds = 0.6,
-				cooldownSeconds = 6,
-				range = 9,
-				damage = 70,
-				radius = 12,
-				knockback = 14,
-			}),
 		},
 	}),
 	enemy("forestHeart", "The Forest Heart", {
@@ -812,7 +774,6 @@ local bosses: { Types.EnemyKindConfig } = {
 		colour = 0x1b5e20,
 		scale = 3.2,
 		phaseHealthShare = 0.5,
-		phaseAttackIndex = 4,
 		phaseCooldownFactor = 0.7,
 		phaseSpeedFactor = 1.3,
 		attacks = {
@@ -846,16 +807,6 @@ local bosses: { Types.EnemyKindConfig } = {
 				knockback = 16,
 				chargeSpeed = 50,
 				chargeOvershoot = 12,
-			}),
-			-- Phase two only.
-			attack("summon", {
-				telegraphSeconds = 1.5,
-				recoverSeconds = 0.5,
-				cooldownSeconds = 15,
-				range = 80,
-				damage = 0,
-				radius = 10,
-				summonCount = 10,
 			}),
 		},
 	}),
@@ -936,9 +887,12 @@ local Config: Types.Config = {
 		totemFirstShotSeconds = 0.3,
 		totemShotSeconds = 1,
 		healBelowShare = 0.85,
-		thornsTriggerRange = 18,
 		clusterCandidates = 40,
 		critMultiplier = 2,
+		nearestBodyShare = 1,
+		areaBodyShare = 0.5,
+		scatterPoolFactor = 3,
+		selfTriggerRange = 18,
 	},
 	skills = skillsById,
 	passives = passivesById,
@@ -1118,6 +1072,7 @@ local Config: Types.Config = {
 		foodChance = 0.015,
 		foodHeal = 30,
 		steerMargin = 1.5,
+		contactMargin = 0.35,
 	},
 	statuses = {
 		maxDotStacks = 6,
@@ -1143,7 +1098,7 @@ local Config: Types.Config = {
 		},
 		crystalFactor = 2,
 		maxCrystals = 350,
-		collectRadius = 2,
+		eatRadius = 1,
 	},
 	extraction = {
 		compassMinute = 5,

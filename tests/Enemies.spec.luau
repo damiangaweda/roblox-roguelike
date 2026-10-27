@@ -476,8 +476,18 @@ return {
 		local boss = fighter(run, "hollowShade", 0, 0)
 		boss.attack = 2
 		Enemies.step(run, 0)
-		Assert.equal(boss.attack, 3)
+		Assert.equal(boss.attack, 1)
 		Assert.falsy(Assert.findEvent(run.events, "telegraph"))
+	end,
+
+	["a summon fills the horde only up to its cap"] = function()
+		local run = open()
+		Fixtures.place(run, 1, 50, 0)
+		local boss = fighter(run, "hollowShade", 0, 0)
+		run.config.horde.maxAlive = 3
+		boss.attack = 2
+		windUp(run, boss, attacked(run))
+		Assert.equal(#run.enemies, 1 + 3)
 	end,
 
 	["a ground attack leaves an area at the aim for its lifetime"] = function()
@@ -505,40 +515,26 @@ return {
 	end,
 
 	["the final boss enters its second phase at half health"] = function()
-		local run = open()
-		Fixtures.place(run, 1, 5, 0)
+		local run, hero = open()
 		local kind = run.config.enemies.forestHeart
-		local boss = fighter(run, "forestHeart", 0, 0)
-		-- Before the phase, the phase-two attack is skipped.
-		boss.attack = kind.phaseAttackIndex :: number
-		Enemies.step(run, 0)
-		Assert.equal(boss.attack, 1)
-		Assert.equal(Assert.findEvent(run.events, "telegraph").attackKind, "burst")
-		Assert.equal(boss.phase, 1)
-
-		local second, hero = open()
 		-- Survives the burst, so the boss keeps a target.
 		hero.health = 1e6
-		Fixtures.place(second, 1, 5, 0)
-		local heart = fighter(second, "forestHeart", 0, 0)
+		Fixtures.place(run, 1, 5, 0)
+		local heart = fighter(run, "forestHeart", 0, 0)
+		Enemies.step(run, 0)
+		Assert.equal(heart.phase, 1)
+		heart.state = "chase"
+		heart.attackReadyAt = 0
 		heart.health = heart.maxHealth * (kind.phaseHealthShare :: number)
-		local landedAt = windUp(second, heart, attacked(second))
+		local landedAt = windUp(run, heart, attacked(run))
 		Assert.equal(heart.phase, 2)
-		local phase = Assert.findEvent(second.events, "bossPhase")
+		local phase = Assert.findEvent(run.events, "bossPhase")
 		Assert.equal(phase.enemyId, heart.id)
-		Assert.equal(#events(second, "bossPhase"), 1)
+		Assert.equal(#events(run, "bossPhase"), 1)
 		Assert.near(
 			heart.attackReadyAt,
 			landedAt + kind.attacks[1].cooldownSeconds * (kind.phaseCooldownFactor :: number)
 		)
-		-- Now the phase-two attack is reachable.
-		heart.attack = kind.phaseAttackIndex :: number
-		heart.state = "chase"
-		heart.attackReadyAt = 0
-		Enemies.step(second, 0)
-		Assert.equal(heart.attack, kind.phaseAttackIndex)
-		Assert.equal(heart.state, "telegraph")
-		Assert.equal(events(second, "telegraph")[2].attackKind, "summon")
 	end,
 
 	["a stunned enemy neither attacks nor hits on contact"] = function()

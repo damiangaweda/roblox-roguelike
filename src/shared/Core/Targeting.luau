@@ -60,7 +60,7 @@ function Targeting.nearest(
 	count: number,
 	toughest: boolean
 ): { Types.Enemy }
-	local found = candidates(run, x, z, range, 1)
+	local found = candidates(run, x, z, range, run.config.ranks.nearestBodyShare)
 	if toughest then
 		table.sort(found, function(a, b)
 			if a.enemy.health ~= b.enemy.health then
@@ -74,7 +74,7 @@ end
 
 -- Everything within `radius` of (x, z), half an enemy's body counting, nearest first.
 function Targeting.within(run: Types.Run, x: number, z: number, radius: number): { Types.Enemy }
-	local found = candidates(run, x, z, radius, 0.5)
+	local found = candidates(run, x, z, radius, run.config.ranks.areaBodyShare)
 	return enemiesOf(found, #found)
 end
 
@@ -181,7 +181,8 @@ function Targeting.scatter(
 	count: number,
 	rng: Types.Rng
 ): { Types.Enemy }
-	local pool = Targeting.nearest(run, x, z, range, count * 3, false)
+	local pool =
+		Targeting.nearest(run, x, z, range, count * run.config.ranks.scatterPoolFactor, false)
 	local picked = {}
 	for index = 1, math.min(count, #pool) do
 		local chosen = rng:integer(index, #pool)

@@ -135,7 +135,15 @@ end
 
 local function spawnRing(run: Types.Run, players: { Types.Player })
 	local horde = run.config.horde
-	local count = horde.ringCountStart + math.floor(horde.ringCountGrowth * Horde.progress(run))
+	-- The ring never takes the horde past its cap (the budget of ADR-0004).
+	local room = math.max(horde.maxAlive - Horde.aliveCount(run), 0)
+	local count = math.min(
+		horde.ringCountStart + math.floor(horde.ringCountGrowth * Horde.progress(run)),
+		room
+	)
+	if count == 0 then
+		return
+	end
 	local kindId = Horde.windowKinds(run)[1]
 	local player = randomPlayer(run, players)
 	local phase = run.rng:next() * 2 * math.pi

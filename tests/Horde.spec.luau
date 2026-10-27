@@ -186,15 +186,19 @@ return {
 		Assert.near(sumX / expected, 0, 1e-6)
 		Assert.near(sumZ / expected, 0, 1e-6)
 
-		-- The next one halfway between the first two bosses; it ignores the cap.
+		-- The next one halfway between the first two bosses; at the cap it
+		-- spawns nothing (the budget of ADR-0004) and the clock moves on.
 		run.config.horde.maxAlive = 0
 		run.time = 202.4
 		Horde.update(run, 0)
 		Assert.equal(run.ringsSpawned, 1)
+		-- The first boss came at 135 s; bosses never count toward the cap.
+		local before = #run.enemies
 		run.time = 202.5
 		Horde.update(run, 0)
 		Assert.equal(run.ringsSpawned, 2)
-		Assert.equal(#events(run, "closingRing"), 2)
+		Assert.equal(#events(run, "closingRing"), 1)
+		Assert.equal(#run.enemies, before)
 	end,
 
 	["a boss arrives at each scheduled time with its kind"] = function()

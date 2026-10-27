@@ -9,6 +9,9 @@ local Types = require("./Types")
 
 local Arena = {}
 
+-- A body stops this far short of an obstacle, so rounding never puts it inside.
+local CONTACT_GAP = 1e-3
+
 local function pickKind(
 	map: Types.MapConfig,
 	rng: Types.Rng
@@ -147,8 +150,14 @@ function Arena.reach(
 		local along = ox * ux + oz * uz
 		local across2 = ox * ox + oz * oz - along * along
 		local inside = ox * ox + oz * oz < reach * reach
-		if not inside and along > 0 and across2 < reach * reach then
-			local hit = along - math.sqrt(reach * reach - across2)
+		if inside then
+			-- Already overlapping (a contact point rounds a hair inside): a move
+			-- deeper is held, a move away is free, so nothing is ever stuck.
+			if along > 0 then
+				return 0
+			end
+		elseif along > 0 and across2 < reach * reach then
+			local hit = along - math.sqrt(reach * reach - across2) - CONTACT_GAP
 			if hit < best then
 				best = math.max(hit, 0)
 			end

@@ -301,13 +301,32 @@ return {
 		Assert.equal(#run.totems, 0)
 	end,
 
-	["a shield replaces the barrier"] = function()
+	["a shield needs an enemy near and keeps the larger barrier"] = function()
 		local run, player = setup("warrior", "bulwark")
+		-- No enemy near: the shield waits.
+		for index = #run.enemies, 1, -1 do
+			table.remove(run.enemies, index)
+		end
+		Casting.update(run, 0)
+		Assert.near(player.barrier, 0)
+		Assert.near(player.skills[1].readyAt, run.config.ranks.retrySeconds)
+
+		run.time = 1
+		Fixtures.enemy(run, "sproutImp", player.x + 5, player.z)
 		player.barrier = 5
+		player.barrierUntil = 2
 		Casting.update(run, 0)
 		Assert.near(player.barrier, 40)
-		Assert.near(player.barrierUntil, 6)
-		Assert.near(player.skills[1].readyAt, 20)
+		Assert.near(player.barrierUntil, 7)
+		Assert.near(player.skills[1].readyAt, 21)
+
+		-- A larger barrier already up is kept, and its time only grows.
+		player.barrier = 90
+		player.barrierUntil = 30
+		player.skills[1].readyAt = 0
+		Casting.update(run, 0)
+		Assert.near(player.barrier, 90)
+		Assert.near(player.barrierUntil, 30)
 	end,
 
 	["a heal fires only below its threshold and with nothing pending"] = function()

@@ -15,7 +15,6 @@ local Types = require("./Types")
 local Enemies = {}
 
 -- A grunt touches a hero within the two radii and this margin.
-local CONTACT_MARGIN = 0.35
 -- Draws a leap spends looking for free ground at its aim.
 local FREE_SPOT_TRIES = 8
 -- How far ahead of a feared or backing-off enemy its walk aims.
@@ -297,7 +296,9 @@ local function shoot(run: Types.Run, enemy: Types.Enemy, attack: Types.AttackCon
 end
 
 local function summon(run: Types.Run, enemy: Types.Enemy, attack: Types.AttackConfig)
-	local count = attack.summonCount or 0
+	-- A summon fills the horde at most up to its cap.
+	local count =
+		math.min(attack.summonCount or 0, run.config.horde.maxAlive - Horde.aliveCount(run))
 	local kindId = Horde.windowKinds(run)[1]
 	for index = 1, count do
 		local angle = enemy.facing + (index - 1) * 2 * math.pi / count
@@ -553,12 +554,15 @@ local function stepGrunt(
 	local touching = run.config.player.radius + kind.radius
 	local distance = Geometry.distance(enemy.x, enemy.z, target.x, target.z)
 	face(enemy, target.x, target.z)
-	if not rooted and distance > touching + CONTACT_MARGIN then
+	if not rooted and distance > touching + run.config.horde.contactMargin then
 		local step = math.min(speedOf(run, enemy, kind) * dt, distance - touching)
 		walk(run, enemy, kind, target.x, target.z, step)
 		distance = Geometry.distance(enemy.x, enemy.z, target.x, target.z)
 	end
-	if distance <= touching + CONTACT_MARGIN and enemy.contactReadyAt <= run.time then
+	if
+		distance <= touching + run.config.horde.contactMargin
+		and enemy.contactReadyAt <= run.time
+	then
 		enemy.contactReadyAt = run.time + run.config.horde.contactSeconds
 		hurt(run, enemy, target, scaled(run, enemy, kind.damage))
 	end

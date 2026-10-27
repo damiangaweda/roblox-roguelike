@@ -66,7 +66,7 @@ end
 -- Each alive hero collects the crystals within its pickup range and eats the
 -- food it stands on.
 function Progression.update(run: Types.Run, _dt: number)
-	local eatRadius = run.config.player.radius + 1
+	local eatRadius = run.config.player.radius + run.config.progression.eatRadius
 	for _, player in State.alivePlayers(run) do
 		local pickupRange = Hero.stats(run, player).pickupRange
 		for index = #run.crystals, 1, -1 do
