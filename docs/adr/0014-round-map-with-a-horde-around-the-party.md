@@ -1,6 +1,6 @@
 # A map is a round, bounded ground where the horde spawns around the players
 
-**Status:** proposed; once accepted it supersedes [ADR-0012](0012-open-map-of-points-in-a-shared-world.md) and [ADR-0008](0008-generated-room-graph.md), and deprecates [ADR-0011](0011-rooms-on-a-grid-with-straight-corridors.md).
+**Status:** accepted on 2026-10-27; once accepted it supersedes [ADR-0012](0012-open-map-of-points-in-a-shared-world.md) and [ADR-0008](0008-generated-room-graph.md), and deprecates [ADR-0011](0011-rooms-on-a-grid-with-straight-corridors.md).
 
 A run takes place on one map: a flat, round piece of ground in that map's own setting (a forest, a desert, a glacier), closed by an invisible wall, with obstacles scattered on it by rules anew for every run. Enemies do not live anywhere on it: the horde spawns on a ring just outside the camera around the players and walks at them, the number alive rising with run time, the kinds sliding up the map's roster, elites appearing more often and a boss arriving on a clock. A map differs from another by its setting, its roster, its bosses and the power it asks for, not by its rules. We chose this over the open map of ADR-0012 because the generated terrain, points, paths and camps were the part that looked weakest and cost the most, and a survivors-like needs none of them: the pressure comes from the horde and the clock, not from choosing camps.
 

@@ -1,6 +1,6 @@
 # The way out is a spell found in a chest, and the run ends with a final boss
 
-**Status:** proposed.
+**Status:** accepted on 2026-10-27.
 
 A run lasts a configured time (fifteen minutes), with a boss on a clock along the way. One extraction chest lies at a random place on the map, unmarked until a configured minute when the compass starts to point at it. The player who opens it gets the extraction spell and casts it whenever they choose: casting takes a few seconds, a hit interrupts it, and it opens a portal that stands for a while for the whole party; once the portal closes the spell can be cast again. At the end of the run's time the map's final boss arrives; killing it extracts everyone still alive with the best loot of the run, and if it is not killed within a configured time the map closes and everyone who has not left dies. We chose this over extraction zones on a clock and a closing flood (ADR-0012) because finding the chest and choosing when to cast gives the run two moments of tension that a party can read and argue about, and the final boss gives a run an ending worth staying for.
 
