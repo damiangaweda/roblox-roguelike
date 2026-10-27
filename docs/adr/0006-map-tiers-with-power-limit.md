@@ -1,5 +1,7 @@
 # Map tiers with a power limit keep new players in the game
 
+**Status:** accepted; superseded by [ADR-0018](0018-maps-ask-for-a-minimum-power.md) once that one is accepted.
+
 Every item, skill and class has a power rating, and every map tier admits only loadouts whose total power stays under its power limit; higher tiers drop better items. Later classes have the same power budget as the first ones and differ by mechanics and comfort, not strength, so unlocking one early for Robux buys convenience, not victory. We chose this over matchmaking by power because 12-player runs on a young game would wait too long for a narrow match.
 
 ## Considered options

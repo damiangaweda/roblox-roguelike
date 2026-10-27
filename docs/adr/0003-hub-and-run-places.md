@@ -1,5 +1,7 @@
 # A hub place and a run place in one universe
 
+**Status:** accepted; superseded by [ADR-0016](0016-co-op-party-of-up-to-four.md) once that one is accepted, which keeps its two places.
+
 The game is two places in one universe: a hub, where players manage their stash and loadout and form alliances, and a run place, where each run gets its own reserved server with its map tier and up to 12 players, reached by teleport. We chose this over one place because a run server must hold exactly the players and the map tier of that run, while the hub holds many players at once.
 
 ## Consequences

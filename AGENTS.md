@@ -3,7 +3,7 @@
 `CLAUDE.md` imports this file, so Claude Code and Codex read the same instructions; edit this file only.
 
 ## What this project is
-A multiplayer action roguelite for Roblox: a world generated for each run, aimed combat, builds from perks, alliances and betrayal, extraction with gear at risk. `docs/plan.md` describes the game and its stages; a stage without acceptance criteria is grilled before anything is implemented.
+A co-op survivors-like roguelite for Roblox: skills that cast themselves, builds from level-up cards, a horde on a round map, extraction with the haul at risk. `docs/plan.md` describes the game and its stages; a stage without acceptance criteria is grilled before anything is implemented.
 
 ## Language
 - Talk to the user in Polish.

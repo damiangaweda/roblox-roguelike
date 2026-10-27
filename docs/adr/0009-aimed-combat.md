@@ -1,5 +1,7 @@
 # Combat is aimed, with one scheme across platforms
 
+**Status:** accepted; superseded by [ADR-0013](0013-skills-cast-themselves.md) once that one is accepted.
+
 The character faces the player's aim: the cursor on PC, the right stick on touch and gamepad, where a small auto-aim cone makes up for the stick's imprecision. The basic attack fires while its input is held, active skills and the dash are aimed the same way, and nothing targets an enemy for the player. We chose this over an auto-targeting basic attack because aiming is where the satisfaction and the skill of an action RPG live, and over a PC-only cursor scheme because PvP between platforms must stay fair.
 
 ## Considered options
