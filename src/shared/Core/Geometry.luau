@@ -2,8 +2,6 @@
 -- Plane geometry shared by the core modules. Angles are radians from +x
 -- toward +z.
 
-local Types = require("./Types")
-
 local Geometry = {}
 
 function Geometry.distance(ax: number, az: number, bx: number, bz: number): number
@@ -35,16 +33,6 @@ function Geometry.normalize(dx: number, dz: number): (number, number)
 		return 1, 0
 	end
 	return dx / length, dz / length
-end
-
-function Geometry.insideRect(rect: Types.Rect, x: number, z: number): boolean
-	return math.abs(x - rect.x) <= rect.halfWidth and math.abs(z - rect.z) <= rect.halfDepth
-end
-
--- The point of `rect` nearest to (x, z).
-function Geometry.clampToRect(rect: Types.Rect, x: number, z: number): (number, number)
-	return math.clamp(x, rect.x - rect.halfWidth, rect.x + rect.halfWidth),
-		math.clamp(z, rect.z - rect.halfDepth, rect.z + rect.halfDepth)
 end
 
 -- Whether the angle from (fromX, fromZ) toward (toX, toZ) lies within an arc

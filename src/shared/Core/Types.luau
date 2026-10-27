@@ -1,95 +1,277 @@
 --!strict
--- Types shared by the pure rules core (ADR-0002). Positions are on the ground
--- plane: x and z in studs. Angles are radians on that plane, measured from +x
--- toward +z. Times are run seconds since the run started.
-
-export type Tag = "fire" | "ice" | "lightning"
+-- Types shared by the pure rules core (ADR-0002) for the survivors-like run
+-- (stage 3; ADR-0013 to ADR-0015). Positions are on the flat ground plane: x
+-- and z in studs. Angles are radians on that plane, measured from +x toward
+-- +z. Times are run seconds since the run started. Every number that tunes
+-- play lives in the configuration (AGENTS.md rule 3); the core reads it.
 
 export type Point = { x: number, z: number }
 
--- An axis-aligned rectangle given by its centre and half extents.
-export type Rect = { x: number, z: number, halfWidth: number, halfDepth: number }
+-- An element or property a skill carries; synergies key on it (GLOSSARY: tag).
+export type Tag =
+	"fire"
+	| "ice"
+	| "lightning"
+	| "arcane"
+	| "physical"
+	| "bleed"
+	| "poison"
+	| "nature"
 
--- A hand-made point layout (ADR-0012): data the generator reads. Positions
--- are relative to the point's centre.
-export type PointTemplate = {
+-- A temporary condition a hit puts on an enemy (GLOSSARY: status). `chilled`
+-- is the slow an ice hit leaves, which shatter keys on; `burning`, `bleeding`
+-- and `poisoned` are the damage-over-time statuses, stacked per enemy.
+export type Status =
+	"slowed"
+	| "chilled"
+	| "rooted"
+	| "stunned"
+	| "feared"
+	| "weakened"
+	| "burning"
+	| "bleeding"
+	| "poisoned"
+
+-- The condition a hit applies, as the configuration states it.
+export type EffectConfig = {
+	kind: "slow" | "root" | "stun" | "fear" | "weaken" | "drain" | "execute" | "dot",
+	-- slow and weaken: the multiplier (0.5 halves speed or damage); drain: the
+	-- share of damage healed; execute: the health share below which a
+	-- non-boss dies; dot: unused.
+	factor: number?,
+	-- slow, root, stun, fear, weaken, dot: how long it lasts.
+	seconds: number?,
+	-- dot: damage per second, and the status it shows as.
+	dps: number?,
+	status: ("burning" | "bleeding" | "poisoned")?,
+}
+
+-- How a skill picks what it lands on (ADR-0013; GLOSSARY: targeting).
+--   bolt: a projectile at each of the `count` nearest (or toughest) enemies
+--     in range; `radius` > 0 splashes around the struck enemy.
+--   strike: an instant hit on the `count` nearest (or toughest) in range.
+--   melee: an instant hit on the `count` nearest within melee reach (range).
+--   nova: everything within `radius` of the hero.
+--   cone: everything within `radius` inside a cone toward the nearest enemy.
+--   ground: an area of `radius` at the densest cluster within `range`,
+--     ticking for `duration`; `duration` 0 is one burst with a dot.
+--   groundSelf: the same area under the hero, when an enemy is close.
+--   chain: the nearest in range, then jumps to the nearest unstruck within
+--     `radius`, `count` + 1 targets in all, damage falling per jump.
+--   scatter: `count` random enemies among the nearest in range.
+--   aura: every cooldown, everything within `radius` of the hero.
+--   orbit: every cooldown, the `count` nearest within `radius` of the hero.
+--   totem: a totem placed by the hero that fires at the nearest enemy in
+--     `range` for `duration`.
+--   shield: a barrier on the hero absorbing `damage` for `duration`.
+--   heal: heals the hero `damage` over `duration` when below the threshold.
+--   thorns: returns `damage` to every attacker for `duration` when enemies
+--     are close.
+export type Targeting =
+	"bolt"
+	| "strike"
+	| "melee"
+	| "nova"
+	| "cone"
+	| "ground"
+	| "groundSelf"
+	| "chain"
+	| "scatter"
+	| "aura"
+	| "orbit"
+	| "totem"
+	| "shield"
+	| "heal"
+	| "thorns"
+
+export type SkillConfig = {
 	id: string,
-	-- The footprint flattened on the terrain, in studs from the centre.
+	name: string,
+	targeting: Targeting,
+	-- bolt, strike, melee: prefer the toughest (most health) over the nearest.
+	toughest: boolean?,
+	-- Direct damage; per tick for areas, auras and totems; the absorb, heal or
+	-- reflect for the self kinds. Rank 1, before the hero's might.
+	damage: number,
+	cooldownSeconds: number,
+	-- How far it reaches from the hero (bolt, strike, melee, ground, chain's
+	-- first target, scatter, totem).
+	range: number,
+	-- Area kinds: the area; bolt and strike: the splash; chain: the jump.
 	radius: number,
-	-- Where the camp gathers; nil for a template without a camp (entries).
-	camp: Point?,
-	chest: Point,
-	-- Where a clue can stand (stage 2d reads it).
-	clue: Point,
-	-- Cover spots; each hides a player within config.map.coverRadius.
-	cover: { Point },
-	-- Solid props (ruin walls, a well): axis-aligned rects relative to the
-	-- centre, which stop movement, shots and bursts.
-	props: { Rect },
+	-- Targets at rank 1 (ranks 3, 5 and 7 add one); 0 for area kinds.
+	count: number,
+	-- Areas, totems and the self kinds: how long it lasts.
+	durationSeconds: number,
+	-- bolt: studs per second; 0 is instant.
+	speed: number,
+	-- Studs struck enemies are pushed.
+	knockback: number,
+	tags: { Tag },
+	effect: EffectConfig?,
 }
 
-export type MapPoint = {
-	id: number,
-	x: number,
-	z: number,
-	template: string,
+-- A skill's numbers at a rank, after the hero's stats: what Casting fires.
+export type EffectiveSkill = {
+	id: string,
+	targeting: Targeting,
+	toughest: boolean,
+	damage: number,
+	cooldownSeconds: number,
+	range: number,
 	radius: number,
-	-- Ids of the paths leaving the point and of the points they lead to, in
-	-- the same order.
-	paths: { number },
-	neighbours: { number },
-	-- Paths to the nearest entry; 0 for an entry.
-	distance: number,
-	-- 1 next to the entries, config.map.maxLevel farthest.
-	level: number,
-	isEntry: boolean,
-	-- Absolute positions resolved from the template; campX/campZ nil for an
-	-- entry.
-	campX: number?,
-	campZ: number?,
-	cover: { Point },
-	-- Absolute prop rects; a prop a path would cross is left out.
-	props: { Rect },
+	count: number,
+	durationSeconds: number,
+	speed: number,
+	knockback: number,
+	tags: { Tag },
+	effect: EffectConfig?,
+	critChance: number,
 }
 
-export type Path = {
-	id: number,
-	a: number,
-	b: number,
-	-- Straight: from point a's centre to point b's centre; halfWidth is the
-	-- band drawn on the ground and kept walkable.
-	halfWidth: number,
+export type RankConfig = {
+	maxRank: number,
+	-- Multipliers per rank above 1: damage × (1 + damagePerRank × (rank - 1)),
+	-- cooldown × cooldownFactorPerRank ^ (rank - 1), radius and duration likewise.
+	damagePerRank: number,
+	cooldownFactorPerRank: number,
+	radiusPerRank: number,
+	durationPerRank: number,
+	-- Ranks that add one target.
+	extraTargetRanks: { number },
+	-- Haste never cuts a cooldown below this share, nor below the floor.
+	minCooldownShare: number,
+	minCooldownSeconds: number,
+	-- Damage falls by this factor per chain jump.
+	chainFalloff: number,
+	-- Splash deals this share of the hit.
+	splashShare: number,
+	-- A skill with no target retries after this long without spending its cooldown.
+	retrySeconds: number,
+	-- The cooldown a skill starts with when gained.
+	firstCooldownSeconds: number,
+	-- An area's first tick comes after this, then every tickSeconds.
+	areaFirstTickSeconds: number,
+	areaTickSeconds: number,
+	-- A burst area (duration 0) leaves its dot for this long.
+	burstDotSeconds: number,
+	-- Cone half angle in degrees; groundSelf fires when an enemy is within
+	-- radius + groundSelfMargin; a totem stands this far from the hero.
+	coneHalfAngleDegrees: number,
+	groundSelfMargin: number,
+	totemOffset: number,
+	totemFirstShotSeconds: number,
+	totemShotSeconds: number,
+	-- The heal fires below this share of max health; thorns and immune-like
+	-- skills fire when the nearest enemy is within this distance.
+	healBelowShare: number,
+	thornsTriggerRange: number,
+	-- Ground kinds consider at most this many nearest enemies for the cluster.
+	clusterCandidates: number,
+	critMultiplier: number,
 }
 
-export type Map = {
-	-- The map is the square [-half, half] on both axes.
-	half: number,
-	points: { MapPoint },
-	paths: { Path },
-	entries: { number },
-	-- nextHop[from][to] is the neighbouring point to walk to on the way from
-	-- point `from` to point `to`; nextHop[p][p] is p. hops[from][to] is the
-	-- number of paths between the points.
-	nextHop: { { number } },
-	hops: { { number } },
-	-- Heights on a grid of heightCell studs: heights[row][col], row along z,
-	-- col along x, both from -half; a value below waterLevel is water.
-	heights: { { number } },
-	heightCell: number,
-	waterLevel: number,
-	-- The map settings its queries use, from the configuration.
-	sampleStep: number,
-	clampRadius: number,
-	steerProbe: number,
-	-- Cover scattered between points (bushes), absolute.
-	fieldCover: { Point },
-	-- The ids of the points whose footprint overlaps a grid cell, keyed by
-	-- (row - 1) * columns + col of the cell's lower corner; absent when none.
-	pointCells: { [number]: { number } },
+-- A stat passives raise (GLOSSARY: passive).
+export type Stat =
+	"damage"
+	| "maxHealth"
+	| "speed"
+	| "regeneration"
+	| "haste"
+	| "area"
+	| "pickupRange"
+	| "experience"
+	| "armour"
+	| "critChance"
+
+export type PassiveConfig = {
+	id: string,
+	name: string,
+	stat: Stat,
+	-- Per rank: added to an additive stat, or the share a multiplicative stat
+	-- grows by (maxHealth, speed, pickupRange).
+	perRank: number,
+	maxRank: number,
 }
 
-export type AttackKind = "melee" | "projectile" | "burst" | "heal"
+-- A bonus when a hit carrying `tag` lands on an enemy with `status`
+-- (GLOSSARY: synergy): `multiply` scales the hit, `spread` copies
+-- `spreadStatus` to enemies within `radius`.
+export type SynergyConfig = {
+	id: string,
+	name: string,
+	tag: Tag,
+	status: Status,
+	kind: "multiply" | "spread",
+	multiplier: number?,
+	spreadStatus: Status?,
+	spreadSeconds: number?,
+	spreadDps: number?,
+	radius: number?,
+}
 
+export type ClassConfig = {
+	id: string,
+	name: string,
+	-- The skill every run starts with; the pool its cards draw from.
+	startSkill: string,
+	pool: { string },
+	maxHealth: number,
+	walkSpeed: number,
+	synergies: { SynergyConfig },
+	-- The colour the hero is drawn in (0xRRGGBB) and its weapon look.
+	colour: number,
+	weapon: string,
+}
+
+export type UtilityConfig = {
+	id: string,
+	name: string,
+	kind: "sprint" | "barrier" | "heal",
+	cooldownSeconds: number,
+	-- sprint: the speed multiplier for `seconds`; barrier: the absorb for
+	-- `seconds`; heal: the health restored at once.
+	factor: number?,
+	amount: number?,
+	seconds: number?,
+}
+
+-- The hero's derived numbers, from the class and the passives.
+export type HeroStats = {
+	-- A multiplier on every skill's damage.
+	damage: number,
+	maxHealth: number,
+	speed: number,
+	-- Health per second.
+	regeneration: number,
+	-- The share cut from cooldowns.
+	haste: number,
+	-- A multiplier on areas and splashes.
+	area: number,
+	pickupRange: number,
+	-- A multiplier on experience.
+	experience: number,
+	-- Flat damage taken off every hit (at least 1 is taken).
+	armour: number,
+	critChance: number,
+}
+
+export type AttackKind =
+	"melee"
+	| "projectile"
+	| "burst"
+	| "heal"
+	| "charge"
+	| "leap"
+	| "summon"
+	| "ground"
+
+-- An enemy's telegraphed attack. melee: an arc in front; projectile: shots
+-- at the aim; burst: an area around the enemy; heal: heals enemies around;
+-- charge: a rush along the line to the aim, hitting what it crosses; leap: a
+-- jump onto the aim with a burst there; summon: spawns `summonCount` grunts
+-- around the enemy; ground: leaves an area at the aim that hurts players
+-- inside for `groundSeconds`.
 export type AttackConfig = {
 	kind: AttackKind,
 	-- The telegraph: how long the wind-up before the attack lands is visible.
@@ -97,708 +279,518 @@ export type AttackConfig = {
 	-- How long the enemy stands still after the attack.
 	recoverSeconds: number,
 	cooldownSeconds: number,
-	-- The attack starts when the target is this close (a heal: always).
+	-- The attack starts when the target is this close (a heal: always; a
+	-- summon: always).
 	range: number,
 	damage: number,
-	-- melee and burst: the area hit around the enemy; projectile: the area hit
-	-- where it lands (0 hits only what it strikes); heal: who is healed.
+	-- melee, burst, leap: the area hit; projectile: the area where it lands
+	-- (0 hits only what it strikes); heal: who is healed; charge: half the
+	-- width of the rush; ground: the area left behind.
 	radius: number,
-	-- Studs a hit player is pushed away from the enemy.
+	-- Studs a hit player is pushed away.
 	knockback: number,
-	-- melee: the frontal arc that is hit, in degrees; 360 hits all around.
+	-- melee: the frontal arc hit, in degrees; 360 hits all around.
 	arcDegrees: number?,
 	projectileSpeed: number?,
-	-- projectile: how many fly at once, spread evenly over spreadDegrees.
 	projectileCount: number?,
 	spreadDegrees: number?,
-	-- heal: health restored to each camp member in radius, and how long they
-	-- stay buffed.
+	-- heal: health restored to each enemy in radius, and how long they stay buffed.
 	heal: number?,
 	buffSeconds: number?,
+	-- charge: studs per second of the rush, and how far past the aim it runs.
+	chargeSpeed: number?,
+	chargeOvershoot: number?,
+	summonCount: number?,
+	-- ground: how long the area stays and how often it hurts.
+	groundSeconds: number?,
+	groundTickSeconds: number?,
 }
 
-export type ArchetypeConfig = {
+-- A kind of enemy: a grunt of the roster, an elite archetype or a boss
+-- (GLOSSARY: archetype, roster, elite, boss).
+export type EnemyKindConfig = {
+	id: string,
 	name: string,
+	-- The silhouette the client draws: grunt, brute, spitter, exploder,
+	-- shieldbearer, shaman, or a boss's own look.
+	archetype: string,
+	role: "grunt" | "elite" | "boss" | "finalBoss",
 	health: number,
 	speed: number,
 	radius: number,
+	-- Contact damage of a grunt; the damage an elite's or boss's attacks scale from.
+	damage: number,
 	xp: number,
-	-- How close a player must come to be noticed (halved in cover).
-	detectionRange: number,
-	-- How far from home the enemy chases before it walks back.
-	leash: number,
-	-- An enemy that keeps its distance backs away when the target is closer
-	-- than this.
+	-- The client's tint (0xRRGGBB) and size multiplier for this kind.
+	colour: number,
+	scale: number,
+	-- An elite or boss keeps this distance when it fights at range.
 	preferredRange: number?,
-	-- The attacks used in turn; most archetypes have one, the camp leader two.
+	-- Telegraphed attacks, used in turn; a grunt has none and hits on contact.
 	attacks: { AttackConfig },
-	-- Hits from within this frontal arc (degrees) are blocked.
+	-- Hits from within this frontal arc (degrees) are blocked (the shieldbearer).
 	blockArcDegrees: number?,
 	-- The enemy dies when its attack lands (the exploder).
 	diesOnAttack: boolean?,
+	-- A boss's second phase, entered at `phaseHealthShare` of max health:
+	-- attacks from `phaseAttacks` onward unlock, cooldowns are multiplied by
+	-- `phaseCooldownFactor`, speed by `phaseSpeedFactor`.
+	phaseHealthShare: number?,
+	phaseAttackIndex: number?,
+	phaseCooldownFactor: number?,
+	phaseSpeedFactor: number?,
 }
 
--- One group of a camp's composition.
-export type CampGroup = { archetype: string, count: number }
+export type BossScheduleEntry = { kind: string, atSeconds: number }
 
-export type CampLevelConfig = {
-	groups: { CampGroup },
-	-- Chance that the camp has a camp leader.
-	leaderChance: number,
-	-- Enemies added when one more player stands in the camp's point, and the
-	-- health multiplier applied to the living members for each such player.
-	extraPerPlayer: number,
-	healthPerExtraPlayer: number,
-}
-
-export type SkillShape = "line" | "projectile" | "ring" | "chain"
-
-export type SkillConfig = {
-	id: string,
-	name: string,
-	shape: SkillShape,
-	damage: number,
-	-- The basic attack's interval between shots, an active skill's cooldown.
-	cooldownSeconds: number,
-	-- line, projectile: how far it reaches; chain: how far the first jump looks.
-	range: number,
-	-- projectile: the burst where it lands; ring: around the player.
-	radius: number,
-	-- line: how wide the burst is.
-	width: number,
-	-- line: how many enemies beyond the first it passes through.
-	pierce: number,
-	-- chain: how many enemies it jumps between, how far one jump reaches, and
-	-- the cone around the aim the first target is picked from.
-	jumps: number,
-	jumpRange: number,
-	coneDegrees: number,
-	-- projectile: studs per second.
-	speed: number,
-	-- Studs enemies hit are pushed.
-	knockback: number,
-	tags: { Tag },
-}
-
-export type DashConfig = {
-	distance: number,
-	-- How long the burst takes; with the distance, the dash's speed.
-	seconds: number,
-	charges: number,
-	-- Seconds for one charge to come back.
-	rechargeSeconds: number,
-}
-
-export type ClassConfig = {
-	name: string,
-	basic: SkillConfig,
-	actives: { SkillConfig },
-	dash: DashConfig,
-}
-
--- A property skills (or the player) can have, which perks modify.
-export type Property =
-	"damage"
-	| "cooldown"
-	| "attackSpeed"
-	| "range"
-	| "area"
-	| "statusDuration"
-	| "projectileSplit"
-	| "pierce"
-	| "chainJumps"
-	| "knockback"
-	| "maxHealth"
-	| "moveSpeed"
-	| "dashCharges"
-	| "dashDistance"
-	| "potionCapacity"
-	| "potionHeal"
-	| "burnDamage"
-	| "chillSlow"
-	| "synergyBonus"
-	| "xpGain"
-
--- A skill's numbers after the player's perks: what Combat fires.
-export type EffectiveSkill = {
-	id: string,
-	name: string,
-	shape: SkillShape,
-	damage: number,
-	cooldownSeconds: number,
-	range: number,
-	radius: number,
-	width: number,
-	pierce: number,
-	-- projectile: how many fly at once.
-	count: number,
-	jumps: number,
-	jumpRange: number,
-	coneDegrees: number,
-	speed: number,
-	knockback: number,
-	tags: { Tag },
-	-- Multiplies the durations of the statuses it applies.
-	statusFactor: number,
-}
-
--- Property name to the multiplier and addend the player's perks give it.
-export type Modifiers = { [string]: { mul: number, add: number } }
-
-export type PerkConfig = {
-	name: string,
-	property: Property,
-	-- Each stack multiplies the property by `mul` and adds `add`.
-	mul: number?,
-	add: number?,
-	-- How many times a player can take the perk; 1 means once.
-	maxStacks: number,
-}
-
+-- One map: its ground, obstacles, roster and bosses (ADR-0014, ADR-0015).
 export type MapConfig = {
-	-- The half side grows with the players: studsPerPlayer * players,
-	-- clamped to [minHalf, maxHalf].
-	studsPerPlayer: number,
-	minHalf: number,
-	maxHalf: number,
-	pointsPerPlayer: number,
-	minPoints: number,
-	maxPoints: number,
-	-- Centre to centre, at least.
-	pointSpacing: number,
-	-- No point centre closer than this to the edge.
-	edgeMargin: number,
-	-- Entries lie within this many studs inward of edgeMargin.
-	entryBand: number,
-	-- Candidates drawn for each point, entry or bush before it is given up.
+	id: string,
+	name: string,
+	radius: number,
+	-- Obstacles: how many the scatter tries to place, their kinds with radii
+	-- and weights, the minimum gap between them and the clear ground around
+	-- the start and the extraction chest.
+	obstacleCount: number,
+	obstacleKinds: { { id: string, radius: number, weight: number } },
+	obstacleSpacing: number,
+	startClearRadius: number,
+	chestClearRadius: number,
 	placementAttempts: number,
-	-- Chance of each link beyond the spanning tree, from the neighbour graph.
-	extraLinkChance: number,
-	pathHalfWidth: number,
-	playersPerEntry: number,
-	maxEntries: number,
-	-- Entries at least this far apart, in studs.
-	minEntrySpacing: number,
-	maxLevel: number,
-	-- The radius of an extraction zone, opened at a point's centre (Arc).
-	zoneRadius: number,
-	coverRadius: number,
-	-- Bushes scattered between points, per point, and how far they keep
-	-- from footprints and path bands.
-	fieldCoverPerPoint: number,
-	fieldCoverClearance: number,
-	heightCell: number,
-	-- Hills from 0 to this.
-	maxHeight: number,
-	-- Below it water.
-	waterLevel: number,
-	-- How far above the water footprints and path bands are raised.
-	dryMargin: number,
-	-- Cycles per stud of the value noise.
-	hillFrequency: number,
-	-- How far apart the positions are that a walk or a shot is checked at:
-	-- movement stops up to this short of water or a prop.
-	sampleStep: number,
-	-- How far from an unwalkable position walkable ground is looked for
-	-- before a position is put back by the walk to a point's centre.
-	clampRadius: number,
-	-- How far ahead a walker probes the turned headings when the straight
-	-- line to its target is blocked.
-	steerProbe: number,
-	campReturnMinutes: number,
-	templates: { PointTemplate },
-	entryTemplate: PointTemplate,
+	-- The chest lies at least this far from the start and this far inside the edge.
+	chestMinDistance: number,
+	edgeMargin: number,
+	-- Grunt kinds from weakest to strongest.
+	roster: { string },
+	-- Elite kinds the horde may spawn.
+	elites: { string },
+	bosses: { BossScheduleEntry },
+	finalBoss: string,
 }
 
--- The run's arc (stage 2d): zones on a clock, the flood, clues, chests and
--- the run events. Minutes are run minutes since the start.
-export type ArcConfig = {
-	zones: {
-		-- No zone is open before this; then one every intervalMinutes.
-		firstOpenMinute: number,
-		intervalMinutes: number,
-		-- Centre to centre, between a new zone and every open one.
-		minZoneDistance: number,
-	},
-	flood: {
-		-- The flood leaves the edges at startMinute and reaches the centre at
-		-- run.durationSeconds, where the run ends.
-		startMinute: number,
-		-- To a player inside the flood, dealt once every tickSeconds; it
-		-- interrupts nothing.
-		damagePerSecond: number,
-		tickSeconds: number,
-	},
-	clues: {
-		perLeader: number,
-		readSeconds: number,
-		-- How close to the clue a player stands to read it.
-		readRadius: number,
-		-- How close an alive player comes to a clue to find it; a clue is
-		-- shown to nobody before it is found.
-		findRadius: number,
-		-- The leader's area after each clue read but the last, which marks the
-		-- point; past the end of the list the last radius holds.
-		areaRadii: { number },
-		-- How far from the leader's point the first area's centre may lie, as
-		-- a share of its radius.
-		areaOffsetFraction: number,
-	},
-	events: {
-		chestDrop: {
-			firstMinute: number,
-			intervalMinutes: number,
-			-- The patrol that stays by the dropped chest.
-			guardSize: number,
-			guardPool: { string },
-		},
-		chest: {
-			openSeconds: number,
-			-- How close to the chest a player stands to open it.
-			openRadius: number,
-			-- Chance of a perk choice; else potions, up to the capacity.
-			perkChance: number,
-			potions: number,
-		},
-		wanderingBoss: {
-			minute: number,
-			archetype: string,
-			healthMultiplier: number,
-			damageMultiplier: number,
-			-- Multiplies its archetype's radius: how far from its centre it is
-			-- hit, and how big it is drawn.
-			radiusMultiplier: number,
-		},
-		-- From `minute`, for `seconds`, patrols grow `factor` times faster.
-		incursionWave: {
-			minute: number,
-			seconds: number,
-			factor: number,
-		},
-	},
+export type HordeConfig = {
+	-- Alive grunts and elites wanted: from aliveAtStart rising by aliveGrowth
+	-- over the run's duration, capped at maxAlive.
+	aliveAtStart: number,
+	aliveGrowth: number,
+	maxAlive: number,
+	spawnIntervalSeconds: number,
+	-- At most this many per spawn; the shortfall is divided by spawnShare.
+	spawnBatchMax: number,
+	spawnShare: number,
+	-- The ring around the hero spawns land on.
+	ringMin: number,
+	ringMax: number,
+	-- The window of adjacent kinds slides up the roster: `windowSize` kinds,
+	-- stepping every windowStepSeconds of run time after the first.
+	windowSize: number,
+	windowStepSeconds: number,
+	-- The window reaches the top of the roster after this many steps.
+	windowSteps: number,
+	-- Health and damage multipliers reach these at the run's duration.
+	healthGrowth: number,
+	damageGrowth: number,
+	-- The share of spawns that are elites, at the start and at the end.
+	eliteShareStart: number,
+	eliteShareEnd: number,
+	-- A closing ring halfway between bosses: count rising with time on a circle.
+	ringCountStart: number,
+	ringCountGrowth: number,
+	ringRadius: number,
+	-- Enemies farther than strayDistance are moved to strayReturnDistance
+	-- beyond the hero on the far side.
+	strayDistance: number,
+	strayReturnDistance: number,
+	-- Grunts hit on contact: first after contactFirstSeconds, then every
+	-- contactSeconds.
+	contactFirstSeconds: number,
+	contactSeconds: number,
+	separationRadius: number,
+	-- An enemy stops closing in at this share of its attack's range.
+	approachFactor: number,
+	buffSpeedFactor: number,
+	buffDamageFactor: number,
+	-- How far a boss spawns from the hero.
+	bossDistance: number,
+	-- The final boss's phase and time limit.
+	finalBossSeconds: number,
+	-- Bosses: the slow floor, the control duration share, fear immunity.
+	bossSlowFloor: number,
+	bossControlShare: number,
+	-- Food: the chance a grunt drops it and what it heals; a boss drops a full heal.
+	foodChance: number,
+	foodHeal: number,
+	-- How far an enemy walks past an obstacle's edge when steering around it.
+	steerMargin: number,
+}
+
+export type StatusConfig = {
+	-- Damage-over-time stacks per enemy; the oldest goes when exceeded.
+	maxDotStacks: number,
+	dotTickSeconds: number,
+	-- How long an ice hit leaves an enemy chilled, and its slow factor.
+	chillSeconds: number,
+	chillFactor: number,
+}
+
+export type CardsConfig = {
+	offerSize: number,
+	maxSkills: number,
+	maxPassives: number,
+	-- Draw weights.
+	weightSkillRank: number,
+	weightNewSkill: number,
+	weightPassiveRank: number,
+	weightNewPassive: number,
+	-- The share of health a heal card restores.
+	healShare: number,
+}
+
+export type ProgressionConfig = {
+	-- Experience to the next level: three bands, each `base + perLevel ×
+	-- (level - from)` from its first level.
+	bands: { { fromLevel: number, base: number, perLevel: number } },
+	-- A crystal carries the enemy's xp times this.
+	crystalFactor: number,
+	maxCrystals: number,
+	-- How close to the hero a crystal must be to be collected after it flies.
+	collectRadius: number,
+}
+
+export type ExtractionConfig = {
+	-- The compass points at the chest from this run minute.
+	compassMinute: number,
+	-- Standing within openRadius and holding for openSeconds opens the chest.
+	openRadius: number,
+	openSeconds: number,
+	castSeconds: number,
+	portalSeconds: number,
+	portalRadius: number,
 }
 
 export type Config = {
 	run: {
 		durationSeconds: number,
-		extractSeconds: number,
 		summarySeconds: number,
-		-- How long after the start a newcomer may still join the run.
 		lateJoinSeconds: number,
-		arc: ArcConfig,
 	},
-	map: MapConfig,
 	player: {
-		-- How far from a player's centre an attack touches them.
 		radius: number,
-		walkSpeed: number,
-		-- Movement the run accepts, as a multiple of walkSpeed, so lag is
-		-- forgiven and a teleport is not.
 		moveTolerance: number,
-		-- Seconds of movement a player may bank while their updates are late.
 		moveBurstSeconds: number,
-		-- How far a character may drift from the run's position before the
-		-- server puts it back.
 		correctionDistance: number,
-		maxHealth: number,
-		downedSeconds: number,
-		reviveSeconds: number,
-		reviveRadius: number,
-		-- Share of max health a revived player comes back with.
-		reviveHealthFraction: number,
-		potionCapacity: number,
-		potionHeal: number,
-		drinkSeconds: number,
-		-- How close a player walks to a pickup to take it.
-		pickupRadius: number,
-		-- Over how long a knockback moves its target.
 		knockbackSeconds: number,
-		-- Walk speed multiplier while firing and moving against the aim, and the
-		-- dot product of the move and the aim below which a move is backwards.
-		backpedalFactor: number,
-		backpedalDot: number,
-	},
-	aim: {
-		-- Touch and gamepad: the aim snaps to an enemy within this cone and range.
-		assistConeDegrees: number,
-		assistRange: number,
+		baseCritChance: number,
+		-- A hit never takes less than this after armour.
+		minDamage: number,
+		-- How far a crystal is drawn in from, before the pickup passive.
+		pickupRange: number,
 	},
 	projectiles: {
-		-- How far beyond a body's radius a projectile still touches it.
 		touchMargin: number,
-		-- An enemy projectile flies this many times its attack's range.
 		overshoot: number,
 	},
+	ranks: RankConfig,
+	skills: { [string]: SkillConfig },
+	passives: { [string]: PassiveConfig },
 	classes: { [string]: ClassConfig },
-	enemies: {
-		maxAlive: number,
-		separationRadius: number,
-		-- Detection range multiplier for a player in cover.
-		coverDetectionFactor: number,
-		-- Whether one member noticing a player wakes the whole camp.
-		campAlerts: boolean,
-		-- Share of max health an enemy has back when it reaches home.
-		returnHealFraction: number,
-		-- An enemy counts as home or at a waypoint within this distance.
-		arriveDistance: number,
-		-- An enemy stops closing in at this share of its attack's range.
-		approachFactor: number,
-		-- Speed multiplier of a buffed enemy.
-		buffSpeedFactor: number,
-		-- Damage multiplier of a buffed enemy.
-		buffDamageFactor: number,
-		-- A chase that finds no way toward its target for this long ends, as
-		-- at the leash.
-		giveUpSeconds: number,
-		archetypes: { [string]: ArchetypeConfig },
-		campLeader: string,
-		-- Indexed by point level.
-		camps: { CampLevelConfig },
-		-- Studs from the camp spot that camp members stand at.
-		campSpreadRadius: number,
-		patrols: {
-			groupsAtStart: number,
-			groupsPerMinute: number,
-			sizeAtStart: number,
-			sizeGrowthPerMinute: number,
-			maxSize: number,
-			healthGrowthPerMinute: number,
-			-- Archetypes drawn from before and after `lateMinutes`.
-			pool: { string },
-			latePool: { string },
-			lateMinutes: number,
-			-- A patrol appears at a point whose centre is at least this many
-			-- studs from every alive player.
-			minDistanceFromPlayers: number,
-			-- The pool a lone wanderer is drawn from, and how many roam at start.
-			wandererPool: { string },
-			wanderersAtStart: number,
-			-- A wanderer walks to a walkable spot within wanderRadius of
-			-- where it stands, and draws a new one when it arrives or after
-			-- wanderSeconds.
-			wanderRadius: number,
-			wanderSeconds: number,
-		},
-	},
-	statuses: {
-		burnSeconds: number,
-		burnDps: number,
-		chillSeconds: number,
-		chillSlow: number,
-		brittleSeconds: number,
-		-- Damage taken by a brittle enemy is multiplied by this.
-		brittleMultiplier: number,
-		-- Conduct spreads burning to enemies within this distance.
-		conductRadius: number,
-	},
-	synergy: {
-		-- Fire damage dealt to a chilled enemy is multiplied by this.
-		shatterMultiplier: number,
-	},
-	perks: {
-		offerSize: number,
-		splitSpreadDegrees: number,
-		pool: { [string]: PerkConfig },
-	},
-	progression: {
-		xpToSecondLevel: number,
-		xpGrowth: number,
-	},
+	-- In order: the three buttons.
+	utilities: { UtilityConfig },
+	enemies: { [string]: EnemyKindConfig },
+	maps: { [string]: MapConfig },
+	-- The map stage 3 plays (one map: simplification register).
+	map: string,
+	horde: HordeConfig,
+	statuses: StatusConfig,
+	cards: CardsConfig,
+	progression: ProgressionConfig,
+	extraction: ExtractionConfig,
 	net: {
-		-- The server advances the run this many times per second.
 		stepHz: number,
-		-- World snapshots and event batches sent to clients per second.
 		snapshotHz: number,
-		-- Intents a client may send per second before extras are dropped.
 		intentsPerSecond: number,
 	},
 }
 
-export type EnemyState = "idle" | "chase" | "telegraph" | "recover" | "return" | "patrol"
+-- An obstacle scattered on the map: a circle that blocks movement (ADR-0014).
+export type Obstacle = {
+	id: number,
+	kind: string,
+	x: number,
+	z: number,
+	radius: number,
+	rotation: number,
+}
+
+export type Arena = {
+	radius: number,
+	obstacles: { Obstacle },
+	-- Where the hero starts and where the chest lies.
+	startX: number,
+	startZ: number,
+	chestX: number,
+	chestZ: number,
+}
+
+-- A damage-over-time stack on an enemy.
+export type Dot = {
+	dps: number,
+	until_: number,
+	nextTickAt: number,
+	status: "burning" | "bleeding" | "poisoned",
+	-- The player credited with its damage and kill.
+	source: number,
+	tags: { Tag },
+}
+
+export type EnemyState = "chase" | "telegraph" | "charge" | "recover"
 
 export type Enemy = {
 	id: number,
-	archetype: string,
-	level: number,
+	kind: string,
 	x: number,
 	z: number,
 	facing: number,
 	health: number,
 	maxHealth: number,
-	-- The camp or patrol the enemy belongs to; a wanderer is a patrol of one
-	-- that wanders.
-	campId: number?,
-	patrolId: number?,
-	-- Where the leash is measured from: the camp spot, or where a patrol
-	-- member started chasing.
-	homeX: number,
-	homeZ: number,
+	-- The damage multiplier fixed when it spawned (horde growth).
+	damageFactor: number,
 	state: EnemyState,
-	-- When a telegraph lands or a recovery ends.
+	-- When a telegraph lands, a charge ends or a recovery ends.
 	stateUntil: number,
-	-- The player chased.
 	target: number?,
-	-- Run time since which the walk toward the chased player, or home, has
-	-- found no way on; nil while it finds one.
-	stuckSince: number?,
-	-- Index into the archetype's attacks of the attack being telegraphed, or
-	-- the next one to use.
+	-- Index into the kind's attacks of the attack being telegraphed, or the next one.
 	attack: number,
 	-- The point locked when the telegraph started.
 	aimX: number,
 	aimZ: number,
 	attackReadyAt: number,
-	-- A patrol member's destination point.
-	routePoint: number?,
+	-- When the next contact hit may land (grunts).
+	contactReadyAt: number,
+	-- Statuses: the slow factor and when it ends; control ends; weaken.
+	slowFactor: number,
+	slowUntil: number,
 	chilledUntil: number,
-	burningUntil: number,
-	-- The player credited with damage from burning, and with the kill.
-	burnSource: number?,
-	brittleUntil: number,
+	rootedUntil: number,
+	stunnedUntil: number,
+	fearedUntil: number,
+	weakenFactor: number,
+	weakenUntil: number,
 	buffedUntil: number,
-	-- Knockback velocity in studs per second, applied until knockUntil.
+	dots: { Dot },
 	knockX: number,
 	knockZ: number,
 	knockUntil: number,
-	-- The wandering boss: its damage is multiplied and it drops what a camp
-	-- leader drops.
-	boss: boolean,
-}
-
-export type Camp = {
-	id: number,
-	pointId: number,
-	x: number,
-	z: number,
-	level: number,
-	-- Ids of the living members.
-	members: { number },
-	alerted: boolean,
-	-- How many players the camp has grown for.
-	scaledFor: number,
-	leaderId: number?,
-	-- Run time when its last member died; nil while it holds its point.
-	clearedAt: number?,
-	-- Whether the camp comes back after it is cleared (never at an entry).
-	returns: boolean,
-	-- Multiplies the health of its members: 1 at the start of the run, the
-	-- patrols' strength for the run time when it returns.
-	strength: number,
-}
-
-export type Patrol = {
-	id: number,
-	members: { number },
-	routePoint: number,
-	previousPoint: number,
-	-- Multiplies the health of members spawned later in the run.
-	strength: number,
-	-- A wanderer: walks to spots on the open ground instead of along the
-	-- paths, to (wanderX, wanderZ) until it arrives or wanderUntil passes.
-	wanders: boolean,
-	wanderX: number,
-	wanderZ: number,
-	wanderUntil: number,
-	-- A chest's guard: it stays at routePoint until the chest is opened.
-	stays: boolean,
+	-- A boss in its second phase.
+	phase: number,
+	-- Players already hit by the charge in progress.
+	chargedPlayers: { [number]: boolean },
+	-- charge: where the rush ends.
+	chargeEndX: number,
+	chargeEndZ: number,
+	-- The summoner or spawner's time of birth, for the oldest-first culls.
+	bornAt: number,
 }
 
 export type Projectile = {
 	id: number,
 	owner: "player" | "enemy",
-	-- The player or enemy id that fired it.
 	source: number,
-	-- The skill id or archetype that fired it.
+	-- The skill id or enemy kind that fired it.
 	kind: string,
 	x: number,
 	z: number,
 	dirX: number,
 	dirZ: number,
 	speed: number,
-	-- Studs left to fly before it lands.
 	remaining: number,
 	damage: number,
 	radius: number,
 	knockback: number,
 	tags: { Tag },
-	-- Multiplies status durations of the hit (perks).
-	statusFactor: number,
+	effect: EffectConfig?,
+	-- player: the enemy it flies at (it hits when it arrives), nil for a straight shot.
+	targetId: number?,
+	-- player: the skill's crit chance, rolled on arrival.
+	critChance: number,
 }
 
-export type Pickup = {
+-- A ground area ticking damage: a player's skill area, or an enemy's left
+-- behind by a ground attack.
+export type Area = {
 	id: number,
-	kind: "potion",
+	owner: "player" | "enemy",
+	source: number,
+	kind: string,
 	x: number,
 	z: number,
+	radius: number,
+	damage: number,
+	until_: number,
+	nextTickAt: number,
+	tickSeconds: number,
+	tags: { Tag },
+	effect: EffectConfig?,
+	critChance: number,
+	knockback: number,
 }
 
-export type PlayerState = "alive" | "downed" | "dead" | "extracted"
+export type Totem = {
+	id: number,
+	source: number,
+	skill: string,
+	x: number,
+	z: number,
+	until_: number,
+	nextShotAt: number,
+}
+
+export type Crystal = { id: number, x: number, z: number, xp: number }
+
+export type Food = { id: number, x: number, z: number, heal: number }
+
+export type OwnedSkill = { id: string, rank: number, readyAt: number }
+
+export type Card =
+	{ kind: "skillRank", skill: string, rank: number }
+	| { kind: "newSkill", skill: string }
+	| { kind: "passiveRank", passive: string, rank: number }
+	| { kind: "newPassive", passive: string }
+	| { kind: "heal" }
+
+export type PlayerState = "alive" | "dead" | "extracted"
 
 export type Player = {
 	id: number,
 	class: string,
 	x: number,
 	z: number,
-	-- The aim: where the character faces (ADR-0009).
 	facing: number,
-	-- Whether the aim snaps to the nearest enemy in the assist cone.
-	assist: boolean,
-	-- Whether the basic attack's input is held.
-	firing: boolean,
 	state: PlayerState,
 	health: number,
-	maxHealth: number,
-	downedAt: number?,
-	reviveProgress: number,
-	extractProgress: number,
-	-- Seconds the interact button has been held reading a clue or opening a
-	-- chest; a hit resets them as it resets extraction.
-	clueProgress: number,
-	chestProgress: number,
 	level: number,
 	xp: number,
-	-- Perk id to the number of stacks taken.
-	perks: { [string]: number },
-	-- Offers waiting for a choice, oldest first; each lists perk ids.
-	offers: { { string } },
-	basicReadyAt: number,
-	-- One entry per active skill.
-	skillReadyAt: { number },
-	dashCharges: number,
-	-- When the next charge comes back; meaningful while charges are missing.
-	dashRechargeAt: number,
-	potions: number,
-	-- Set while drinking; nil otherwise.
-	drinkingUntil: number?,
+	skills: { OwnedSkill },
+	-- Passive id to its rank.
+	passives: { [string]: number },
+	-- Offers waiting for a choice, oldest first.
+	offers: { { Card } },
+	-- Utility cooldowns, by button index.
+	utilityReadyAt: { number },
+	sprintUntil: number,
+	sprintFactor: number,
+	-- The barrier absorbing damage and when it drops (utility and shield skills).
+	barrier: number,
+	barrierUntil: number,
+	thorns: number,
+	thornsUntil: number,
+	-- Health still to be restored by a heal skill, at this rate.
+	healPending: number,
+	healRate: number,
 	kills: number,
-	-- Studs the player may still move before the run holds them back.
 	moveBudget: number,
-	-- Extra studs a dash grants, usable until boostUntil; then they lapse, so a
-	-- dash not taken cannot be banked.
-	boost: number,
-	boostUntil: number,
-	-- Whether the player holds the interact button, which revives a downed
-	-- player nearby, else, first that applies, extracts in an open zone,
-	-- reads a clue or opens a chest.
-	interacting: boolean,
-	-- Run time of the last damage that interrupts; a hit interrupts reviving.
+	-- Whether the player holds the open button at the chest, and the hold so far.
+	opening: boolean,
+	openProgress: number,
+	-- Set while casting the extraction spell; nil otherwise.
+	castingUntil: number?,
+	-- Whether the player holds the extraction spell.
+	hasSpell: boolean,
 	hurtAt: number,
-	-- Knockback velocity in studs per second, applied until knockUntil.
 	knockX: number,
 	knockZ: number,
 	knockUntil: number,
-	-- The point whose footprint the player stands in, else the nearest point;
-	-- refreshed each step.
-	pointId: number,
-	inCover: boolean,
+	damageDone: number,
 }
-
--- An extraction zone, opened at a point during the run; the flood closes it.
-export type Zone = {
-	id: number,
-	pointId: number,
-	x: number,
-	z: number,
-	radius: number,
-	open: boolean,
-	openedAt: number,
-}
-
--- A clue to where a camp leader is, standing at another point.
-export type Clue = {
-	id: number,
-	x: number,
-	z: number,
-	pointId: number,
-	-- The camp whose leader it points at.
-	campId: number,
-	-- An alive player has come within findRadius of it; only then is it
-	-- shown, or can it be read.
-	found: boolean,
-	read: boolean,
-}
-
--- What every player knows of where a camp leader is: a circle that holds its
--- point; radius 0 once the point itself is known.
-export type LeaderArea = { x: number, z: number, radius: number }
-
-export type Chest = {
-	id: number,
-	x: number,
-	z: number,
-	pointId: number,
-	opened: boolean,
-	-- The patrol guarding it, if one was spawned.
-	patrolId: number?,
-}
-
--- What a run event or the arc announces to everyone, with where it happened
--- and the zone, chest or enemy id when there is one.
-export type Announcement =
-	"zoneOpened"
-	| "zoneClosed"
-	| "chestDrop"
-	| "wanderingBoss"
-	| "incursionWave"
-	| "floodStarted"
 
 export type Event =
+	-- A skill hit an enemy; `crit` doubled it; `synergy` names the synergy that fired.
 	{
 		kind: "hit",
 		source: number,
 		enemyId: number,
 		amount: number,
-		-- "shatter", "conduct" or "brittle" when a synergy fired.
-		synergy: string?,
 		skill: string,
+		crit: boolean,
+		synergy: string?,
 		blocked: boolean,
 	}
-	| { kind: "kill", source: number, enemyId: number, archetype: string }
-	-- `cause` is "flood" when the flood did it.
-	| { kind: "playerHurt", player: number, amount: number, enemyId: number?, cause: "flood"? }
+	| { kind: "kill", source: number, enemyId: number, enemyKind: string, x: number, z: number }
+	| { kind: "playerHurt", player: number, amount: number, enemyId: number?, absorbed: number }
 	| { kind: "knockback", player: number, dx: number, dz: number }
+	| { kind: "healed", player: number, amount: number }
 	| { kind: "levelUp", player: number, level: number }
-	| { kind: "offer", player: number, perks: { string } }
-	| { kind: "perkTaken", player: number, perk: string }
-	| { kind: "downed", player: number }
-	| { kind: "revived", player: number, by: number }
+	| { kind: "offer", player: number, cards: { Card } }
+	| { kind: "cardTaken", player: number, card: Card }
 	| { kind: "died", player: number }
 	| { kind: "extracted", player: number }
-	| { kind: "flood" }
-	| { kind: "ended" }
-	-- An enemy started winding up: the marker to draw, where and for how long.
+	| { kind: "ended", reason: "allDead" | "extracted" | "finalBossKilled" | "mapClosed" }
+	-- A skill fired: where from and what it aimed at, for the client's effect.
 	| {
-		kind: "telegraph",
-		enemyId: number,
-		attack: number,
+		kind: "cast",
+		player: number,
+		skill: string,
+		x: number,
+		z: number,
+		targetX: number?,
+		targetZ: number?,
+		radius: number,
+		-- The enemies struck, in order (a chain's path).
+		targets: { number },
+	}
+	-- A projectile or area landed: the area to draw.
+	| { kind: "burst", x: number, z: number, radius: number, skill: string }
+	| {
+		kind: "areaPlaced",
+		id: number,
+		owner: "player" | "enemy",
+		areaKind: string,
 		x: number,
 		z: number,
 		radius: number,
 		seconds: number,
 	}
-	-- The attack landed at (x, z).
-	| { kind: "enemyAttack", enemyId: number, archetype: string, attack: number, x: number, z: number }
+	| { kind: "totemPlaced", id: number, skill: string, x: number, z: number, seconds: number }
+	| { kind: "utility", player: number, utility: string }
+	| { kind: "statusApplied", enemyId: number, status: Status, seconds: number }
+	-- An enemy started winding up: the marker to draw, where and for how long.
+	| {
+		kind: "telegraph",
+		enemyId: number,
+		attackKind: AttackKind,
+		x: number,
+		z: number,
+		radius: number,
+		seconds: number,
+		-- charge: where the rush ends.
+		endX: number?,
+		endZ: number?,
+	}
+	| {
+		kind: "enemyAttack",
+		enemyId: number,
+		enemyKind: string,
+		attackKind: AttackKind,
+		x: number,
+		z: number,
+		radius: number,
+	}
 	| { kind: "exploded", enemyId: number, x: number, z: number, radius: number }
-	| { kind: "healed", enemyId: number, by: number, amount: number }
-	| { kind: "campAlerted", campId: number }
-	| { kind: "campScaled", campId: number, players: number }
-	| { kind: "patrolSpawned", patrolId: number, pointId: number }
-	-- A cleared camp came back at its point.
-	| { kind: "campReturned", campId: number, pointId: number }
-	| { kind: "dashed", player: number }
-	| { kind: "drinking", player: number }
-	| { kind: "drank", player: number, amount: number }
-	| { kind: "drinkInterrupted", player: number }
-	| { kind: "pickedUp", player: number, pickup: "potion" }
-	| { kind: "dropped", x: number, z: number, pickup: "potion" }
-	| { kind: "skillUsed", player: number, skill: string, x: number, z: number, facing: number }
-	-- A projectile or ring landed: the area to draw.
-	| { kind: "burst", x: number, z: number, radius: number, skill: string }
-	| { kind: "announcement", what: Announcement, x: number?, z: number?, id: number? }
-	-- `remaining` clues of the camp are still unread.
-	| { kind: "clueFound", clueId: number }
-	| { kind: "clueRead", clueId: number, campId: number, playerId: number, remaining: number }
-	| { kind: "chestOpened", chestId: number, playerId: number, reward: "perk" | "potions" }
+	| { kind: "enemyHealed", enemyId: number, by: number, amount: number }
+	| { kind: "bossSpawned", enemyId: number, enemyKind: string, final: boolean }
+	| { kind: "bossPhase", enemyId: number, phase: number }
+	| { kind: "closingRing", count: number }
+	| { kind: "crystalDropped", id: number, x: number, z: number, xp: number }
+	| { kind: "crystalCollected", id: number, player: number, xp: number }
+	| { kind: "foodDropped", id: number, x: number, z: number }
+	| { kind: "foodEaten", id: number, player: number, amount: number }
+	| { kind: "compass", x: number, z: number }
+	| { kind: "chestOpened", player: number }
+	| { kind: "castStarted", player: number, seconds: number }
+	| { kind: "castInterrupted", player: number }
+	| { kind: "portalOpened", x: number, z: number, seconds: number }
+	| { kind: "portalClosed" }
+	| { kind: "finalBossTimer", seconds: number }
 
 export type Rng = {
 	-- A float in [0, 1).
@@ -807,57 +799,42 @@ export type Rng = {
 	integer: (self: Rng, min: number, max: number) -> number,
 }
 
+export type Portal = { x: number, z: number, until_: number }
+
 export type Run = {
 	config: Config,
+	map: MapConfig,
 	rng: Rng,
+	seed: number,
 	time: number,
-	map: Map,
-	nextEnemyId: number,
-	nextCampId: number,
-	nextPatrolId: number,
-	nextProjectileId: number,
-	nextPickupId: number,
-	nextZoneId: number,
-	nextClueId: number,
-	nextChestId: number,
-	-- Patrol groups owed by the spawn rate, carried between steps.
-	patrolDebt: number,
+	arena: Arena,
+	nextId: number,
 	enemies: { Enemy },
-	camps: { Camp },
-	patrols: { Patrol },
 	projectiles: { Projectile },
-	pickups: { Pickup },
+	areas: { Area },
+	totems: { Totem },
+	crystals: { Crystal },
+	foods: { Food },
 	players: { [number]: Player },
-	-- Every zone opened so far, open or closed by the flood.
-	zones: { Zone },
-	-- When the next zone is due and the next chest drop; each waits while no
-	-- point qualifies (a drop also while its guard does not fit under the
-	-- cap), and the next one is due an interval after it came.
-	nextZoneAt: number,
-	nextChestDropAt: number,
-	-- The half side of the square the flood has not reached.
-	floodHalf: number,
-	-- When the flood next hurts the players inside it.
-	nextFloodTickAt: number,
-	floodStarted: boolean,
-	clues: { Clue },
-	-- Keyed by the camp id; absent until one of its clues is read.
-	leaderAreas: { [number]: LeaderArea },
-	chests: { Chest },
-	bossSpawned: boolean,
-	waveStarted: boolean,
-	-- The flood reached the centre: everyone left died.
-	flooded: boolean,
+	-- The horde's bookkeeping: when it next spawns, which bosses and closing
+	-- rings have come, whether the final boss is up and when it must be dead.
+	nextSpawnAt: number,
+	bossesSpawned: number,
+	ringsSpawned: number,
+	finalBossId: number?,
+	finalBossDeadline: number?,
+	-- The extraction chest and the portal (ADR-0015).
+	chestOpened: boolean,
+	compassOn: boolean,
+	portal: Portal?,
+	-- The run stands still while a solo player chooses a card.
+	paused: boolean,
 	ended: boolean,
-	-- Events produced since the adapter last drained them.
 	events: { Event },
 }
 
 -- What the adapter tells the core about one player in one step: where the
--- character stands. The aim arrives as an intent (ADR-0009).
-export type PlayerInput = {
-	x: number,
-	z: number,
-}
+-- character stands.
+export type PlayerInput = { x: number, z: number }
 
 return nil
