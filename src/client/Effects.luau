@@ -72,10 +72,11 @@ local DISC_POOL = 32
 local GROUND_POOL = 16
 local SHARD_POOL = 48
 local NUMBER_POOL = 40
--- Flash lights at once. With TRACKED_LIGHTS and the zones' (at most
--- Config.map.maxZones) this keeps the PointLights alive near a dozen.
+-- Flash lights at once. With TRACKED_LIGHTS and ZONE_LIGHTS this keeps the
+-- PointLights alive near a dozen, however many zones are open.
 local LIGHT_POOL = 5
 local TRACKED_LIGHTS = 4
+local ZONE_LIGHTS = 3
 
 -- Streaks: neon bars between two points (bolts, slashes, lightning, Blink).
 -- They end this share of their width wide; anything shorter is not drawn.
@@ -2732,8 +2733,8 @@ local function onEvents(events: { Types.Event })
 	end
 end
 
--- Zones: one neon cylinder with a light per open zone; a zone the flood
--- closed is no longer drawn.
+-- Zones: one neon cylinder per open zone, the newest ZONE_LIGHTS of them
+-- with a light; a zone the flood closed is no longer drawn.
 type ZoneVisual = { zone: Types.Zone, part: Part }
 local zoneVisuals: { ZoneVisual } = {}
 
@@ -2748,7 +2749,7 @@ local function placeZone(visual: ZoneVisual)
 	visual.part.CFrame = CFrame.new(zone.x, y, zone.z) * CFrame.Angles(0, 0, math.pi / 2)
 end
 
-local function buildZone(zone: Types.Zone): ZoneVisual
+local function buildZone(zone: Types.Zone, lit: boolean): ZoneVisual
 	local part = newEffectPart()
 	part.Name = "ExtractionZone"
 	part.Shape = Enum.PartType.Cylinder
@@ -2756,11 +2757,13 @@ local function buildZone(zone: Types.Zone): ZoneVisual
 	part.Transparency = ZONE_TRANSPARENCY
 	part.Size = Vector3.new(ZONE_HEIGHT, zone.radius * 2, zone.radius * 2)
 
-	local light = Instance.new("PointLight")
-	light.Color = ZONE_COLOR
-	light.Range = zone.radius * 2
-	light.Brightness = 2
-	light.Parent = part
+	if lit then
+		local light = Instance.new("PointLight")
+		light.Color = ZONE_COLOR
+		light.Range = zone.radius * 2
+		light.Brightness = 2
+		light.Parent = part
+	end
 
 	local visual = { zone = zone, part = part }
 	placeZone(visual)
@@ -2795,8 +2798,9 @@ local function syncZones(all: { Types.Zone })
 		visual.part:Destroy()
 	end
 	table.clear(zoneVisuals)
-	for _, zone in zones do
-		table.insert(zoneVisuals, buildZone(zone))
+	-- Zones open in order, so the newest are last.
+	for index, zone in zones do
+		table.insert(zoneVisuals, buildZone(zone, index > #zones - ZONE_LIGHTS))
 	end
 end
 

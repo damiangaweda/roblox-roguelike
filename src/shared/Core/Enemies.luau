@@ -393,7 +393,7 @@ local function chase(
 		enemy.x, enemy.z = Map.clamp(run.map, enemy.x + nx * step, enemy.z + nz * step)
 	elseif distance > attack.range * run.config.enemies.approachFactor then
 		-- Never closer than touching.
-		local gap = archetype.radius + run.config.player.radius
+		local gap = State.enemyRadius(run, enemy) + run.config.player.radius
 		local allowed = math.min(step, math.max(0, distance - gap))
 		if allowed > 0 then
 			found = walkToward(run, enemy, target.x, target.z, allowed)

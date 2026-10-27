@@ -212,14 +212,13 @@ return {
 		Assert.equal(player.state, "extracted")
 	end,
 
-	["the flood meets at the centre at its end minute and kills everyone left"] = function()
+	["the flood meets at the centre at the run's end and kills everyone left"] = function()
 		local run = quiet(2)
 		-- At the very centre the flood reaches them only as it meets.
 		for id = 1, 2 do
 			Fixtures.place(run, run.players[id], 0, 0)
 		end
-		local flood = run.config.run.arc.flood
-		local events = advance(run, flood.endMinute * 60 - 1)
+		local events = advance(run, run.config.run.durationSeconds - 1)
 		Assert.falsy(Assert.findEvent(events, "flood"))
 		Assert.falsy(Assert.findEvent(events, "playerHurt"))
 		events = advance(run, 2)
@@ -263,7 +262,7 @@ return {
 
 		local events: { any } = {}
 		local hurt = false
-		while not hurt and run.time < flood.endMinute * 60 do
+		while not hurt and run.time < config.run.durationSeconds do
 			for _, event in advance(run, 1) do
 				table.insert(events, event)
 				if event.kind == "playerHurt" then
@@ -422,7 +421,7 @@ return {
 			return best
 		end
 		local patrol = run.patrols[1]
-		Assert.truthy(patrol.wanders)
+		Assert.falsy(patrol.wanders)
 		local start = run.map.points[patrol.previousPoint]
 		for _, point in run.map.points do
 			if not point.isEntry then

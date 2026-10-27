@@ -279,7 +279,7 @@ function Combat.burst(
 	local victims: { Types.Enemy } = {}
 	if projectile.radius > 0 then
 		for _, enemy in run.enemies do
-			local reach = projectile.radius + State.archetype(run, enemy).radius
+			local reach = projectile.radius + State.enemyRadius(run, enemy)
 			if
 				Geometry.distance(x, z, enemy.x, enemy.z) <= reach
 				and Map.clearShot(run.map, x, z, enemy.x, enemy.z)
@@ -330,7 +330,7 @@ local function fireLine(
 		if
 			along >= 0
 			and along <= range
-			and across <= skill.width / 2 + State.archetype(run, enemy).radius
+			and across <= skill.width / 2 + State.enemyRadius(run, enemy)
 		then
 			table.insert(hits, { enemy = enemy, along = along })
 		end
@@ -410,7 +410,7 @@ local function fireRing(run: Types.Run, player: Types.Player, skill: Types.Effec
 	})
 	local victims: { Types.Enemy } = {}
 	for _, enemy in run.enemies do
-		local reach = skill.radius + State.archetype(run, enemy).radius
+		local reach = skill.radius + State.enemyRadius(run, enemy)
 		if
 			Geometry.distance(player.x, player.z, enemy.x, enemy.z) <= reach
 			and Map.clearShot(run.map, player.x, player.z, enemy.x, enemy.z)

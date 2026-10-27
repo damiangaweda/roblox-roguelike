@@ -260,58 +260,6 @@ local function bfs(points: { Types.MapPoint }, source: number): ({ number }, { n
 	return hops, parent
 end
 
--- Points far from the entries and from each other, none an entry. Only the
--- points at least zoneMinDistanceFraction of the farthest distance away are
--- considered while there are enough of them, since on a long chain of points
--- the spread alone would pull a zone close to the entries.
-local function chooseZonePoints(
-	config: Types.Config,
-	points: { Types.MapPoint },
-	hops: { { number } },
-	count: number
-): { number }
-	local farthest = 0
-	for _, point in points do
-		farthest = math.max(farthest, point.distance)
-	end
-	local nearest = farthest * config.map.zoneMinDistanceFraction
-	local far = 0
-	for _, point in points do
-		if not point.isEntry and point.distance >= nearest then
-			far += 1
-		end
-	end
-	if far < count then
-		nearest = 0
-	end
-
-	local zones: { number } = {}
-	while #zones < count do
-		local best, bestScore = nil, -1
-		for _, point in points do
-			if point.isEntry or point.distance < nearest or table.find(zones, point.id) then
-				continue
-			end
-			local apart = math.huge
-			for _, zone in zones do
-				apart = math.min(apart, hops[point.id][zone])
-			end
-			if apart == math.huge then
-				apart = 0
-			end
-			local score = point.distance * config.map.zoneDistanceWeight + apart
-			if score > bestScore then
-				best, bestScore = point.id, score
-			end
-		end
-		if best == nil then
-			break
-		end
-		table.insert(zones, best)
-	end
-	return zones
-end
-
 local function smoothstep(t: number): number
 	return t * t * (3 - 2 * t)
 end
@@ -462,7 +410,6 @@ function Map.generate(config: Types.Config, rng: Types.Rng, playerCount: number)
 			distance = 0,
 			level = 1,
 			isEntry = isEntry,
-			hasZone = false,
 			campX = if camp then centre.x + camp.x else nil,
 			campZ = if camp then centre.z + camp.z else nil,
 			cover = cover,
@@ -540,17 +487,6 @@ function Map.generate(config: Types.Config, rng: Types.Rng, playerCount: number)
 				settings.maxLevel
 			)
 		end
-	end
-
-	local zoneCount = math.clamp(
-		math.ceil(players / settings.playersPerZone),
-		settings.minZones,
-		settings.maxZones
-	)
-	local zonePoints =
-		chooseZonePoints(config, points, hops, math.min(zoneCount, #points - #entries))
-	for _, id in zonePoints do
-		points[id].hasZone = true
 	end
 
 	-- Terrain: hills, then every node under a path band or near a footprint
@@ -664,7 +600,6 @@ function Map.generate(config: Types.Config, rng: Types.Rng, playerCount: number)
 		points = points,
 		paths = paths,
 		entries = entries,
-		zonePoints = zonePoints,
 		nextHop = nextHop,
 		hops = hops,
 		heights = heights,

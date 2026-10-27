@@ -15,6 +15,26 @@ local function canRevive(_run: Types.Run, _reviver: Types.Player, _downed: Types
 	return true
 end
 
+-- Whether `reviver`, alive and holding the interact button, has a downed
+-- player it may revive within revive range: then the button revives and does
+-- nothing else (Extraction).
+function Life.reviving(run: Types.Run, reviver: Types.Player): boolean
+	if reviver.state ~= "alive" or not reviver.interacting then
+		return false
+	end
+	local radius = run.config.player.reviveRadius
+	for _, downed in run.players do
+		if
+			downed.state == "downed"
+			and canRevive(run, reviver, downed)
+			and Geometry.distance(reviver.x, reviver.z, downed.x, downed.z) <= radius
+		then
+			return true
+		end
+	end
+	return false
+end
+
 -- The nearest alive player within revive range, holding the interact button,
 -- who may revive `downed`.
 local function findReviver(run: Types.Run, downed: Types.Player): Types.Player?
@@ -35,27 +55,30 @@ local function findReviver(run: Types.Run, downed: Types.Player): Types.Player?
 end
 
 -- Damages an alive player; at zero health the player is downed. `enemyId`
--- names the attacker when one did it, `cause` the flood when it did.
+-- names the attacker when one did it, `cause` the flood when it did. Damage
+-- interrupts extraction, reading a clue, opening a chest, drinking and
+-- reviving (see updateDowned) unless `options.interrupts` is false.
 function Life.damage(
 	run: Types.Run,
 	player: Types.Player,
 	amount: number,
 	enemyId: number?,
-	cause: "flood"?
+	cause: "flood"?,
+	options: { interrupts: boolean? }?
 )
 	if player.state ~= "alive" or amount <= 0 then
 		return
 	end
 	player.health -= amount
-	-- Damage interrupts extraction, reading a clue, opening a chest, drinking,
-	-- and reviving (see Life.update).
-	player.extractProgress = 0
-	player.clueProgress = 0
-	player.chestProgress = 0
-	player.hurtAt = run.time
-	if player.drinkingUntil ~= nil then
-		player.drinkingUntil = nil
-		table.insert(run.events, { kind = "drinkInterrupted", player = player.id })
+	if options == nil or options.interrupts ~= false then
+		player.extractProgress = 0
+		player.clueProgress = 0
+		player.chestProgress = 0
+		player.hurtAt = run.time
+		if player.drinkingUntil ~= nil then
+			player.drinkingUntil = nil
+			table.insert(run.events, { kind = "drinkInterrupted", player = player.id })
+		end
 	end
 	table.insert(run.events, {
 		kind = "playerHurt",

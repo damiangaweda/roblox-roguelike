@@ -23,7 +23,6 @@ local function smallMap(): Types.Map
 				distance = 0,
 				level = 1,
 				isEntry = true,
-				hasZone = false,
 				campX = nil,
 				campZ = nil,
 				cover = { { x = 2, z = 2 } },
@@ -32,7 +31,6 @@ local function smallMap(): Types.Map
 		},
 		paths = { { id = 1, a = 1, b = 2, halfWidth = 4 } },
 		entries = { 1 },
-		zonePoints = {},
 		nextHop = {},
 		hops = {},
 		heights = { { 0, 1.25, 23.96 }, { 4, 4.04, 12.3 } },
@@ -268,8 +266,9 @@ return {
 			{ id = 2, pointId = 5, x = -400, z = 0, radius = 12, open = false, openedAt = 480 },
 		}
 		run.clues = {
-			{ id = 1, x = 5, z = 6, pointId = 2, campId = 4, read = true },
-			{ id = 2, x = -7, z = 8, pointId = 3, campId = 4, read = false },
+			{ id = 1, x = 5, z = 6, pointId = 2, campId = 4, found = true, read = true },
+			{ id = 2, x = -7, z = 8, pointId = 3, campId = 4, found = true, read = false },
+			{ id = 3, x = 9, z = -9, pointId = 4, campId = 2, found = false, read = false },
 		}
 		run.leaderAreas = {
 			[4] = { x = 50, z = 60, radius = 60 },
@@ -292,11 +291,13 @@ return {
 		Assert.equal(view.zones[2].id, 2)
 		Assert.equal(view.zones[2].open, false)
 
+		-- An unfound clue is not sent.
 		Assert.equal(#view.clues, 2)
 		Assert.equal(view.clues[1].id, 1)
 		Assert.equal(view.clues[1].read, true)
 		Assert.equal(view.clues[2].x, -7)
 		Assert.equal(view.clues[2].z, 8)
+		Assert.equal(view.clues[2].id, 2)
 		Assert.equal(view.clues[2].read, false)
 		-- Which camp a clue points at is learned by reading it.
 		Assert.equal((view.clues[2] :: any).campId, nil)
@@ -354,7 +355,7 @@ return {
 		Assert.equal(point.z, -2)
 		Assert.equal(point.radius, 6)
 		Assert.equal(point.isEntry, true)
-		-- No level, template, camp or zone: the layout, not what holds it.
+		-- No level, template or camp: the layout, not what holds it.
 		local pointFields = {}
 		for key in point :: any do
 			table.insert(pointFields, key)
@@ -431,11 +432,12 @@ return {
 		Assert.equal(Protocol.eventPlayer({ kind = "ended" }), nil)
 	end,
 
-	["announcements, clues read and chests opened go to everyone"] = function()
+	["announcements, clues found and read and chests opened go to everyone"] = function()
 		Assert.falsy(
 			Protocol.isPrivate({ kind = "announcement", what = "zoneOpened", x = 1, z = 2, id = 1 })
 		)
 		Assert.falsy(Protocol.isPrivate({ kind = "announcement", what = "floodStarted" }))
+		Assert.falsy(Protocol.isPrivate({ kind = "clueFound", clueId = 1 }))
 		Assert.falsy(Protocol.isPrivate({
 			kind = "clueRead",
 			clueId = 1,

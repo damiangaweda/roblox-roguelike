@@ -58,7 +58,7 @@ local function touchedEnemy(run: Types.Run, x: number, z: number): Types.Enemy?
 	for _, enemy in run.enemies do
 		local d = Geometry.distance(x, z, enemy.x, enemy.z)
 		if
-			d <= State.archetype(run, enemy).radius + run.config.projectiles.touchMargin
+			d <= State.enemyRadius(run, enemy) + run.config.projectiles.touchMargin
 			and d < bestDistance
 		then
 			best = enemy

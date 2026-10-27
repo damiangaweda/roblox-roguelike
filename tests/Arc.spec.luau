@@ -20,7 +20,6 @@ local function calm(): Types.Config
 	local config = Fixtures.config()
 	config.enemies.maxAlive = 10000
 	config.run.arc.flood.startMinute = 1000
-	config.run.arc.flood.endMinute = 1001
 	config.run.arc.events.chestDrop.firstMinute = math.huge
 	config.run.arc.events.wanderingBoss.minute = math.huge
 	return config
@@ -35,11 +34,13 @@ local function tick(run: Types.Run, seconds: number, dt: number?)
 	end
 end
 
--- Advances the clock and the interactions by `seconds` in steps of `dt`.
+-- Advances the clock and the interactions by `seconds` in steps of `dt`;
+-- the clues the players come near are found first, as in Run.step.
 local function hold(run: Types.Run, seconds: number, dt: number?)
 	local step = dt or 0.5
 	for _ = 1, math.round(seconds / step) do
 		run.time += step
+		Arc.findClues(run)
 		Extraction.update(run, step)
 	end
 end
@@ -195,13 +196,79 @@ return {
 		tick(run, 0.5)
 		Assert.equal(#run.zones, 1)
 		Assert.equal(run.zones[1].pointId, camp.pointId)
-		-- The clock keeps its slots.
-		Assert.equal(run.nextZoneAt, (zones.firstOpenMinute + zones.intervalMinutes) * 60)
+		-- The next one is due an interval after it opened, not after its slot.
+		Assert.equal(run.nextZoneAt, run.time + zones.intervalMinutes * 60)
+	end,
+
+	["a late zone does not bring the next one early"] = function()
+		local run = withLeaders(4, 3, true)
+		local zones = run.config.run.arc.zones
+		-- Every point holds a leader until they all die, 100 seconds late.
+		tick(run, zones.firstOpenMinute * 60 + 100)
+		Assert.equal(#run.zones, 0)
+		for _, camp in run.camps do
+			local leader = State.enemyById(run, camp.leaderId :: number)
+			if leader then
+				State.removeEnemy(run, leader)
+			end
+		end
+		tick(run, 0.5)
+		Assert.equal(#run.zones, 1)
+		local openedAt = run.zones[1].openedAt
+		-- Not at the slot an interval after the first minute.
+		tick(run, zones.intervalMinutes * 60 - 0.5)
+		Assert.equal(#run.zones, 1)
+		tick(run, 0.5)
+		Assert.equal(#run.zones, 2)
+		Assert.equal(run.zones[2].openedAt, openedAt + zones.intervalMinutes * 60)
+	end,
+
+	["a zone never opens where the flood arrives in the same step"] = function()
+		local config = calm()
+		config.run.arc.flood.startMinute = 0
+		config.run.arc.zones.minZoneDistance = 0
+		local run = Fixtures.run(1, config, 2)
+		local radius = config.map.zoneRadius
+		-- One point left without a zone: the one the flood reaches last.
+		local last: Types.MapPoint? = nil
+		for _, point in run.map.points do
+			if
+				not point.isEntry
+				and (
+					last == nil
+					or math.max(math.abs(point.x), math.abs(point.z))
+						< math.max(math.abs(last.x), math.abs(last.z))
+				)
+			then
+				last = point
+			end
+		end
+		assert(last, "no point")
+		for _, id in Arc.zoneCandidates(run) do
+			if id ~= last.id then
+				Arc.openZone(run, id)
+			end
+		end
+		local opened = #run.zones
+		-- The step at which the flood's edge passes the zone it would open.
+		local reach = math.max(math.abs(last.x), math.abs(last.z)) + radius
+		local at = config.run.durationSeconds * (1 - (reach - 0.05) / run.map.half)
+		Assert.truthy(Arc.floodHalfAt(run, at - 1) > reach)
+		Assert.truthy(Arc.floodHalfAt(run, at) < reach)
+		run.time = at - 1
+		run.nextZoneAt = at
+		Arc.update(run, 1)
+		Assert.equal(#run.zones, opened)
+		run.events = {}
+		run.time = at
+		Arc.update(run, 1)
+		Assert.equal(#run.zones, opened)
+		Assert.equal(#announcements(run, "zoneOpened"), 0)
 	end,
 
 	-- The flood.
 
-	["the flood holds at the edges until its start, then reaches the centre at its end"] = function()
+	["the flood holds at the edges until its start, then reaches the centre at the run's end"] = function()
 		local run = Fixtures.run(1)
 		local flood = run.config.run.arc.flood
 		local half = run.map.half
@@ -209,46 +276,50 @@ return {
 		tick(run, flood.startMinute * 60, 1)
 		Assert.equal(run.floodHalf, half)
 		Assert.equal(#announcements(run, "floodStarted"), 1)
-		local span = (flood.endMinute - flood.startMinute) * 60
+		local span = run.config.run.durationSeconds - flood.startMinute * 60
 		tick(run, span / 2, 1)
 		Assert.near(run.floodHalf, half / 2)
 		tick(run, span / 4, 1)
 		Assert.near(run.floodHalf, half / 4)
 		tick(run, span / 4, 1)
 		Assert.equal(run.floodHalf, 0)
+		Assert.equal(run.time, run.config.run.durationSeconds)
 		Assert.equal(#announcements(run, "floodStarted"), 1)
 	end,
 
-	["a player inside the flood loses its damage every second, one inside the square does not"] = function()
+	["a player inside the flood is hurt once a tick, one inside the square is not"] = function()
 		local config = Fixtures.config()
 		config.player.maxHealth = 1e6
 		local run = Fixtures.run(2, config)
 		local flood = config.run.arc.flood
-		local span = (flood.endMinute - flood.startMinute) * 60
+		local span = config.run.durationSeconds - flood.startMinute * 60
 		-- Halfway: the safe square is half the map's.
 		run.time = flood.startMinute * 60 + span / 2
 		local edge = run.map.half / 2
 		Fixtures.place(run, run.players[1], edge + 5, 0)
 		Fixtures.place(run, run.players[2], 0, -(edge - 5))
-		for _ = 1, 10 do
-			run.time += 0.1
-			Arc.update(run, 0.1)
+		-- Steps at the server's rate, over three ticks.
+		local dt = 1 / config.net.stepHz
+		for _ = 1, math.round(3 * flood.tickSeconds / dt) do
+			run.time += dt
+			Arc.update(run, dt)
 		end
-		Assert.near(run.players[1].health, config.player.maxHealth - flood.damagePerSecond, 1e-6)
+		local perTick = flood.damagePerSecond * flood.tickSeconds
+		Assert.near(run.players[1].health, config.player.maxHealth - 3 * perTick, 1e-6)
 		Assert.equal(run.players[2].health, config.player.maxHealth)
 		local hurts = eventsOf(run, "playerHurt")
-		Assert.equal(#hurts, 10)
+		Assert.equal(#hurts, 3)
 		for _, event in hurts do
 			Assert.equal(event.player, 1)
 			Assert.equal(event.cause, "flood")
 			Assert.equal(event.enemyId, nil)
+			Assert.near(event.amount, perTick)
 		end
 	end,
 
 	["the flood closes the zones it touches, and no zone opens inside it"] = function()
 		local config = calm()
 		config.run.arc.flood.startMinute = 11
-		config.run.arc.flood.endMinute = 15
 		config.run.arc.zones.minZoneDistance = 0
 		local run = Fixtures.run(12, config, 4)
 		-- Every point but the entries has a zone before the flood.
@@ -277,7 +348,6 @@ return {
 		local config = calm()
 		config.enemies.patrols.groupsPerMinute = 0
 		config.run.arc.flood.startMinute = 11
-		config.run.arc.flood.endMinute = 15
 		local run = Fixtures.run(2, config)
 		local flood = config.run.arc.flood
 		-- Player 1 at the very edge, nearly dead; player 2 at the centre.
@@ -295,16 +365,82 @@ return {
 				end
 			end
 		end
-		step(1)
+		step(2 * flood.tickSeconds)
 		Assert.equal(player.state, "downed")
 		step(config.player.downedSeconds + 1)
 		Assert.equal(player.state, "dead")
 		Assert.equal(survivor.state, "alive")
 		Assert.falsy(Assert.findEvent(events, "flood"))
-		step((flood.endMinute - flood.startMinute) * 60)
+		step(config.run.durationSeconds - flood.startMinute * 60)
 		Assert.truthy(Assert.findEvent(events, "flood"))
 		Assert.equal(survivor.state, "dead")
 		Assert.truthy(run.ended)
+	end,
+
+	["flood damage interrupts nothing, and still names the flood"] = function()
+		local run = Fixtures.run(1)
+		local player = run.players[1]
+		player.extractProgress, player.clueProgress, player.chestProgress = 1, 1, 1
+		player.drinkingUntil = run.time + 1
+		Life.damage(run, player, 5, nil, "flood", { interrupts = false })
+		Assert.equal(player.health, player.maxHealth - 5)
+		Assert.equal(player.extractProgress, 1)
+		Assert.equal(player.clueProgress, 1)
+		Assert.equal(player.chestProgress, 1)
+		Assert.equal(player.drinkingUntil, run.time + 1)
+		Assert.equal(player.hurtAt, -math.huge)
+		Assert.falsy(Assert.findEvent(run.events, "drinkInterrupted"))
+		local hurt = Assert.findEvent(run.events, "playerHurt")
+		Assert.equal(hurt.cause, "flood")
+		Assert.equal(hurt.amount, 5)
+	end,
+
+	["a drink finishes inside the flood"] = function()
+		local config = Fixtures.config()
+		local run = Fixtures.run(1, config)
+		local player = run.players[1]
+		local flood = config.run.arc.flood
+		run.time = flood.startMinute * 60
+			+ (config.run.durationSeconds - flood.startMinute * 60) / 2
+		Fixtures.place(run, player, run.map.half / 2 + 5, 0)
+		player.health = player.maxHealth / 2
+		player.potions = 1
+		Assert.truthy(Life.drink(run, 1))
+		local dt = 1 / config.net.stepHz
+		for _ = 1, math.round((config.player.drinkSeconds + 0.5) / dt) do
+			run.time += dt
+			Arc.update(run, dt)
+			Life.update(run, dt)
+		end
+		Assert.truthy(#eventsOf(run, "playerHurt") >= 1)
+		Assert.falsy(Assert.findEvent(run.events, "drinkInterrupted"))
+		Assert.truthy(Assert.findEvent(run.events, "drank"))
+		Assert.equal(player.potions, 0)
+	end,
+
+	["a revive finishes inside the flood"] = function()
+		local config = Fixtures.config()
+		local run = Fixtures.run(2, config)
+		local reviver, downed = run.players[1], run.players[2]
+		local flood = config.run.arc.flood
+		run.time = flood.startMinute * 60
+			+ (config.run.durationSeconds - flood.startMinute * 60) / 2
+		local x = run.map.half / 2 + 5
+		Fixtures.place(run, reviver, x, 0)
+		Fixtures.place(run, downed, x, 2)
+		Life.damage(run, downed, downed.maxHealth)
+		Assert.equal(downed.state, "downed")
+		reviver.interacting = true
+		local dt = 1 / config.net.stepHz
+		for _ = 1, math.round((config.player.reviveSeconds + 0.5) / dt) do
+			run.time += dt
+			Arc.update(run, dt)
+			Life.update(run, dt)
+		end
+		Assert.truthy(reviver.health < reviver.maxHealth)
+		Assert.equal(reviver.state, "alive")
+		Assert.equal(downed.state, "alive")
+		Assert.truthy(Assert.findEvent(run.events, "revived"))
 	end,
 
 	-- Clues.
@@ -438,6 +574,104 @@ return {
 			end
 		end
 		Assert.equal(reads, 1)
+	end,
+
+	["a clue is found when an alive player comes within its find radius"] = function()
+		local run = withLeaders(2)
+		local findRadius = run.config.run.arc.clues.findRadius
+		for _, clue in run.clues do
+			Assert.falsy(clue.found)
+		end
+		local _, clues = leaderCamp(run)
+		local clue = clues[1]
+		-- Far enough from every other clue to find only this one.
+		for _, other in run.clues do
+			if other ~= clue then
+				other.x, other.z = clue.x + 10 * findRadius, clue.z + 10 * findRadius
+			end
+		end
+		-- Nobody near, and a downed player near, find nothing.
+		Fixtures.place(run, run.players[1], clue.x + findRadius + 1, clue.z)
+		Fixtures.place(run, run.players[2], clue.x, clue.z)
+		run.players[2].state = "downed"
+		tick(run, 1)
+		Assert.falsy(clue.found)
+		Assert.equal(#eventsOf(run, "clueFound"), 0)
+
+		Fixtures.place(run, run.players[1], clue.x + findRadius - 1, clue.z)
+		tick(run, 1)
+		Assert.truthy(clue.found)
+		local found = eventsOf(run, "clueFound")
+		Assert.equal(#found, 1)
+		Assert.equal(found[1].clueId, clue.id)
+		Assert.falsy(clue.read)
+		-- Found once.
+		tick(run, 1)
+		Assert.equal(#eventsOf(run, "clueFound"), 1)
+	end,
+
+	["a clue nobody has found is not read"] = function()
+		local run = withLeaders(1)
+		local _, clues = leaderCamp(run)
+		local clue = clues[1]
+		local player = run.players[1]
+		standAt(run, 1, clue.x, clue.z)
+		for _ = 1, 10 do
+			run.time += 0.5
+			Extraction.update(run, 0.5)
+		end
+		Assert.falsy(clue.read)
+		Assert.equal(player.clueProgress, 0)
+		Arc.findClues(run)
+		Assert.truthy(clue.found)
+		hold(run, run.config.run.arc.clues.readSeconds)
+		Assert.truthy(clue.read)
+	end,
+
+	["a later area is drawn afresh, so two areas do not give the point away"] = function()
+		local checked = 0
+		for seed = 1, 40 do
+			local run = withLeaders(2, seed, true)
+			local label = "seed " .. seed
+			for _, camp in run.camps do
+				if camp.leaderId == nil then
+					continue
+				end
+				local clues = {}
+				for _, clue in run.clues do
+					if clue.campId == camp.id then
+						table.insert(clues, clue)
+					end
+				end
+				local point = run.map.points[camp.pointId]
+				Arc.readClue(run, clues[1], run.players[1])
+				local first = run.leaderAreas[camp.id]
+				Arc.readClue(run, clues[2], run.players[1])
+				local second = run.leaderAreas[camp.id]
+				Assert.truthy(
+					Geometry.distance(second.x, second.z, point.x, point.z) <= second.radius,
+					label
+				)
+				Assert.truthy(
+					Geometry.distance(second.x, second.z, first.x, first.z) + second.radius
+						<= first.radius + 1e-6,
+					label
+				)
+				-- Shrinking the first toward the point would put the point
+				-- exactly here.
+				Assert.truthy(
+					Geometry.distance(
+						2 * second.x - first.x,
+						2 * second.z - first.z,
+						point.x,
+						point.z
+					) > 1,
+					label
+				)
+				checked += 1
+			end
+		end
+		Assert.truthy(checked > 100)
 	end,
 
 	-- Chests and the chest drop.
@@ -591,9 +825,71 @@ return {
 		Assert.truthy(chest.opened)
 	end,
 
+	["a chest drop waits until its whole guard fits under the cap"] = function()
+		local config = calm()
+		config.run.arc.events.chestDrop.firstMinute = 4
+		local drop = config.run.arc.events.chestDrop
+		config.enemies.maxAlive = 10
+		local run = Fixtures.run(1, config, 2)
+		local entry = Fixtures.entryOf(run)
+		for _ = 1, config.enemies.maxAlive - drop.guardSize + 1 do
+			Fixtures.enemy(run, "grunt", entry.x, entry.z)
+		end
+		tick(run, drop.firstMinute * 60 + 100)
+		Assert.equal(#run.chests, 0)
+		Assert.equal(#announcements(run, "chestDrop"), 0)
+		State.removeEnemy(run, run.enemies[1])
+		tick(run, 0.5)
+		Assert.equal(#run.chests, 1)
+		local guard = State.patrolById(run, run.chests[1].patrolId :: number)
+		assert(guard, "no guard")
+		Assert.equal(#guard.members, drop.guardSize)
+		-- The next one is due an interval after it came, not after its slot.
+		Assert.equal(run.nextChestDropAt, run.time + drop.intervalMinutes * 60)
+	end,
+
+	["chests drop away from the players, and never twice at one point"] = function()
+		for seed = 1, 4 do
+			local config = calm()
+			config.run.arc.events.chestDrop.firstMinute = 0.5
+			config.run.arc.events.chestDrop.intervalMinutes = 0.5
+			local run = Fixtures.run(3, config, seed)
+			local apart = config.enemies.patrols.minDistanceFromPlayers
+			local label = "seed " .. seed
+			-- Two players stand at points of their own.
+			local placed = 1
+			for _, point in run.map.points do
+				if not point.isEntry and placed < 3 then
+					placed += 1
+					Fixtures.place(run, run.players[placed], point.x, point.z)
+				end
+			end
+			local seen: { [number]: boolean } = {}
+			for _ = 1, 60 * 30 do
+				local before = #run.chests
+				tick(run, 1, 1)
+				for index = before + 1, #run.chests do
+					local chest = run.chests[index]
+					local point = run.map.points[chest.pointId]
+					Assert.falsy(seen[point.id], label)
+					seen[point.id] = true
+					for _, player in run.players do
+						Assert.truthy(
+							Geometry.distance(point.x, point.z, player.x, player.z) >= apart,
+							label
+						)
+					end
+					-- Opened at once: an opened chest's point still holds it.
+					chest.opened = true
+				end
+			end
+			Assert.truthy(#run.chests > 0, label)
+		end
+	end,
+
 	-- The wandering boss and the incursion wave.
 
-	["the wandering boss comes once at its minute, multiplied, as a wanderer"] = function()
+	["the wandering boss comes once at its minute, multiplied, walking the paths"] = function()
 		local config = calm()
 		config.run.arc.events.wanderingBoss.minute = 7
 		local run = Fixtures.run(2, config, 5)
@@ -613,8 +909,11 @@ return {
 		)
 		local patrol = State.patrolById(run, boss.patrolId :: number)
 		assert(patrol, "no patrol")
-		Assert.truthy(patrol.wanders)
+		Assert.falsy(patrol.wanders)
 		Assert.equal(#patrol.members, 1)
+		-- Bound for a neighbour of the point it came at, along a path.
+		local start = run.map.points[patrol.previousPoint]
+		Assert.truthy(table.find(start.neighbours, patrol.routePoint) ~= nil)
 		local announced = announcements(run, "wanderingBoss")
 		Assert.equal(#announced, 1)
 		Assert.equal(announced[1].id, boss.id)
@@ -653,6 +952,33 @@ return {
 		Combat.damageEnemy(run, enemy, 1, enemy.health, {}, "test")
 		Assert.truthy(Assert.findEvent(run.events, "dropped"))
 		Assert.equal(#run.pickups, 1)
+	end,
+
+	["the boss is hit as far from its centre as its radius multiplied"] = function()
+		local config = calm()
+		local run = Fixtures.run(1, config)
+		local player = run.players[1]
+		local point = Fixtures.entryOf(run)
+		Fixtures.dry(run, point.x, point.z, 30)
+		Fixtures.place(run, player, point.x, point.z)
+		local settings = config.run.arc.events.wanderingBoss
+		local archetype = config.enemies.archetypes[settings.archetype]
+		local nova = config.classes.elementalist.actives[2]
+		Assert.equal(nova.shape, "ring")
+		-- Beyond the ring's reach for the archetype, within it for the boss.
+		local distance = nova.radius + archetype.radius * (1 + settings.radiusMultiplier) / 2
+		local boss = Fixtures.enemy(run, settings.archetype, point.x + distance, point.z)
+		boss.boss = true
+		local plain = Fixtures.enemy(run, settings.archetype, point.x - distance, point.z)
+		Assert.near(State.enemyRadius(run, boss), archetype.radius * settings.radiusMultiplier)
+		Assert.equal(State.enemyRadius(run, plain), archetype.radius)
+		Assert.truthy(Combat.useActive(run, 1, 2))
+		local hit: { [number]: boolean } = {}
+		for _, event in eventsOf(run, "hit") do
+			hit[event.enemyId] = true
+		end
+		Assert.truthy(hit[boss.id])
+		Assert.falsy(hit[plain.id])
 	end,
 
 	["the incursion wave grows patrols factor times faster for its seconds"] = function()

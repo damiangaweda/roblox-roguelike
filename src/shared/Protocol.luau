@@ -327,6 +327,7 @@ export type WorldView = {
 	-- Every zone opened so far; one the flood closed has open false.
 	zones: { Types.Zone },
 	pickups: { Types.Pickup },
+	-- Only the clues someone has found: an unfound clue stays on the server.
 	clues: { ClueView },
 	-- In camp id order.
 	leaderAreas: { LeaderAreaView },
@@ -355,9 +356,11 @@ function Protocol.worldView(run: Types.Run): WorldView
 	table.sort(players, function(a, b)
 		return a.id < b.id
 	end)
-	local clues = table.create(#run.clues)
+	local clues = {}
 	for _, clue in run.clues do
-		table.insert(clues, { id = clue.id, x = clue.x, z = clue.z, read = clue.read })
+		if clue.found then
+			table.insert(clues, { id = clue.id, x = clue.x, z = clue.z, read = clue.read })
+		end
 	end
 	local leaderAreas = {}
 	for campId, area in run.leaderAreas do
@@ -525,8 +528,8 @@ function Protocol.heightAt(
 end
 
 -- Whether an event goes to every client or only to the player it is about.
--- Announcements, clues read and chests opened go to everyone: what one player
--- learns of a leader's whereabouts narrows it for all.
+-- Announcements, clues found and read and chests opened go to everyone: what
+-- one player learns of a leader's whereabouts narrows it for all.
 function Protocol.isPrivate(event: Types.Event): boolean
 	local kind = event.kind
 	return kind == "offer"

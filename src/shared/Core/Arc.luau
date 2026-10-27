@@ -15,6 +15,10 @@ local Types = require("./Types")
 
 local Arc = {}
 
+-- Centres drawn for a narrowed leader's area before it falls back to the last
+-- area shrunk toward the point.
+local AREA_DRAWS = 32
+
 local function announce(
 	run: Types.Run,
 	what: Types.Announcement,
@@ -32,10 +36,11 @@ function Arc.flooded(run: Types.Run, x: number, z: number, radius: number?): boo
 end
 
 -- The half side of the square the flood has not reached at run time `time`:
--- the map's half until startMinute, shrinking evenly to 0 at endMinute.
+-- the map's half until startMinute, shrinking evenly to 0 at the run's
+-- duration.
 function Arc.floodHalfAt(run: Types.Run, time: number): number
-	local flood = run.config.run.arc.flood
-	local start, finish = flood.startMinute * 60, flood.endMinute * 60
+	local start = run.config.run.arc.flood.startMinute * 60
+	local finish = run.config.run.durationSeconds
 	if time <= start then
 		return run.map.half
 	end
@@ -130,8 +135,8 @@ function Arc.zoneCandidates(run: Types.Run): { number }
 end
 
 -- A zone is due from firstOpenMinute and every intervalMinutes after; one
--- that finds no point waits for a step where one qualifies, and the clock
--- keeps its slots.
+-- that finds no point waits for a step where one qualifies, and the next is
+-- due an interval after it opened.
 local function openZones(run: Types.Run)
 	if run.time < run.nextZoneAt then
 		return
@@ -141,13 +146,16 @@ local function openZones(run: Types.Run)
 		return
 	end
 	Arc.openZone(run, candidates[run.rng:integer(1, #candidates)])
-	run.nextZoneAt += run.config.run.arc.zones.intervalMinutes * 60
+	run.nextZoneAt = math.max(run.nextZoneAt, run.time)
+		+ run.config.run.arc.zones.intervalMinutes * 60
 end
 
--- Moves the flood's edge, closes the zones it touches and hurts the players
--- inside it. Its damage goes through Life.damage, so a flood death is any
--- death; the run's end at the centre is Extraction.flood.
-local function advanceFlood(run: Types.Run, dt: number)
+-- Moves the flood's edge, closes the zones it touches and, once every
+-- tickSeconds, hurts the players inside it. Its damage goes through
+-- Life.damage, so a flood death is any death, but it interrupts nothing: a
+-- player can still drink, revive, read, open and extract inside it. The run's
+-- end at the centre is Extraction.flood.
+local function advanceFlood(run: Types.Run)
 	local flood = run.config.run.arc.flood
 	run.floodHalf = Arc.floodHalfAt(run, run.time)
 	if not run.floodStarted and run.time >= flood.startMinute * 60 then
@@ -160,9 +168,24 @@ local function advanceFlood(run: Types.Run, dt: number)
 			announce(run, "zoneClosed", zone.x, zone.z, zone.id)
 		end
 	end
+	if run.time < run.nextFloodTickAt then
+		return
+	end
+	-- The tick keeps its phase, so steps that do not divide it do not slow it.
+	run.nextFloodTickAt += flood.tickSeconds
+	if run.nextFloodTickAt <= run.time then
+		run.nextFloodTickAt = run.time + flood.tickSeconds
+	end
 	for _, player in State.sortedPlayers(run) do
 		if player.state == "alive" and Arc.flooded(run, player.x, player.z) then
-			Life.damage(run, player, flood.damagePerSecond * dt, nil, "flood")
+			Life.damage(
+				run,
+				player,
+				flood.damagePerSecond * flood.tickSeconds,
+				nil,
+				"flood",
+				{ interrupts = false }
+			)
 		end
 	end
 end
@@ -200,13 +223,13 @@ function Arc.dropChest(run: Types.Run, pointId: number): Types.Chest
 	return chest
 end
 
--- A chest drop is due from firstMinute and every intervalMinutes after, at a
--- random point other than an entry with no closed chest, its chest spot out
--- of the flood; with none, it waits like a zone.
-local function dropChests(run: Types.Run)
-	if run.time < run.nextChestDropAt then
-		return
-	end
+-- The ids of the points a chest may drop at now, ascending: not an entry,
+-- none that ever had a chest, its chest spot out of the flood, and its centre
+-- minDistanceFromPlayers from every alive player, so its guard does not
+-- appear beside one.
+function Arc.chestCandidates(run: Types.Run): { number }
+	local apart = run.config.enemies.patrols.minDistanceFromPlayers
+	local alive = State.aliveIds(run)
 	local candidates: { number } = {}
 	for _, point in run.map.points do
 		if point.isEntry then
@@ -216,22 +239,43 @@ local function dropChests(run: Types.Run)
 		if Arc.flooded(run, x, z) then
 			continue
 		end
-		local taken = false
+		local ok = true
 		for _, chest in run.chests do
-			if chest.pointId == point.id and not chest.opened then
-				taken = true
+			if chest.pointId == point.id then
+				ok = false
 				break
 			end
 		end
-		if not taken then
+		for _, id in alive do
+			local player = run.players[id]
+			if ok and Geometry.distance(point.x, point.z, player.x, player.z) < apart then
+				ok = false
+			end
+		end
+		if ok then
 			table.insert(candidates, point.id)
 		end
 	end
+	return candidates
+end
+
+-- A chest drop is due from firstMinute and every intervalMinutes after. It
+-- waits, like a zone, for a step where a point qualifies and where its whole
+-- guard fits under the enemy cap; the next is due an interval after it came.
+local function dropChests(run: Types.Run)
+	local drop = run.config.run.arc.events.chestDrop
+	if
+		run.time < run.nextChestDropAt
+		or (drop.guardSize > 0 and #run.enemies + drop.guardSize > run.config.enemies.maxAlive)
+	then
+		return
+	end
+	local candidates = Arc.chestCandidates(run)
 	if #candidates == 0 then
 		return
 	end
 	Arc.dropChest(run, candidates[run.rng:integer(1, #candidates)])
-	run.nextChestDropAt += run.config.run.arc.events.chestDrop.intervalMinutes * 60
+	run.nextChestDropAt = math.max(run.nextChestDropAt, run.time) + drop.intervalMinutes * 60
 end
 
 -- The point other than an entry, out of the flood, whose nearest alive player
@@ -266,9 +310,10 @@ local function farthestFromPlayers(run: Types.Run): Types.MapPoint?
 	return best
 end
 
--- The wandering boss: once, at its minute, a wanderer of the configured
--- archetype at the point farthest from the players, with its health and
--- damage multiplied. At the enemy cap it waits for room.
+-- The wandering boss: once, at its minute, a patrol of one of the configured
+-- archetype that walks the paths from the point farthest from the players,
+-- with its health, damage and radius multiplied (State.enemyRadius). At the
+-- enemy cap it waits for room.
 local function spawnBoss(run: Types.Run)
 	local settings = run.config.run.arc.events.wanderingBoss
 	if run.bossSpawned or run.time < settings.minute * 60 then
@@ -279,7 +324,7 @@ local function spawnBoss(run: Types.Run)
 		return
 	end
 	local patrol =
-		Camps.spawnPatrol(run, 1, { settings.archetype }, settings.healthMultiplier, true, point)
+		Camps.spawnPatrol(run, 1, { settings.archetype }, settings.healthMultiplier, false, point)
 	local enemy = if patrol then State.enemyById(run, patrol.members[1]) else nil
 	if enemy == nil then
 		return
@@ -300,10 +345,32 @@ local function startWave(run: Types.Run)
 	announce(run, "incursionWave")
 end
 
--- One step of the arc: zones, the flood, then the run events.
-function Arc.update(run: Types.Run, dt: number)
+-- Marks found every clue an alive player has come within findRadius of, and
+-- tells everyone.
+function Arc.findClues(run: Types.Run)
+	local radius = run.config.run.arc.clues.findRadius
+	local alive = State.aliveIds(run)
+	for _, clue in run.clues do
+		if clue.found then
+			continue
+		end
+		for _, id in alive do
+			local player = run.players[id]
+			if Geometry.distance(player.x, player.z, clue.x, clue.z) <= radius then
+				clue.found = true
+				table.insert(run.events, { kind = "clueFound", clueId = clue.id })
+				break
+			end
+		end
+	end
+end
+
+-- One step of the arc: the flood first, so a zone never opens where it has
+-- just reached, then zones, clues found and the run events.
+function Arc.update(run: Types.Run, _dt: number)
+	advanceFlood(run)
 	openZones(run)
-	advanceFlood(run, dt)
+	Arc.findClues(run)
 	dropChests(run)
 	spawnBoss(run)
 	startWave(run)
@@ -344,6 +411,7 @@ function Arc.placeClues(run: Types.Run)
 				z = z,
 				pointId = pointId,
 				campId = camp.id,
+				found = false,
 				read = false,
 			})
 			run.nextClueId += 1
@@ -351,36 +419,46 @@ function Arc.placeClues(run: Types.Run)
 	end
 end
 
--- The camp's area after `read` of its clues, `remaining` still unread: the
--- first is a circle drawn around the leader's point, each next one that
--- circle shrunk toward the point, so it lies inside the last and still holds
--- the point; the last clue marks the point.
+-- A centre drawn uniformly within areaOffsetFraction of `radius` around the
+-- point, so a circle of `radius` there holds the point.
+local function drawCentre(run: Types.Run, point: Types.MapPoint, radius: number): (number, number)
+	local angle = run.rng:next() * 2 * math.pi
+	-- Uniform over the disc, not bunched at the point.
+	local offset = radius * run.config.run.arc.clues.areaOffsetFraction * math.sqrt(run.rng:next())
+	return point.x + math.cos(angle) * offset, point.z + math.sin(angle) * offset
+end
+
+-- The camp's area after `read` of its clues, `remaining` still unread: each
+-- is a circle around the leader's point with its centre drawn afresh, and
+-- each next one lies inside the last, so no two areas give the point away
+-- together. When no draw fits, the last area shrunk toward the point does.
+-- The last clue marks the point.
 local function narrow(run: Types.Run, camp: Types.Camp, read: number, remaining: number)
-	local settings = run.config.run.arc.clues
+	local radii = run.config.run.arc.clues.areaRadii
 	local point = run.map.points[camp.pointId]
-	local radii = settings.areaRadii
 	if remaining == 0 or #radii == 0 then
 		run.leaderAreas[camp.id] = { x = point.x, z = point.z, radius = 0 }
 		return
 	end
 	local radius = radii[math.min(read, #radii)]
 	local previous = run.leaderAreas[camp.id]
-	if previous and previous.radius > 0 then
-		radius = math.min(radius, previous.radius)
-		local shrink = radius / previous.radius
-		run.leaderAreas[camp.id] = {
-			x = point.x + (previous.x - point.x) * shrink,
-			z = point.z + (previous.z - point.z) * shrink,
-			radius = radius,
-		}
+	if previous == nil or previous.radius <= 0 then
+		local x, z = drawCentre(run, point, radius)
+		run.leaderAreas[camp.id] = { x = x, z = z, radius = radius }
 		return
 	end
-	local angle = run.rng:next() * 2 * math.pi
-	-- Uniform over the disc, not bunched at the point.
-	local offset = radius * settings.areaOffsetFraction * math.sqrt(run.rng:next())
+	radius = math.min(radius, previous.radius)
+	for _ = 1, AREA_DRAWS do
+		local x, z = drawCentre(run, point, radius)
+		if Geometry.distance(x, z, previous.x, previous.z) + radius <= previous.radius then
+			run.leaderAreas[camp.id] = { x = x, z = z, radius = radius }
+			return
+		end
+	end
+	local shrink = radius / previous.radius
 	run.leaderAreas[camp.id] = {
-		x = point.x + math.cos(angle) * offset,
-		z = point.z + math.sin(angle) * offset,
+		x = point.x + (previous.x - point.x) * shrink,
+		z = point.z + (previous.z - point.z) * shrink,
 		radius = radius,
 	}
 end
@@ -441,15 +519,15 @@ function Arc.openChest(run: Types.Run, chest: Types.Chest, player: Types.Player)
 	)
 end
 
--- The nearest unread clue within readRadius of the player; a tie goes to
--- the first placed.
+-- The nearest found, unread clue within readRadius of the player; a tie goes
+-- to the first placed.
 function Arc.clueNear(run: Types.Run, player: Types.Player): Types.Clue?
 	local best: Types.Clue? = nil
 	local bestDistance = math.huge
 	local radius = run.config.run.arc.clues.readRadius
 	for _, clue in run.clues do
 		local distance = Geometry.distance(player.x, player.z, clue.x, clue.z)
-		if not clue.read and distance <= radius and distance < bestDistance then
+		if clue.found and not clue.read and distance <= radius and distance < bestDistance then
 			best, bestDistance = clue, distance
 		end
 	end

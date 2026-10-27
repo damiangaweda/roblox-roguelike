@@ -41,6 +41,7 @@ function State.newRun(config: Types.Config, seed: number, playerCount: number): 
 		nextZoneAt = arc.zones.firstOpenMinute * 60,
 		nextChestDropAt = arc.events.chestDrop.firstMinute * 60,
 		floodHalf = map.half,
+		nextFloodTickAt = arc.flood.startMinute * 60 + arc.flood.tickSeconds,
 		floodStarted = false,
 		clues = {},
 		leaderAreas = {},
@@ -206,6 +207,16 @@ function State.newEnemy(
 	run.nextEnemyId += 1
 	table.insert(run.enemies, enemy)
 	return enemy
+end
+
+-- How far from its centre the enemy is hit and touches: its archetype's
+-- radius, the wandering boss's multiplied.
+function State.enemyRadius(run: Types.Run, enemy: Types.Enemy): number
+	local radius = State.archetype(run, enemy).radius
+	if enemy.boss then
+		radius *= run.config.run.arc.events.wanderingBoss.radiusMultiplier
+	end
+	return radius
 end
 
 function State.enemyById(run: Types.Run, id: number): Types.Enemy?

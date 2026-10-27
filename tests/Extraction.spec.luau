@@ -181,6 +181,35 @@ return {
 		Assert.equal(run.players[1].state, "extracted")
 	end,
 
+	["holding interact by a downed player revives it and nothing else"] = function()
+		local run = Fixtures.run(2)
+		local config = run.config.player
+		local player, downed = run.players[1], run.players[2]
+		enterZone(run, 1)
+		local zone = run.zones[1]
+		player.extractProgress = 1
+		Fixtures.place(run, downed, zone.x + config.reviveRadius - 1, zone.z)
+		Life.damage(run, downed, downed.maxHealth)
+		Assert.equal(downed.state, "downed")
+		local steps = 0
+		while downed.state == "downed" do
+			run.time += 0.5
+			Life.update(run, 0.5)
+			Extraction.update(run, 0.5)
+			steps += 1
+			if downed.state == "downed" then
+				Assert.equal(player.extractProgress, 0)
+			end
+			Assert.truthy(steps <= 20, "never revived")
+		end
+		Assert.near(steps * 0.5, config.reviveSeconds)
+		Assert.equal(downed.state, "alive")
+		Assert.equal(player.state, "alive")
+		-- With nobody left to revive, the button extracts.
+		advance(run, run.config.run.extractSeconds, 0.5)
+		Assert.equal(player.state, "extracted")
+	end,
+
 	["a downed player does not extract"] = function()
 		local run = Fixtures.run(1)
 		enterZone(run, 1)

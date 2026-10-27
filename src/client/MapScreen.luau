@@ -1,7 +1,8 @@
 --!strict
 -- The map screen (stage 2d): the run's layout of points and paths, the local
 -- character, the open zones, the flood's safe square, what is known of each
--- leader's lair, chests, clues and a pulse where each announcement happened.
+-- leader's area, chests, the clues found and a pulse where each announcement
+-- with a place happened.
 -- Opened with M or the HUD's Map button (Hud.toggleMap). It draws only what
 -- every player of the run may know: never an enemy or another player.
 
@@ -24,7 +25,7 @@ local MIN_ZONE_PIXELS = 16
 local MIN_AREA_PIXELS = 18
 local PATH_PIXELS = 3
 local ENTRY_RING_PIXELS = 2
-local LAIR_PIXELS = 14
+local LEADER_POINT_PIXELS = 14
 local CHEST_PIXELS = 11
 local CLUE_PIXELS = 8
 local PLAYER_PIXELS = 14
@@ -80,14 +81,13 @@ local READ_COLOR = Color3.fromRGB(125, 125, 135)
 local PLAYER_COLOR = Color3.fromRGB(255, 255, 255)
 local PLAYER_STROKE_COLOR = Color3.fromRGB(20, 20, 24)
 local TICK_COLOR = Color3.fromRGB(255, 230, 120)
--- An announcement's marker, by what was announced.
+-- An announcement's marker, by what was announced; an incursion wave and the
+-- flood's start carry no place, so they have none.
 local ANNOUNCE_COLORS: { [string]: Color3 } = {
 	zoneOpened = ZONE_COLOR,
 	zoneClosed = Color3.fromRGB(150, 150, 160),
 	chestDrop = CHEST_COLOR,
 	wanderingBoss = Color3.fromRGB(255, 60, 60),
-	incursionWave = Color3.fromRGB(255, 140, 40),
-	floodStarted = FLOOD_EDGE_COLOR,
 }
 local FONT_BOLD = Enum.Font.GothamBold
 local FONT = Enum.Font.GothamMedium
@@ -223,10 +223,10 @@ local areaPool = newPool(function(): Frame
 	return frame
 end, frameOf)
 
--- The lair once the last clue marked it: a small red diamond.
-local lairPool = newPool(function(): Frame
-	local frame = newMarker(areaLayer, "Lair", AREA_COLOR, 0)
-	frame.Size = UDim2.fromOffset(LAIR_PIXELS, LAIR_PIXELS)
+-- A leader's point once its last clue marked it: a small red diamond.
+local leaderPointPool = newPool(function(): Frame
+	local frame = newMarker(areaLayer, "LeaderPoint", AREA_COLOR, 0)
+	frame.Size = UDim2.fromOffset(LEADER_POINT_PIXELS, LEADER_POINT_PIXELS)
 	frame.Rotation = 45
 	stroke(frame, WHITE, 1, 0.3)
 	return frame
@@ -338,7 +338,7 @@ local function drawWorld()
 	if map == nil or snapshot == nil then
 		setFlood(1)
 		finish(areaPool)
-		finish(lairPool)
+		finish(leaderPointPool)
 		finish(zonePool)
 		finish(chestPool)
 		finish(cluePool)
@@ -355,11 +355,11 @@ local function drawWorld()
 			frame.Position = place(area.x, area.z, half)
 			frame.Size = span(area.radius * 2, half)
 		else
-			take(lairPool).Position = place(area.x, area.z, half)
+			take(leaderPointPool).Position = place(area.x, area.z, half)
 		end
 	end
 	finish(areaPool)
-	finish(lairPool)
+	finish(leaderPointPool)
 
 	table.clear(shownZones)
 	for _, zone in world.zones do
@@ -379,6 +379,7 @@ local function drawWorld()
 	end
 	finish(chestPool)
 
+	-- The world view carries only the clues someone has found.
 	for _, clue in world.clues do
 		local frame = take(cluePool)
 		frame.Position = place(clue.x, clue.z, half)
@@ -621,6 +622,9 @@ function MapScreen.start()
 	Net.onEvents(function(events)
 		for _, event in events do
 			if event.kind == "announcement" then
+				-- Only an announcement with a place gets a marker: an incursion
+				-- wave and the flood's start carry none, so for them the HUD's
+				-- notice is all (the plan's "with a marker" is for events with a place).
 				local x, z = event.x, event.z
 				if x and z then
 					announce(event.what, x, z)

@@ -370,7 +370,8 @@ local PARKED = CFrame.new(0, -10000, 0)
 local MAX_RIMS = 24
 -- The wandering boss: its look this many times bigger, inside a red glow as
 -- tall as the scaled look times AURA_SHARE, pulsing between two transparencies,
--- with a red light.
+-- with a red light. The scale matches the boss's hit radius on the server
+-- (the wandering boss's radiusMultiplier in Config).
 local BOSS_SCALE = 1.6
 local BOSS_AURA_COLOR = Color3.fromRGB(255, 40, 40)
 local BOSS_AURA_SHARE = 1.15

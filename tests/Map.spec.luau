@@ -316,38 +316,6 @@ return {
 		Assert.equal(#Map.farthestPoints(map, 0), 0)
 	end,
 
-	["extraction zones sit at far points, never at an entry"] = function()
-		eachMap(function(map, config, label, players)
-			local settings = config.map
-			local expected = math.clamp(
-				math.ceil(players / settings.playersPerZone),
-				settings.minZones,
-				settings.maxZones
-			)
-			Assert.equal(#map.zonePoints, expected, label)
-			local nearest = math.floor(farthestDistance(map) * settings.zoneMinDistanceFraction)
-			local seen = {}
-			for _, id in map.zonePoints do
-				local point = map.points[id]
-				Assert.falsy(seen[id], "zone repeated, " .. label)
-				seen[id] = true
-				Assert.falsy(point.isEntry, "zone at an entry, " .. label)
-				Assert.truthy(point.hasZone, label)
-				Assert.truthy(
-					point.distance >= math.max(1, nearest),
-					"zone too near the entries, " .. label
-				)
-			end
-			local flagged = 0
-			for _, point in map.points do
-				if point.hasZone then
-					flagged += 1
-				end
-			end
-			Assert.equal(flagged, #map.zonePoints, label)
-		end)
-	end,
-
 	["heights stay within the hills, and footprints and paths stay dry"] = function()
 		local sawWater = false
 		eachMap(function(map, config, label)
@@ -684,6 +652,29 @@ return {
 			end
 		end
 		Assert.equal(config.map.entryTemplate.camp, nil)
+	end,
+
+	["templates put the clue beyond an open zone's reach and clear of the props"] = function()
+		local config = Fixtures.config()
+		local templates = table.clone(config.map.templates)
+		table.insert(templates, config.map.entryTemplate)
+		-- A reader within readRadius of the clue stands outside a zone at the
+		-- centre.
+		local reach = config.map.zoneRadius + config.run.arc.clues.readRadius
+		for _, template in templates do
+			local clue = template.clue
+			Assert.truthy(
+				Geometry.distance(clue.x, clue.z, 0, 0) > reach,
+				template.id .. " clue within reach of the zone"
+			)
+			for _, prop in template.props do
+				local cx, cz = Geometry.clampToRect(prop, clue.x, clue.z)
+				Assert.truthy(
+					Geometry.distance(cx, cz, clue.x, clue.z) >= 6,
+					template.id .. " clue near a prop"
+				)
+			end
+		end
 	end,
 
 	["the same seed makes the same map"] = function()

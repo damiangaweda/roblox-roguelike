@@ -4,6 +4,7 @@
 -- flood's end, when it meets at the centre.
 
 local Arc = require("./Arc")
+local Life = require("./Life")
 local State = require("./State")
 local Types = require("./Types")
 
@@ -20,20 +21,19 @@ local function inOpenZone(run: Types.Run, player: Types.Player): boolean
 end
 
 -- Advances what each alive player holding the interact button does, the first
--- that applies: extracting in an open zone, reading the nearest clue, opening
--- the nearest chest. Every other progress, and all of it once the button is
--- let go, starts over.
+-- that applies: extracting in an open zone, reading the nearest found clue,
+-- opening the nearest chest. Every other progress, and all of it once the
+-- button is let go or while it revives a downed player (Life), starts over.
 function Extraction.update(run: Types.Run, dt: number)
 	local arc = run.config.run.arc
 	for _, player in State.sortedPlayers(run) do
 		if player.state ~= "alive" then
 			continue
 		end
-		local extracting = player.interacting and inOpenZone(run, player)
-		local clue = if player.interacting and not extracting
-			then Arc.clueNear(run, player)
-			else nil
-		local chest = if player.interacting
+		local busy = player.interacting and not Life.reviving(run, player)
+		local extracting = busy and inOpenZone(run, player)
+		local clue = if busy and not extracting then Arc.clueNear(run, player) else nil
+		local chest = if busy
 				and not extracting
 				and clue == nil
 			then Arc.chestNear(run, player)

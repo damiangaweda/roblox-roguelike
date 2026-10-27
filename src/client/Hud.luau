@@ -77,6 +77,8 @@ local NOTICE_STEP = 20
 -- "A camp has noticed you" shows only when an enemy this close to the local
 -- character (on the ground plane) woke from idle to chase in the same snapshot.
 local NOTICED_RANGE = 40
+-- "A clue is nearby" shows only when a clue was found this close to the local character.
+local CLUE_NEARBY_RANGE = 40
 -- Downed, dead and extracted screens fade in over this long, to these tint opacities.
 local STATE_FADE_SECONDS = 0.6
 local DOWNED_TINT_ALPHA = 0.15
@@ -85,7 +87,7 @@ local STATE_PANEL_TRANSPARENCY = 0.3
 local COMPASS_RADIUS = 110
 -- A zone this close (edge to character) is on screen; its arrow is hidden.
 local COMPASS_HIDE_STUDS = 25
--- "No zone yet" sits where the arrow would point straight up, this faint.
+-- "No zone yet" (or "No zone left") sits where the arrow would point straight up, this faint.
 local NO_ZONE_TRANSPARENCY = 0.3
 -- The touch Map button, under the stats panel.
 local MAP_BUTTON_SIZE = Vector2.new(76, 44)
@@ -189,7 +191,7 @@ local ANNOUNCEMENTS: { [string]: string } = {
 	zoneClosed = "A zone was lost to the flood",
 	chestDrop = "A chest fell",
 	wanderingBoss = "A boss is roaming",
-	incursionWave = "The horde surges",
+	incursionWave = "An incursion wave begins",
 	floodStarted = "The flood begins",
 }
 
@@ -500,7 +502,8 @@ function Hud.start()
 	bannerLabel.Visible = false
 
 	-- The zone compass: an arrow toward the nearest open zone on a ring around
-	-- the screen centre, or "No zone yet" while none is open.
+	-- the screen centre, or "No zone yet" while none is open ("No zone left"
+	-- once the flood has started).
 	local compass =
 		newFrame(root, "Compass", UDim2.fromOffset(0, 0), UDim2.fromScale(0.5, 0.5), PANEL_COLOR, 1)
 	local function newArrow(): Arrow
@@ -930,6 +933,25 @@ function Hud.start()
 		return false
 	end
 
+	-- Whether a clue just found stands near the local character. The server
+	-- sends a tick's snapshot before its events, so the latest one holds the clue.
+	local function clueNearby(clueId: number): boolean
+		local latest = Net.latest
+		local character = Players.LocalPlayer.Character
+		local ownRoot = if character then character:FindFirstChild("HumanoidRootPart") else nil
+		if latest == nil or ownRoot == nil or not ownRoot:IsA("BasePart") then
+			return false
+		end
+		local here = ownRoot.Position
+		for _, clue in latest.world.clues do
+			if clue.id == clueId then
+				local dx, dz = clue.x - here.X, clue.z - here.Z
+				return dx * dx + dz * dz <= CLUE_NEARBY_RANGE * CLUE_NEARBY_RANGE
+			end
+		end
+		return false
+	end
+
 	local function localView(snapshot: Net.Snapshot?): Protocol.PlayerView?
 		if snapshot == nil then
 			return nil
@@ -996,9 +1018,15 @@ function Hud.start()
 				if text then
 					pushNotice(text, true)
 				end
+			elseif event.kind == "clueFound" then
+				-- The clue itself appears on the ground and the map screen once the
+				-- world view carries it.
+				if clueNearby(event.clueId) then
+					pushNotice("A clue is nearby")
+				end
 			elseif event.kind == "clueRead" then
 				pushNotice(
-					string.format("A clue narrows the leader's lair (%d left)", event.remaining),
+					string.format("A clue narrows the leader's area (%d left)", event.remaining),
 					true
 				)
 			elseif event.kind == "chestOpened" and event.playerId == userId then
@@ -1290,7 +1318,8 @@ function Hud.start()
 	end
 
 	-- Points the arrow from the character toward the nearest open zone, hidden
-	-- when that zone is already on screen; with none open, "No zone yet".
+	-- when that zone is already on screen; with none open, "No zone yet", or
+	-- "No zone left" once the flood has started and every zone is closed.
 	local function updateCompass(
 		snapshot: Net.Snapshot?,
 		view: Protocol.PlayerView?,
@@ -1315,6 +1344,11 @@ function Hud.start()
 			end
 		end
 		noZoneLabel.Visible = showing and nearest == nil
+		if snapshot and nearest == nil then
+			local map = Net.map
+			local flooding = map ~= nil and snapshot.world.floodHalf < map.half
+			noZoneLabel.Text = if flooding then "No zone left" else "No zone yet"
+		end
 		local visible = false
 		if showing and nearest and nearestDistance > 0 then
 			if nearestDistance - nearest.radius > COMPASS_HIDE_STUDS then
@@ -1430,7 +1464,8 @@ function Hud.start()
 		-- Before the flood: when it begins; while it advances: when it meets
 		-- at the centre, in red while the local character stands in it.
 		local floodStart = Config.run.arc.flood.startMinute * 60
-		local floodEnd = math.min(duration, Config.run.arc.flood.endMinute * 60)
+		-- The flood reaches the centre as the run ends.
+		local floodEnd = duration
 		local character = Players.LocalPlayer.Character
 		local ownRoot = if character then character:FindFirstChild("HumanoidRootPart") else nil
 		local ownPart = if ownRoot and ownRoot:IsA("BasePart") then ownRoot else nil
