@@ -15,7 +15,7 @@ local PATCH_MATERIALS =
 	{ Enum.Material.LeafyGrass, Enum.Material.Ground, Enum.Material.LeafyGrass, Enum.Material.Mud }
 local PATCH_COUNT = 120
 local PATCH_RADIUS_MIN, PATCH_RADIUS_MAX = 6, 18
-local FLOWER_COUNT = 90
+local FLOWER_COUNT = 50
 local FLOWER_COLORS = {
 	Color3.fromRGB(240, 200, 80),
 	Color3.fromRGB(230, 120, 150),
@@ -362,9 +362,9 @@ local function buildGround(arena: Types.Arena, parent: Instance, random: Random)
 			"Flower" .. index,
 			CFrame.new(math.cos(angle) * distance, 0.35, math.sin(angle) * distance)
 				* CFrame.Angles(0, angle, 0),
-			Vector3.new(1.2, 0.7, 1.2),
+			Vector3.new(0.6, 0.5, 0.6),
 			pick(FLOWER_COLORS, random),
-			Enum.Material.Neon,
+			Enum.Material.SmoothPlastic,
 			ground
 		)
 		flower.CastShadow = false
@@ -418,8 +418,8 @@ local function buildChest(arena: Types.Arena, parent: Instance)
 	local x, z = arena.chestX, arena.chestZ
 	local base = block(
 		"Base",
-		CFrame.new(x, 1.1, z),
-		Vector3.new(4.4, 2.2, 3),
+		CFrame.new(x, 1.6, z),
+		Vector3.new(6.6, 3.2, 4.4),
 		CHEST_WOOD,
 		Enum.Material.Wood,
 		model
@@ -428,32 +428,40 @@ local function buildChest(arena: Types.Arena, parent: Instance)
 	base.CanQuery = true
 	block(
 		"Band",
-		CFrame.new(x, 1.1, z),
-		Vector3.new(4.5, 0.5, 3.1),
+		CFrame.new(x, 1.6, z),
+		Vector3.new(6.8, 0.7, 4.6),
+		CHEST_BAND,
+		Enum.Material.Neon,
+		model
+	)
+	block(
+		"BandSide",
+		CFrame.new(x, 1.6, z),
+		Vector3.new(1.2, 3.3, 4.5),
 		CHEST_BAND,
 		Enum.Material.Metal,
 		model
 	)
 	local lid = block(
 		"Lid",
-		CFrame.new(x, 2.6, z),
-		Vector3.new(4.4, 0.9, 3),
+		CFrame.new(x, 3.8, z),
+		Vector3.new(6.6, 1.2, 4.4),
 		CHEST_WOOD:Lerp(Color3.new(0, 0, 0), 0.15),
 		Enum.Material.Wood,
 		model
 	)
 	block(
 		"Lock",
-		CFrame.new(x, 1.5, z + 1.55),
-		Vector3.new(0.8, 0.9, 0.2),
+		CFrame.new(x, 2.2, z + 2.25),
+		Vector3.new(1.2, 1.3, 0.3),
 		CHEST_BAND,
-		Enum.Material.Metal,
+		Enum.Material.Neon,
 		model
 	)
 	local glow = block(
 		"Glow",
 		CFrame.new(x, 0.1, z),
-		Vector3.new(6.5, 0.1, 6.5),
+		Vector3.new(10, 0.1, 10),
 		CHEST_GLOW,
 		Enum.Material.Neon,
 		model
@@ -461,8 +469,8 @@ local function buildChest(arena: Types.Arena, parent: Instance)
 	glow.Transparency = 0.6
 	local light = Instance.new("PointLight")
 	light.Color = CHEST_GLOW
-	light.Brightness = 2
-	light.Range = 18
+	light.Brightness = 2.5
+	light.Range = 24
 	light.Parent = base
 	model.Parent = parent
 	chestModel = model
@@ -503,10 +511,10 @@ function ArenaBuilder.setChestOpened(opened: boolean)
 	end
 	local pivot = model:GetPivot()
 	if opened then
-		lid.CFrame = CFrame.new(pivot.Position.X, 3.4, pivot.Position.Z - 1.3)
+		lid.CFrame = CFrame.new(pivot.Position.X, 4.8, pivot.Position.Z - 2)
 			* CFrame.Angles(math.rad(-70), 0, 0)
 	else
-		lid.CFrame = CFrame.new(pivot.Position.X, 2.6, pivot.Position.Z)
+		lid.CFrame = CFrame.new(pivot.Position.X, 3.8, pivot.Position.Z)
 	end
 end
 

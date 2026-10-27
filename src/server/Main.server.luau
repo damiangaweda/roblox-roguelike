@@ -392,6 +392,59 @@ local function measure(dt: number)
 	heartbeatClock = 0
 end
 
+-- Studio only: the lead's shortcuts for the playtest (plan, criterion 4).
+-- Setting the workspace attribute DebugSkipTo moves the run's clock there;
+-- DebugSpell gives every member the extraction spell; DebugAutoCards picks
+-- cards for them. Attributes never reach
+-- a live server's rules: the guard is RunService:IsStudio().
+local function applyDebug(current: Types.Run)
+	if not IS_STUDIO then
+		return
+	end
+	local skipTo = workspace:GetAttribute("DebugSkipTo")
+	if type(skipTo) == "number" and skipTo > current.time then
+		current.time = skipTo
+		workspace:SetAttribute("DebugSkipTo", nil)
+	end
+	-- DebugAutoCards takes the first card of every offer, so a long test
+	-- run never waits for a choice.
+	if workspace:GetAttribute("DebugAutoCards") == true then
+		for _, core in current.players do
+			if #core.offers > 0 then
+				Run.chooseCard(current, core.id, 1)
+			end
+		end
+	end
+	-- DebugGoToChest puts every member beside the chest.
+	if workspace:GetAttribute("DebugGoToChest") == true then
+		for _, core in current.players do
+			core.x = current.arena.chestX + 4
+			core.z = current.arena.chestZ
+		end
+		workspace:SetAttribute("DebugGoToChest", nil)
+	end
+	-- DebugNoHorde (perf runs only, whose config is a private copy) stops the
+	-- horde and removes its grunts and elites, so a boss can be watched alone.
+	if workspace:GetAttribute("DebugNoHorde") == true and perfRun then
+		current.config.horde.maxAlive = 0
+		current.config.horde.ringCountStart = 0
+		current.config.horde.ringCountGrowth = 0
+		for index = #current.enemies, 1, -1 do
+			local kind = current.config.enemies[current.enemies[index].kind]
+			if kind.role ~= "boss" and kind.role ~= "finalBoss" then
+				table.remove(current.enemies, index)
+			end
+		end
+		workspace:SetAttribute("DebugNoHorde", nil)
+	end
+	if workspace:GetAttribute("DebugSpell") == true then
+		for _, core in current.players do
+			core.hasSpell = true
+		end
+		workspace:SetAttribute("DebugSpell", nil)
+	end
+end
+
 local function onHeartbeat(dt: number)
 	-- Measurements for the performance check, once per second.
 	measure(dt)
@@ -402,6 +455,7 @@ local function onHeartbeat(dt: number)
 	end
 
 	if not current.ended then
+		applyDebug(current)
 		stepAccumulator += dt
 		local steps = 0
 		while

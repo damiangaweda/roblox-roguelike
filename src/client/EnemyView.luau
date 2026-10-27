@@ -88,6 +88,31 @@ local GRUNT: Look = {
 			telegraphPose = pose(0, 1.8, -1.2, 0.25),
 			strike = pose(0, 1.7, -2.2, 0.35),
 		},
+		-- Two glowing eyes, so the horde reads as a crowd of faces from above.
+		{
+			role = "glow",
+			shape = BALL,
+			size = Vector3.new(0.45, 0.45, 0.45),
+			color = Color3.fromRGB(255, 230, 120),
+			on = 2,
+			offset = pose(-0.55, 0.25, -1.02),
+		},
+		{
+			role = "glow",
+			shape = BALL,
+			size = Vector3.new(0.45, 0.45, 0.45),
+			color = Color3.fromRGB(255, 230, 120),
+			on = 2,
+			offset = pose(0.55, 0.25, -1.02),
+		},
+		-- A spiky back ridge that breaks the box.
+		{
+			role = "detail",
+			shape = BLOCK,
+			size = Vector3.new(0.6, 1.1, 1.6),
+			color = Color3.fromRGB(96, 50, 40),
+			offset = pose(0, 2.2, 0.6, 0.5),
+		},
 	},
 	chevrons = { on = 1, at = Vector3.new(0, 0.95, 0.9), scale = 1 },
 }
@@ -347,10 +372,11 @@ local MAX_RIMS = 24
 -- A boss stands inside a red glow as tall as its scaled look times
 -- AURA_SHARE, pulsing between two transparencies, with a red light.
 local BOSS_AURA_COLOR = Color3.fromRGB(255, 40, 40)
-local BOSS_AURA_SHARE = 1.15
+local BOSS_AURA_SHARE = 1.6
+local BOSS_AURA_THICKNESS = 0.25
 local BOSS_AURA_HZ = 0.8
-local BOSS_AURA_MIN = 0.72
-local BOSS_AURA_MAX = 0.88
+local BOSS_AURA_MIN = 0.45
+local BOSS_AURA_MAX = 0.7
 local BOSS_LIGHT_BRIGHTNESS = 2
 local BOSS_LIGHT_RANGE = 18
 -- A telegraph's length before the event that names it arrives.
@@ -655,7 +681,7 @@ local function newAura(): Part
 	aura.CanQuery = false
 	aura.CanTouch = false
 	aura.CastShadow = false
-	aura.Shape = BALL
+	aura.Shape = Enum.PartType.Cylinder
 	aura.Material = Enum.Material.Neon
 	aura.Color = BOSS_AURA_COLOR
 	aura.Transparency = BOSS_AURA_MAX
@@ -674,8 +700,14 @@ local function setAura(rig: Rig, on: boolean)
 	if on and aura == nil then
 		local fresh = table.remove(freeAuras) or newAura()
 		local diameter = rig.auraDiameter
-		fresh.Size = Vector3.new(diameter, diameter, diameter)
-		fresh.CFrame = if rig.parked then PARKED else rig.root + Vector3.new(0, rig.auraRise, 0)
+		fresh.Size = Vector3.new(BOSS_AURA_THICKNESS, diameter, diameter)
+		fresh.CFrame = if rig.parked
+			then PARKED
+			else (rig.root + Vector3.new(0, rig.auraRise, 0)) * CFrame.Angles(
+				0,
+				0,
+				math.pi / 2
+			)
 		fresh.Parent = rig.model
 		rig.aura = fresh
 	elseif not on and aura then
@@ -801,7 +833,8 @@ local function spawnRig(id: number, enemy: Protocol.EnemyView): Rig
 	setChevrons(rig, chevronsFor(enemy.phase))
 	if boss then
 		local height = heightOf(look) * size
-		rig.auraRise = height / 2
+		-- A flat ring of light at the boss's feet, so its silhouette stays readable.
+		rig.auraRise = BOSS_AURA_THICKNESS
 		rig.auraDiameter = height * BOSS_AURA_SHARE
 		setAura(rig, true)
 	end
@@ -1219,7 +1252,8 @@ local function render(dt: number)
 				if aura then
 					count += 1
 					moveParts[count] = aura
-					moveFrames[count] = rig.root + Vector3.new(0, rig.auraRise, 0)
+					moveFrames[count] = (rig.root + Vector3.new(0, rig.auraRise, 0))
+						* CFrame.Angles(0, 0, math.pi / 2)
 					local wave = 0.5
 						+ 0.5 * math.sin((now * BOSS_AURA_HZ + rig.phase) * 2 * math.pi)
 					aura.Transparency = BOSS_AURA_MIN + (BOSS_AURA_MAX - BOSS_AURA_MIN) * wave

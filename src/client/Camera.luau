@@ -9,7 +9,7 @@ local RunService = game:GetService("RunService")
 local Camera = {}
 
 -- Where the camera sits relative to what it looks at, in studs.
-local OFFSET = Vector3.new(0, 44, 20)
+local OFFSET = Vector3.new(0, 34, 15)
 -- How quickly the camera catches up with the character, per second.
 local FOLLOW_RATE = 8
 -- How quickly a shake dies out, per second.

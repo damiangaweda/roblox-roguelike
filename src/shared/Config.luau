@@ -489,42 +489,42 @@ local roster: { Types.EnemyKindConfig } = {
 	enemy(
 		"sproutImp",
 		"Sprout Imp",
-		{ health = 8, speed = 8, damage = 2, xp = 1, colour = 0x9ccc65, scale = 0.8 }
+		{ health = 8, speed = 8, damage = 2, xp = 1, colour = 0x9ccc65, scale = 1.2 }
 	),
 	enemy(
 		"thicketRat",
 		"Thicket Rat",
-		{ health = 10, speed = 7.5, damage = 2, xp = 1, colour = 0x8d6e63, scale = 0.85 }
+		{ health = 10, speed = 7.5, damage = 2, xp = 1, colour = 0x8d6e63, scale = 1.27 }
 	),
 	enemy(
 		"greyWolf",
 		"Grey Wolf",
-		{ health = 16, speed = 10.4, damage = 3, xp = 2, colour = 0x9e9e9e, scale = 1 }
+		{ health = 16, speed = 10.4, damage = 3, xp = 2, colour = 0x9e9e9e, scale = 1.5 }
 	),
 	enemy(
 		"wildBoar",
 		"Wild Boar",
-		{ health = 22, speed = 9, damage = 4, xp = 2, colour = 0x6d4c41, scale = 1.05 }
+		{ health = 22, speed = 9, damage = 4, xp = 2, colour = 0x6d4c41, scale = 1.58 }
 	),
 	enemy(
 		"bogHound",
 		"Bog Hound",
-		{ health = 30, speed = 11.2, damage = 6, xp = 3, colour = 0x33691e, scale = 1 }
+		{ health = 30, speed = 11.2, damage = 6, xp = 3, colour = 0x33691e, scale = 1.5 }
 	),
 	enemy(
 		"cutthroat",
 		"Cutthroat",
-		{ health = 40, speed = 8.5, damage = 8, xp = 3, colour = 0xb71c1c, scale = 1 }
+		{ health = 40, speed = 8.5, damage = 8, xp = 3, colour = 0xb71c1c, scale = 1.5 }
 	),
 	enemy(
 		"forestSpider",
 		"Forest Spider",
-		{ health = 55, speed = 10.4, damage = 10, xp = 4, colour = 0x4a148c, scale = 1.1 }
+		{ health = 55, speed = 10.4, damage = 10, xp = 4, colour = 0x4a148c, scale = 1.65 }
 	),
 	enemy(
 		"hollowStalker",
 		"Hollow Stalker",
-		{ health = 75, speed = 11.2, damage = 12, xp = 5, colour = 0x37474f, scale = 1.1 }
+		{ health = 75, speed = 11.2, damage = 12, xp = 5, colour = 0x37474f, scale = 1.65 }
 	),
 	enemy("mossTroll", "Moss Troll", {
 		health = 100,
@@ -532,8 +532,8 @@ local roster: { Types.EnemyKindConfig } = {
 		damage = 16,
 		xp = 6,
 		colour = 0x558b2f,
-		scale = 1.5,
-		radius = 2.2,
+		scale = 2.25,
+		radius = 2.86,
 	}),
 	enemy("brambleBeast", "Bramble Beast", {
 		health = 150,
@@ -541,13 +541,13 @@ local roster: { Types.EnemyKindConfig } = {
 		damage = 20,
 		xp = 8,
 		colour = 0x795548,
-		scale = 1.5,
-		radius = 2.2,
+		scale = 2.25,
+		radius = 2.86,
 	}),
 	enemy(
 		"direWolf",
 		"Dire Wolf",
-		{ health = 200, speed = 13.5, damage = 26, xp = 10, colour = 0x424242, scale = 1.25 }
+		{ health = 200, speed = 13.5, damage = 26, xp = 10, colour = 0x424242, scale = 1.88 }
 	),
 	enemy("elderTreant", "Elder Treant", {
 		health = 300,
@@ -555,8 +555,8 @@ local roster: { Types.EnemyKindConfig } = {
 		damage = 34,
 		xp = 14,
 		colour = 0x3e2723,
-		scale = 1.8,
-		radius = 2.6,
+		scale = 2.7,
+		radius = 3.38,
 	}),
 }
 
