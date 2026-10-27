@@ -163,6 +163,14 @@ local function onPlayerAdded(player: Player)
 			-- A spectator waits at an entry, out of the camps' way.
 			local entry = current.map.points[current.map.entries[1]]
 			task.defer(teleport, current, player, entry.x, entry.z)
+		elseif starting then
+			-- No baseplate holds a character that spawns while the map is
+			-- built; the run's teleport lets it go.
+			task.defer(function()
+				if starting then
+					Characters.freeze(player)
+				end
+			end)
 		end
 	end)
 

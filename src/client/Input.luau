@@ -4,7 +4,9 @@
 -- three active skills, the dash, drinking and interacting. PC, touch (an aim pad on
 -- the right of the screen) and gamepad. The client only sends intents and moves its
 -- own character; the server decides what happens (AGENTS.md rule 1). The Hud's
--- on-screen buttons call the exported functions.
+-- on-screen buttons call the exported functions. The local player's Blink and
+-- Arcane Bolts are drawn from here, as they happen, rather than from the
+-- server's events, which come a snapshot later and say nothing of a miss.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -12,6 +14,7 @@ local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 
 local Config = require(ReplicatedStorage.Shared.Config)
+local Effects = require(script.Parent.Effects)
 local Net = require(script.Parent.Net)
 
 local Input = {}
@@ -30,6 +33,9 @@ local STICK_DEADZONE = 0.25
 local MOVE_EPSILON = 0.1
 -- How far the mouse's ray looks for something to aim at, in studs.
 local AIM_RAY_LENGTH = 1000
+-- The basic attack as the server fires it while held: once per cooldown, out
+-- to its range. Perks that change either are not reflected in the drawing.
+local BASIC = Config.classes.elementalist.basic
 
 local SKILL_KEYS: { [Enum.KeyCode]: number } = {
 	[Enum.KeyCode.Q] = 1,
@@ -82,6 +88,8 @@ local padStart = Vector2.zero
 local padAim: Vector3? = nil
 
 local firing = false
+-- When the next local Arcane Bolt may be drawn.
+local nextBoltAt = 0
 -- The walk speed the server set, restored after a backpedal; nil while not backpedaling.
 local speedBeforeBackpedal: number? = nil
 -- The last aim angle sent to the server and when.
@@ -326,7 +334,10 @@ function Input.dash()
 	end
 	local dash = Config.classes.elementalist.dash
 	local distance = if dashSelf then dashSelf.dashDistance else dash.distance
-	dashShift = addShift(character, root, direction * distance, dash.seconds)
+	local from = root.Position
+	local shift = addShift(character, root, direction * distance, dash.seconds)
+	dashShift = shift
+	Effects.showLocalBlink(from, from + shift.delta)
 end
 
 local function knocked(dx: number, dz: number)
@@ -381,6 +392,34 @@ local function updateBackpedal(humanoid: Humanoid)
 	end
 end
 
+-- Whether the server would fire the basic attack for the local player now:
+-- alive and not drinking, as the latest snapshot has it.
+local function ableToFire(): boolean
+	local latest = Net.latest
+	if latest == nil then
+		return false
+	end
+	local userId = Players.LocalPlayer.UserId
+	for _, player in latest.world.players do
+		if player.id == userId then
+			return player.state == "alive" and player.drinkingFor <= 0
+		end
+	end
+	return false
+end
+
+-- Draws a local Arcane Bolt each time the basic attack fires while held, at
+-- the server's cadence, so a miss shows as well as a hit.
+local function updateBolt(root: BasePart)
+	local aim = lastAim
+	local now = os.clock()
+	if not firing or aim == nil or now < nextBoltAt or not ableToFire() then
+		return
+	end
+	nextBoltAt = now + BASIC.cooldownSeconds
+	Effects.showLocalBolt(root.Position, aim, BASIC.range)
+end
+
 local function update(deltaTime: number)
 	local character, humanoid, root = localParts()
 	if character == nil or humanoid == nil or root == nil then
@@ -399,6 +438,7 @@ local function update(deltaTime: number)
 	face(root)
 	sendAim(false)
 	updateBackpedal(humanoid)
+	updateBolt(root)
 end
 
 -- Assist follows what the player last aimed with: a stick or a touch gets the
