@@ -494,52 +494,52 @@ local roster: { Types.EnemyKindConfig } = {
 	enemy(
 		"thicketRat",
 		"Thicket Rat",
-		{ health = 16, speed = 7.5, damage = 3, xp = 2, colour = 0x8d6e63, scale = 0.85 }
+		{ health = 10, speed = 7.5, damage = 2, xp = 1, colour = 0x8d6e63, scale = 0.85 }
 	),
 	enemy(
 		"greyWolf",
 		"Grey Wolf",
-		{ health = 22, speed = 10.8, damage = 8, xp = 2, colour = 0x9e9e9e, scale = 1 }
+		{ health = 16, speed = 10.4, damage = 3, xp = 2, colour = 0x9e9e9e, scale = 1 }
 	),
 	enemy(
 		"wildBoar",
 		"Wild Boar",
-		{ health = 36, speed = 9, damage = 10, xp = 3, colour = 0x6d4c41, scale = 1.05 }
+		{ health = 22, speed = 9, damage = 4, xp = 2, colour = 0x6d4c41, scale = 1.05 }
 	),
 	enemy(
 		"bogHound",
 		"Bog Hound",
-		{ health = 44, speed = 11.7, damage = 12, xp = 4, colour = 0x33691e, scale = 1 }
+		{ health = 30, speed = 11.2, damage = 6, xp = 3, colour = 0x33691e, scale = 1 }
 	),
 	enemy(
 		"cutthroat",
 		"Cutthroat",
-		{ health = 55, speed = 8.5, damage = 12, xp = 4, colour = 0xb71c1c, scale = 1 }
+		{ health = 40, speed = 8.5, damage = 8, xp = 3, colour = 0xb71c1c, scale = 1 }
 	),
 	enemy(
 		"forestSpider",
 		"Forest Spider",
-		{ health = 85, speed = 10.4, damage = 16, xp = 5, colour = 0x4a148c, scale = 1.1 }
+		{ health = 55, speed = 10.4, damage = 10, xp = 4, colour = 0x4a148c, scale = 1.1 }
 	),
 	enemy(
 		"hollowStalker",
 		"Hollow Stalker",
-		{ health = 95, speed = 11.2, damage = 18, xp = 6, colour = 0x37474f, scale = 1.1 }
+		{ health = 75, speed = 11.2, damage = 12, xp = 5, colour = 0x37474f, scale = 1.1 }
 	),
 	enemy("mossTroll", "Moss Troll", {
-		health = 150,
+		health = 100,
 		speed = 9,
-		damage = 22,
-		xp = 8,
+		damage = 16,
+		xp = 6,
 		colour = 0x558b2f,
 		scale = 1.5,
 		radius = 2.2,
 	}),
 	enemy("brambleBeast", "Bramble Beast", {
-		health = 180,
+		health = 150,
 		speed = 9.5,
-		damage = 26,
-		xp = 10,
+		damage = 20,
+		xp = 8,
 		colour = 0x795548,
 		scale = 1.5,
 		radius = 2.2,
@@ -547,13 +547,13 @@ local roster: { Types.EnemyKindConfig } = {
 	enemy(
 		"direWolf",
 		"Dire Wolf",
-		{ health = 200, speed = 13.5, damage = 30, xp = 10, colour = 0x424242, scale = 1.25 }
+		{ health = 200, speed = 13.5, damage = 26, xp = 10, colour = 0x424242, scale = 1.25 }
 	),
 	enemy("elderTreant", "Elder Treant", {
-		health = 420,
+		health = 300,
 		speed = 7.6,
-		damage = 42,
-		xp = 24,
+		damage = 34,
+		xp = 14,
 		colour = 0x3e2723,
 		scale = 1.8,
 		radius = 2.6,

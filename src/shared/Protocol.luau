@@ -3,6 +3,9 @@
 -- which the server parses here before anything reaches the run (AGENTS.md
 -- rule 1). Pure Luau, so it is tested under Lune like the core.
 
+local Hero = require("./Core/Hero")
+local Progression = require("./Core/Progression")
+local State = require("./Core/State")
 local Types = require("./Core/Types")
 
 local Protocol = {}
@@ -14,25 +17,18 @@ Protocol.remotes = {
 	world = "World",
 	-- Server to one client: events it may see and its own state.
 	events = "Events",
-	-- Server to one client: the run's map, once per run and on join.
-	map = "Map",
 }
 
 export type Intent =
-	{ kind: "aim", angle: number }
-	| { kind: "fire", held: boolean }
-	| { kind: "skill", index: number, aim: number?, aimDistance: number? }
-	| { kind: "dash" }
-	| { kind: "drink" }
-	| { kind: "interact", held: boolean }
-	| { kind: "perk", index: number }
-	| { kind: "assist", enabled: boolean }
+	{ kind: "pickClass", class: string }
+	| { kind: "card", index: number }
+	| { kind: "utility", index: number }
+	| { kind: "open", held: boolean }
+	| { kind: "cast" }
+	| { kind: "enter" }
 
--- The most active skills a class may have; the server checks the real count.
-local MAX_SKILLS = 8
-local MAX_PERK_INDEX = 16
--- Farther than any skill reaches; an aim distance beyond it is malformed.
-local MAX_AIM_DISTANCE = 1000
+-- More than any offer's cards or the utility buttons; the run checks the real count.
+local MAX_INDEX = 6
 
 local function isFiniteNumber(value: any): boolean
 	return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
@@ -42,195 +38,235 @@ local function isSmallIndex(value: any, max: number): boolean
 	return isFiniteNumber(value) and value == math.floor(value) and value >= 1 and value <= max
 end
 
--- An aim angle: radians from +x toward +z (ADR-0009).
-local function isAngle(value: any): boolean
-	return isFiniteNumber(value) and math.abs(value) <= 2 * math.pi
-end
-
 -- Parses the arguments of an Intent remote. Returns nil for anything malformed;
--- range, cooldowns and state are the run's to check.
-function Protocol.parseIntent(kind: any, a: any, b: any, c: any): Intent?
-	-- Only a skill takes a third argument.
-	local trailing = c ~= nil
-	if kind == "aim" then
-		if isAngle(a) and b == nil and not trailing then
-			return { kind = "aim", angle = a }
+-- whether the intent applies now (an offer waiting, a cooldown, the chest in
+-- reach) is the run's to check.
+function Protocol.parseIntent(config: Types.Config, kind: any, a: any, b: any): Intent?
+	if b ~= nil then
+		return nil
+	end
+	if kind == "pickClass" then
+		if type(a) == "string" and config.classes[a] ~= nil then
+			return { kind = "pickClass", class = a }
 		end
-	elseif kind == "fire" then
-		if type(a) == "boolean" and b == nil and not trailing then
-			return { kind = "fire", held = a }
+	elseif kind == "card" then
+		if isSmallIndex(a, MAX_INDEX) then
+			return { kind = "card", index = a }
 		end
-	elseif kind == "skill" then
-		-- The index, then an optional aim angle and an optional aim distance.
-		if isSmallIndex(a, MAX_SKILLS) and (b == nil or isAngle(b)) then
-			if c == nil then
-				return { kind = "skill", index = a, aim = b, aimDistance = nil }
-			end
-			if isFiniteNumber(c) and c > 0 and c <= MAX_AIM_DISTANCE then
-				return { kind = "skill", index = a, aim = b, aimDistance = c }
-			end
+	elseif kind == "utility" then
+		if isSmallIndex(a, MAX_INDEX) then
+			return { kind = "utility", index = a }
 		end
-	elseif kind == "dash" then
-		if a == nil and b == nil and not trailing then
-			return { kind = "dash" }
+	elseif kind == "open" then
+		if type(a) == "boolean" then
+			return { kind = "open", held = a }
 		end
-	elseif kind == "drink" then
-		if a == nil and b == nil and not trailing then
-			return { kind = "drink" }
+	elseif kind == "cast" then
+		if a == nil then
+			return { kind = "cast" }
 		end
-	elseif kind == "interact" then
-		if type(a) == "boolean" and b == nil and not trailing then
-			return { kind = "interact", held = a }
-		end
-	elseif kind == "perk" then
-		if isSmallIndex(a, MAX_PERK_INDEX) and b == nil and not trailing then
-			return { kind = "perk", index = a }
-		end
-	elseif kind == "assist" then
-		if type(a) == "boolean" and b == nil and not trailing then
-			return { kind = "assist", enabled = a }
+	elseif kind == "enter" then
+		if a == nil then
+			return { kind = "enter" }
 		end
 	end
 	return nil
 end
 
--- Archetypes travel as their index in the sorted list of names.
-function Protocol.archetypeNames(config: Types.Config): { string }
-	local names = {}
-	for name in config.enemies.archetypes do
-		table.insert(names, name)
-	end
+local function sorted(names: { string }): { string }
 	table.sort(names)
 	return names
 end
 
--- Projectile kinds: every skill id of every class and every archetype, sorted.
+-- Enemy kinds travel as their index in the sorted list of ids.
+function Protocol.enemyKinds(config: Types.Config): { string }
+	local names = {}
+	for id in config.enemies do
+		table.insert(names, id)
+	end
+	return sorted(names)
+end
+
+-- Projectile kinds: every skill that flies and every enemy kind that shoots, sorted.
 function Protocol.projectileKinds(config: Types.Config): { string }
 	local names = {}
-	for _, class in config.classes do
-		table.insert(names, class.basic.id)
-		for _, active in class.actives do
-			table.insert(names, active.id)
+	for id, skill in config.skills do
+		if skill.speed > 0 then
+			table.insert(names, id)
 		end
 	end
-	for name in config.enemies.archetypes do
-		table.insert(names, name)
+	for id, kind in config.enemies do
+		for _, attack in kind.attacks do
+			if attack.kind == "projectile" then
+				table.insert(names, id)
+				break
+			end
+		end
 	end
-	table.sort(names)
-	return names
+	return sorted(names)
 end
 
-local STATES: { Types.EnemyState } = { "idle", "chase", "telegraph", "recover", "return", "patrol" }
+local function indexOf(names: { string }): { [string]: number }
+	local index = {}
+	for i, name in names do
+		index[name] = i
+	end
+	return index
+end
 
-export type EnemyView = {
-	id: number,
-	archetype: string,
-	level: number,
-	x: number,
-	z: number,
-	facing: number,
-	state: Types.EnemyState,
-	-- Health as a share of the maximum, in [0, 1].
-	health: number,
-	chilled: boolean,
-	burning: boolean,
-	brittle: boolean,
-	buffed: boolean,
-	-- The wandering boss, drawn bigger.
-	boss: boolean,
-}
-
--- One enemy on the wire, after a u16 count:
---   0 u32 id, 4 u8 archetype index, 5 i16 x, 7 i16 z, 9 u8 facing,
---   10 u8 state index, 11 u8 health share, 12 u8 flags, 13 u8 level.
-local ENEMY_BYTES = 14
 -- Positions travel in tenths of a stud as int16, which covers +-3276 studs.
 local POSITION_SCALE = 10
-local FLAG_CHILLED = 1
-local FLAG_BURNING = 2
-local FLAG_BRITTLE = 4
-local FLAG_BUFFED = 8
-local FLAG_BOSS = 16
 
 local function writePosition(out: buffer, offset: number, value: number)
 	buffer.writei16(out, offset, math.clamp(math.round(value * POSITION_SCALE), -32768, 32767))
 end
 
+local function readPosition(data: buffer, offset: number): number
+	return buffer.readi16(data, offset) / POSITION_SCALE
+end
+
 local function writeAngle(out: buffer, offset: number, angle: number)
-	buffer.writeu8(out, offset, math.floor((angle % (2 * math.pi)) / (2 * math.pi) * 256) % 256)
+	buffer.writeu8(out, offset, math.round((angle % (2 * math.pi)) / (2 * math.pi) * 256) % 256)
 end
 
 local function readAngle(data: buffer, offset: number): number
 	return buffer.readu8(data, offset) / 256 * 2 * math.pi
 end
 
-function Protocol.encodeEnemies(run: Types.Run, archetypeNames: { string }): buffer
-	local index = {}
-	for i, name in archetypeNames do
-		index[name] = i
+-- The record count after a u16 header, or nil when the length does not match.
+local function recordCount(data: any, recordBytes: number): number?
+	if type(data) ~= "buffer" or buffer.len(data) < 2 then
+		return nil
 	end
+	local count = buffer.readu16(data, 0)
+	if buffer.len(data) ~= 2 + count * recordBytes then
+		return nil
+	end
+	return count
+end
+
+local STATES: { Types.EnemyState } = { "chase", "telegraph", "charge", "recover" }
+
+export type EnemyView = {
+	id: number,
+	kind: string,
+	x: number,
+	z: number,
+	facing: number,
+	state: Types.EnemyState,
+	-- Health as a share of the maximum, in [0, 1].
+	health: number,
+	slowed: boolean,
+	rooted: boolean,
+	stunned: boolean,
+	feared: boolean,
+	burning: boolean,
+	bleeding: boolean,
+	poisoned: boolean,
+	buffed: boolean,
+	-- A boss's phase; 1 for everything else.
+	phase: number,
+}
+
+-- One enemy on the wire, after a u16 count:
+--   0 u32 id, 4 u8 kind index, 5 i16 x, 7 i16 z, 9 u8 facing,
+--   10 u8 state (chase 0, telegraph 1, charge 2, recover 3), 11 u8 health
+--   share, 12 u8 flags, 13 u8 phase.
+local ENEMY_BYTES = 14
+local FLAG_SLOWED = 1
+local FLAG_ROOTED = 2
+local FLAG_STUNNED = 4
+local FLAG_FEARED = 8
+local FLAG_BURNING = 16
+local FLAG_BLEEDING = 32
+local FLAG_POISONED = 64
+local FLAG_BUFFED = 128
+
+local DOT_FLAGS = { burning = FLAG_BURNING, bleeding = FLAG_BLEEDING, poisoned = FLAG_POISONED }
+
+local function enemyFlags(run: Types.Run, enemy: Types.Enemy): number
+	local now = run.time
+	local flags = 0
+	if now < enemy.slowUntil or now < enemy.chilledUntil then
+		flags += FLAG_SLOWED
+	end
+	if now < enemy.rootedUntil then
+		flags += FLAG_ROOTED
+	end
+	if now < enemy.stunnedUntil then
+		flags += FLAG_STUNNED
+	end
+	if now < enemy.fearedUntil then
+		flags += FLAG_FEARED
+	end
+	for _, dot in enemy.dots do
+		if now < dot.until_ then
+			flags = bit32.bor(flags, DOT_FLAGS[dot.status])
+		end
+	end
+	if now < enemy.buffedUntil then
+		flags += FLAG_BUFFED
+	end
+	return flags
+end
+
+local function hasFlag(flags: number, flag: number): boolean
+	return bit32.band(flags, flag) ~= 0
+end
+
+function Protocol.encodeEnemies(run: Types.Run, kinds: { string }): buffer
+	local index = indexOf(kinds)
 	local enemies = run.enemies
 	local out = buffer.create(2 + #enemies * ENEMY_BYTES)
 	buffer.writeu16(out, 0, #enemies)
 	for i, enemy in enemies do
 		local offset = 2 + (i - 1) * ENEMY_BYTES
-		local flags = 0
-		if run.time < enemy.chilledUntil then
-			flags += FLAG_CHILLED
-		end
-		if run.time < enemy.burningUntil then
-			flags += FLAG_BURNING
-		end
-		if run.time < enemy.brittleUntil then
-			flags += FLAG_BRITTLE
-		end
-		if run.time < enemy.buffedUntil then
-			flags += FLAG_BUFFED
-		end
-		if enemy.boss then
-			flags += FLAG_BOSS
-		end
 		buffer.writeu32(out, offset, enemy.id)
-		buffer.writeu8(out, offset + 4, index[enemy.archetype] or 0)
+		buffer.writeu8(out, offset + 4, index[enemy.kind] or 0)
 		writePosition(out, offset + 5, enemy.x)
 		writePosition(out, offset + 7, enemy.z)
 		writeAngle(out, offset + 9, enemy.facing)
-		buffer.writeu8(out, offset + 10, table.find(STATES, enemy.state) or 1)
+		buffer.writeu8(out, offset + 10, (table.find(STATES, enemy.state) or 1) - 1)
 		local health = if enemy.maxHealth > 0 then enemy.health / enemy.maxHealth else 0
 		buffer.writeu8(out, offset + 11, math.clamp(math.ceil(health * 255), 0, 255))
-		buffer.writeu8(out, offset + 12, flags)
-		buffer.writeu8(out, offset + 13, math.clamp(enemy.level, 0, 255))
+		buffer.writeu8(out, offset + 12, enemyFlags(run, enemy))
+		buffer.writeu8(out, offset + 13, math.clamp(enemy.phase, 0, 255))
 	end
 	return out
 end
 
 -- Returns nil when the buffer is not a well-formed enemy list.
-function Protocol.decodeEnemies(data: any, archetypeNames: { string }): { EnemyView }?
-	if type(data) ~= "buffer" or buffer.len(data) < 2 then
-		return nil
-	end
-	local count = buffer.readu16(data, 0)
-	if buffer.len(data) ~= 2 + count * ENEMY_BYTES then
+function Protocol.decodeEnemies(data: any, kinds: { string }): { EnemyView }?
+	local count = recordCount(data, ENEMY_BYTES)
+	if count == nil then
 		return nil
 	end
 	local enemies: { EnemyView } = table.create(count)
 	for i = 1, count do
 		local offset = 2 + (i - 1) * ENEMY_BYTES
+		local kind = kinds[buffer.readu8(data, offset + 4)]
+		local state: Types.EnemyState? = STATES[buffer.readu8(data, offset + 10) + 1]
+		if kind == nil or state == nil then
+			return nil
+		end
 		local flags = buffer.readu8(data, offset + 12)
 		enemies[i] = {
 			id = buffer.readu32(data, offset),
-			archetype = archetypeNames[buffer.readu8(data, offset + 4)] or archetypeNames[1],
-			level = buffer.readu8(data, offset + 13),
-			x = buffer.readi16(data, offset + 5) / POSITION_SCALE,
-			z = buffer.readi16(data, offset + 7) / POSITION_SCALE,
+			kind = kind,
+			x = readPosition(data, offset + 5),
+			z = readPosition(data, offset + 7),
 			facing = readAngle(data, offset + 9),
-			state = (STATES[buffer.readu8(data, offset + 10)] or "idle") :: Types.EnemyState,
+			state = state,
 			health = buffer.readu8(data, offset + 11) / 255,
-			chilled = bit32.band(flags, FLAG_CHILLED) ~= 0,
-			burning = bit32.band(flags, FLAG_BURNING) ~= 0,
-			brittle = bit32.band(flags, FLAG_BRITTLE) ~= 0,
-			buffed = bit32.band(flags, FLAG_BUFFED) ~= 0,
-			boss = bit32.band(flags, FLAG_BOSS) ~= 0,
+			slowed = hasFlag(flags, FLAG_SLOWED),
+			rooted = hasFlag(flags, FLAG_ROOTED),
+			stunned = hasFlag(flags, FLAG_STUNNED),
+			feared = hasFlag(flags, FLAG_FEARED),
+			burning = hasFlag(flags, FLAG_BURNING),
+			bleeding = hasFlag(flags, FLAG_BLEEDING),
+			poisoned = hasFlag(flags, FLAG_POISONED),
+			buffed = hasFlag(flags, FLAG_BUFFED),
+			phase = buffer.readu8(data, offset + 13),
 		}
 	end
 	return enemies
@@ -238,157 +274,253 @@ end
 
 export type ProjectileView = {
 	id: number,
-	owner: "player" | "enemy",
+	-- The skill id or enemy kind that fired it.
 	kind: string,
 	x: number,
 	z: number,
-	facing: number,
+	-- The direction of flight.
+	angle: number,
+	-- The area it bursts over when it lands; 0 strikes only what it hits.
+	radius: number,
 }
 
-local PROJECTILE_BYTES = 11
+-- One projectile on the wire, after a u16 count:
+--   0 u32 id, 4 u8 kind index, 5 i16 x, 7 i16 z, 9 u8 angle, 10 u16 radius
+--   in tenths of a stud.
+local PROJECTILE_BYTES = 12
+local RADIUS_SCALE = 10
 
 function Protocol.encodeProjectiles(run: Types.Run, kinds: { string }): buffer
-	local index = {}
-	for i, name in kinds do
-		index[name] = i
-	end
+	local index = indexOf(kinds)
 	local projectiles = run.projectiles
 	local out = buffer.create(2 + #projectiles * PROJECTILE_BYTES)
 	buffer.writeu16(out, 0, #projectiles)
 	for i, projectile in projectiles do
 		local offset = 2 + (i - 1) * PROJECTILE_BYTES
 		buffer.writeu32(out, offset, projectile.id)
-		buffer.writeu8(out, offset + 4, if projectile.owner == "player" then 0 else 1)
-		buffer.writeu8(out, offset + 5, index[projectile.kind] or 0)
-		writePosition(out, offset + 6, projectile.x)
-		writePosition(out, offset + 8, projectile.z)
-		writeAngle(out, offset + 10, math.atan2(projectile.dirZ, projectile.dirX))
+		buffer.writeu8(out, offset + 4, index[projectile.kind] or 0)
+		writePosition(out, offset + 5, projectile.x)
+		writePosition(out, offset + 7, projectile.z)
+		writeAngle(out, offset + 9, math.atan2(projectile.dirZ, projectile.dirX))
+		buffer.writeu16(
+			out,
+			offset + 10,
+			math.clamp(math.round(projectile.radius * RADIUS_SCALE), 0, 65535)
+		)
 	end
 	return out
 end
 
 -- Returns nil when the buffer is not a well-formed projectile list.
 function Protocol.decodeProjectiles(data: any, kinds: { string }): { ProjectileView }?
-	if type(data) ~= "buffer" or buffer.len(data) < 2 then
-		return nil
-	end
-	local count = buffer.readu16(data, 0)
-	if buffer.len(data) ~= 2 + count * PROJECTILE_BYTES then
+	local count = recordCount(data, PROJECTILE_BYTES)
+	if count == nil then
 		return nil
 	end
 	local projectiles: { ProjectileView } = table.create(count)
 	for i = 1, count do
 		local offset = 2 + (i - 1) * PROJECTILE_BYTES
-		local owner: "player" | "enemy" = if buffer.readu8(data, offset + 4) == 0
-			then "player"
-			else "enemy"
+		local kind = kinds[buffer.readu8(data, offset + 4)]
+		if kind == nil then
+			return nil
+		end
 		projectiles[i] = {
 			id = buffer.readu32(data, offset),
-			owner = owner,
-			kind = kinds[buffer.readu8(data, offset + 5)] or "",
-			x = buffer.readi16(data, offset + 6) / POSITION_SCALE,
-			z = buffer.readi16(data, offset + 8) / POSITION_SCALE,
-			facing = readAngle(data, offset + 10),
+			kind = kind,
+			x = readPosition(data, offset + 5),
+			z = readPosition(data, offset + 7),
+			angle = readAngle(data, offset + 9),
+			radius = buffer.readu16(data, offset + 10) / RADIUS_SCALE,
 		}
 	end
 	return projectiles
 end
 
+export type CrystalView = { id: number, x: number, z: number, xp: number }
+
+-- One crystal on the wire, after a u16 count:
+--   0 u32 id, 4 i16 x, 6 i16 z, 8 u16 xp (rounded).
+local CRYSTAL_BYTES = 10
+
+function Protocol.encodeCrystals(run: Types.Run): buffer
+	local crystals = run.crystals
+	local out = buffer.create(2 + #crystals * CRYSTAL_BYTES)
+	buffer.writeu16(out, 0, #crystals)
+	for i, crystal in crystals do
+		local offset = 2 + (i - 1) * CRYSTAL_BYTES
+		buffer.writeu32(out, offset, crystal.id)
+		writePosition(out, offset + 4, crystal.x)
+		writePosition(out, offset + 6, crystal.z)
+		buffer.writeu16(out, offset + 8, math.clamp(math.round(crystal.xp), 0, 65535))
+	end
+	return out
+end
+
+-- Returns nil when the buffer is not a well-formed crystal list.
+function Protocol.decodeCrystals(data: any): { CrystalView }?
+	local count = recordCount(data, CRYSTAL_BYTES)
+	if count == nil then
+		return nil
+	end
+	local crystals: { CrystalView } = table.create(count)
+	for i = 1, count do
+		local offset = 2 + (i - 1) * CRYSTAL_BYTES
+		crystals[i] = {
+			id = buffer.readu32(data, offset),
+			x = readPosition(data, offset + 4),
+			z = readPosition(data, offset + 6),
+			xp = buffer.readu16(data, offset + 8),
+		}
+	end
+	return crystals
+end
+
 -- The part of a player every client sees.
 export type PlayerView = {
 	id: number,
+	class: string,
+	x: number,
+	z: number,
+	facing: number,
 	state: Types.PlayerState,
 	health: number,
 	maxHealth: number,
-	reviveProgress: number,
-	extractProgress: number,
-	-- Seconds held reading a clue and opening a chest.
-	clueProgress: number,
-	chestProgress: number,
-	downedFor: number,
-	potions: number,
-	-- Seconds left of the drink, 0 when not drinking.
-	drinkingFor: number,
+	-- The barrier still absorbing damage; 0 when none stands.
+	barrier: number,
+	-- Seconds left of the extraction spell's cast; 0 when not casting.
+	castingLeft: number,
+	-- Seconds held at the chest.
+	openProgress: number,
+	sprinting: boolean,
 }
 
-export type ClueView = { id: number, x: number, z: number, read: boolean }
+export type AreaView = {
+	id: number,
+	areaKind: string,
+	owner: "player" | "enemy",
+	x: number,
+	z: number,
+	radius: number,
+	secondsLeft: number,
+}
 
--- What everyone knows of a camp leader's whereabouts; radius 0 marks the point.
-export type LeaderAreaView = { campId: number, x: number, z: number, radius: number }
+export type TotemView = {
+	id: number,
+	skill: string,
+	x: number,
+	z: number,
+	secondsLeft: number,
+}
 
-export type ChestView = { id: number, x: number, z: number, opened: boolean }
+export type FoodView = { id: number, x: number, z: number }
+
+export type ChestView = { x: number, z: number, opened: boolean }
+
+export type PortalView = { x: number, z: number, secondsLeft: number }
 
 export type WorldView = {
 	time: number,
-	durationSeconds: number,
-	-- The half side of the square the flood has not reached.
-	floodHalf: number,
+	paused: boolean,
+	ended: boolean,
+	-- In id order.
 	players: { PlayerView },
-	-- Every zone opened so far; one the flood closed has open false.
-	zones: { Types.Zone },
-	pickups: { Types.Pickup },
-	-- Only the clues someone has found: an unfound clue stays on the server.
-	clues: { ClueView },
-	-- In camp id order.
-	leaderAreas: { LeaderAreaView },
-	chests: { ChestView },
+	areas: { AreaView },
+	totems: { TotemView },
+	foods: { FoodView },
+	chest: ChestView,
+	compassOn: boolean,
+	portal: PortalView?,
+	-- Seconds the party has left to kill the final boss, once it has come.
+	finalBossLeft: number?,
+	-- The bosses alive, drawn with their health bars.
+	bossIds: { number },
 }
+
+local function secondsLeft(run: Types.Run, until_: number): number
+	return math.max(0, until_ - run.time)
+end
 
 function Protocol.worldView(run: Types.Run): WorldView
 	local players = {}
-	for _, player in run.players do
+	for _, player in State.sortedPlayers(run) do
+		local castingUntil = player.castingUntil
 		table.insert(players, {
 			id = player.id,
+			class = player.class,
+			x = player.x,
+			z = player.z,
+			facing = player.facing,
 			state = player.state,
 			health = player.health,
-			maxHealth = player.maxHealth,
-			reviveProgress = player.reviveProgress,
-			extractProgress = player.extractProgress,
-			clueProgress = player.clueProgress,
-			chestProgress = player.chestProgress,
-			downedFor = if player.downedAt then run.time - player.downedAt else 0,
-			potions = player.potions,
-			drinkingFor = if player.drinkingUntil
-				then math.max(0, player.drinkingUntil - run.time)
-				else 0,
+			maxHealth = Hero.stats(run, player).maxHealth,
+			barrier = if player.barrierUntil > run.time then player.barrier else 0,
+			castingLeft = if castingUntil then secondsLeft(run, castingUntil) else 0,
+			openProgress = player.openProgress,
+			sprinting = player.sprintUntil > run.time,
 		})
 	end
-	table.sort(players, function(a, b)
-		return a.id < b.id
-	end)
-	local clues = {}
-	for _, clue in run.clues do
-		if clue.found then
-			table.insert(clues, { id = clue.id, x = clue.x, z = clue.z, read = clue.read })
+	local areas = table.create(#run.areas)
+	for _, area in run.areas do
+		table.insert(areas, {
+			id = area.id,
+			areaKind = area.kind,
+			owner = area.owner,
+			x = area.x,
+			z = area.z,
+			radius = area.radius,
+			secondsLeft = secondsLeft(run, area.until_),
+		})
+	end
+	local totems = table.create(#run.totems)
+	for _, totem in run.totems do
+		table.insert(totems, {
+			id = totem.id,
+			skill = totem.skill,
+			x = totem.x,
+			z = totem.z,
+			secondsLeft = secondsLeft(run, totem.until_),
+		})
+	end
+	local foods = table.create(#run.foods)
+	for _, food in run.foods do
+		table.insert(foods, { id = food.id, x = food.x, z = food.z })
+	end
+	local portal = run.portal
+	local deadline = run.finalBossDeadline
+	local bossIds = {}
+	for _, enemy in run.enemies do
+		if State.isBoss(State.kind(run, enemy)) then
+			table.insert(bossIds, enemy.id)
 		end
-	end
-	local leaderAreas = {}
-	for campId, area in run.leaderAreas do
-		table.insert(leaderAreas, { campId = campId, x = area.x, z = area.z, radius = area.radius })
-	end
-	table.sort(leaderAreas, function(a, b)
-		return a.campId < b.campId
-	end)
-	local chests = table.create(#run.chests)
-	for _, chest in run.chests do
-		table.insert(chests, { id = chest.id, x = chest.x, z = chest.z, opened = chest.opened })
 	end
 	return {
 		time = run.time,
-		durationSeconds = run.config.run.durationSeconds,
-		floodHalf = run.floodHalf,
+		paused = run.paused,
+		ended = run.ended,
 		players = players,
-		zones = run.zones,
-		pickups = run.pickups,
-		clues = clues,
-		leaderAreas = leaderAreas,
-		chests = chests,
+		areas = areas,
+		totems = totems,
+		foods = foods,
+		chest = { x = run.arena.chestX, z = run.arena.chestZ, opened = run.chestOpened },
+		compassOn = run.compassOn,
+		portal = if portal
+			then { x = portal.x, z = portal.z, secondsLeft = secondsLeft(run, portal.until_) }
+			else nil,
+		finalBossLeft = if deadline then secondsLeft(run, deadline) else nil,
+		bossIds = bossIds,
 	}
 end
 
 export type SkillView = {
 	id: string,
-	name: string,
+	rank: number,
+	readyIn: number,
+	-- The skill's base cooldown; ranks and haste shorten the real one.
+	cooldown: number,
+}
+
+export type UtilityView = {
+	id: string,
 	readyIn: number,
 	cooldown: number,
 }
@@ -399,148 +531,55 @@ export type SelfView = {
 	xp: number,
 	xpToNext: number,
 	kills: number,
-	-- The oldest perk offer waiting for a choice.
-	offer: { string }?,
-	-- Perk id to stacks taken.
-	perks: { [string]: number },
+	-- The oldest offer waiting for a choice.
+	offer: { Types.Card }?,
 	skills: { SkillView },
-	dashCharges: number,
-	dashMaxCharges: number,
-	dashRechargeIn: number,
-	-- How far a dash carries, after perks: the client moves the character by it.
-	dashDistance: number,
-	potions: number,
-	potionCapacity: number,
+	-- Passive id to its rank.
+	passives: { [string]: number },
+	-- In button order.
+	utilities: { UtilityView },
+	hasSpell: boolean,
+	stats: Types.HeroStats,
 }
 
--- A point as the map screen draws it: where it is and whether it is an
--- entry; its level, template and camp stay on the server.
-export type MapPointView = { id: number, x: number, z: number, radius: number, isEntry: boolean }
-
-export type MapPathView = { a: number, b: number }
-
--- The map as the client draws it: the ground and the layout of points and
--- paths, since everything else the client sees in the world (props, cover,
--- markers) is built by the server as parts. Heights travel as u16 tenths of
--- a stud, row-major: heights[row][col], row along z, col along x, both from
--- -half, spaced heightCell apart.
-export type MapView = {
-	half: number,
-	heightCell: number,
-	waterLevel: number,
-	rows: number,
-	cols: number,
-	heights: buffer,
-	points: { MapPointView },
-	paths: { MapPathView },
-}
-
-local HEIGHT_SCALE = 10
-local HEIGHT_BYTES = 2
-
-function Protocol.mapView(map: Types.Map): MapView
-	local rows = #map.heights
-	local cols = if rows > 0 then #map.heights[1] else 0
-	local heights = buffer.create(rows * cols * HEIGHT_BYTES)
-	for row, line in map.heights do
-		for col, height in line do
-			local offset = ((row - 1) * cols + col - 1) * HEIGHT_BYTES
-			buffer.writeu16(
-				heights,
-				offset,
-				math.clamp(math.round(height * HEIGHT_SCALE), 0, 65535)
-			)
-		end
-	end
-	local points = table.create(#map.points)
-	for _, point in map.points do
-		table.insert(points, {
-			id = point.id,
-			x = point.x,
-			z = point.z,
-			radius = point.radius,
-			isEntry = point.isEntry,
+function Protocol.selfView(run: Types.Run, player: Types.Player): SelfView
+	local config = run.config
+	local skills = table.create(#player.skills)
+	for _, owned in player.skills do
+		table.insert(skills, {
+			id = owned.id,
+			rank = owned.rank,
+			readyIn = secondsLeft(run, owned.readyAt),
+			cooldown = config.skills[owned.id].cooldownSeconds,
 		})
 	end
-	local paths = table.create(#map.paths)
-	for _, path in map.paths do
-		table.insert(paths, { a = path.a, b = path.b })
+	local utilities = table.create(#config.utilities)
+	for index, utility in config.utilities do
+		table.insert(utilities, {
+			id = utility.id,
+			readyIn = secondsLeft(run, player.utilityReadyAt[index] or 0),
+			cooldown = utility.cooldownSeconds,
+		})
 	end
 	return {
-		half = map.half,
-		heightCell = map.heightCell,
-		waterLevel = map.waterLevel,
-		rows = rows,
-		cols = cols,
-		heights = heights,
-		points = points,
-		paths = paths,
+		level = player.level,
+		xp = player.xp,
+		xpToNext = Progression.xpToNext(config, player.level),
+		kills = player.kills,
+		offer = player.offers[1],
+		skills = skills,
+		passives = table.clone(player.passives),
+		utilities = utilities,
+		hasSpell = player.hasSpell,
+		stats = Hero.stats(run, player),
 	}
 end
 
-local function isCount(value: any): boolean
-	return isFiniteNumber(value) and value == math.floor(value) and value >= 2
-end
-
--- The height grid of a map view; nil when the view is malformed or the
--- buffer's length does not match rows x cols.
-function Protocol.decodeHeights(view: MapView): { { number } }?
-	local data: any = view.heights
-	if type(data) ~= "buffer" or not isCount(view.rows) or not isCount(view.cols) then
-		return nil
-	end
-	local rows, cols = view.rows, view.cols
-	if buffer.len(data) ~= rows * cols * HEIGHT_BYTES then
-		return nil
-	end
-	local heights: { { number } } = table.create(rows)
-	for row = 1, rows do
-		local line = table.create(cols)
-		for col = 1, cols do
-			local offset = ((row - 1) * cols + col - 1) * HEIGHT_BYTES
-			line[col] = buffer.readu16(data, offset) / HEIGHT_SCALE
-		end
-		heights[row] = line
-	end
-	return heights
-end
-
--- The drawn height at (x, z): bilinear over the grid, never below the water,
--- by the same rule as Map.heightAt.
-function Protocol.heightAt(
-	heights: { { number } },
-	heightCell: number,
-	half: number,
-	waterLevel: number,
-	x: number,
-	z: number
-): number
-	local rows, cols = #heights, #heights[1]
-	local u = (math.clamp(x, -half, half) + half) / heightCell
-	local v = (math.clamp(z, -half, half) + half) / heightCell
-	local col = math.clamp(math.floor(u) + 1, 1, cols - 1)
-	local row = math.clamp(math.floor(v) + 1, 1, rows - 1)
-	local fx = math.clamp(u - (col - 1), 0, 1)
-	local fz = math.clamp(v - (row - 1), 0, 1)
-	local low = heights[row][col] * (1 - fx) + heights[row][col + 1] * fx
-	local high = heights[row + 1][col] * (1 - fx) + heights[row + 1][col + 1] * fx
-	return math.max(low * (1 - fz) + high * fz, waterLevel)
-end
-
--- Whether an event goes to every client or only to the player it is about.
--- Announcements, clues found and read and chests opened go to everyone: what
--- one player learns of a leader's whereabouts narrows it for all.
+-- Whether an event goes only to the player it is about rather than to every
+-- client: a player's own offers, cards, level-ups and utilities.
 function Protocol.isPrivate(event: Types.Event): boolean
 	local kind = event.kind
-	return kind == "offer"
-		or kind == "perkTaken"
-		or kind == "levelUp"
-		or kind == "playerHurt"
-		or kind == "knockback"
-		or kind == "drinking"
-		or kind == "drank"
-		or kind == "drinkInterrupted"
-		or kind == "pickedUp"
+	return kind == "offer" or kind == "cardTaken" or kind == "levelUp" or kind == "utility"
 end
 
 -- The player a private event is about.

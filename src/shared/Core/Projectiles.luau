@@ -1,155 +1,186 @@
 --!strict
--- Projectiles in flight: player fireballs and enemy spit. Each lands on what
--- it strikes, at a prop or the map's edge, or where its flight ends; it flies
--- over water.
+-- Projectiles in flight: a hero's bolts homing on their target and enemy
+-- shots flying straight. A bolt hits when it reaches its target, or lands
+-- where it is when the target is gone; an enemy shot hurts the hero it
+-- touches and with a radius bursts there or where its flight ends. Obstacles
+-- never block a shot.
 
-local Combat = require("./Combat")
+local Damage = require("./Damage")
 local Geometry = require("./Geometry")
-local Life = require("./Life")
-local Map = require("./Map")
+local Hero = require("./Hero")
 local State = require("./State")
+local Targeting = require("./Targeting")
 local Types = require("./Types")
 
 local Projectiles = {}
 
--- The longest a projectile moves between two collision checks.
-local SUBSTEP = 1
-
--- An enemy projectile lands at (x, z): with a radius it hurts every alive
--- player in reach, otherwise it vanishes.
-local function enemyBurst(run: Types.Run, projectile: Types.Projectile, x: number, z: number)
-	if projectile.radius <= 0 then
-		return
+local function remove(run: Types.Run, projectile: Types.Projectile)
+	local index = table.find(run.projectiles, projectile)
+	if index then
+		table.remove(run.projectiles, index)
 	end
+end
+
+local function burstEvent(run: Types.Run, projectile: Types.Projectile)
 	table.insert(run.events, {
 		kind = "burst",
-		x = x,
-		z = z,
+		x = projectile.x,
+		z = projectile.z,
 		radius = projectile.radius,
 		skill = projectile.kind,
 	})
-	local reach = projectile.radius + run.config.player.radius
-	for _, player in State.sortedPlayers(run) do
-		if player.state == "alive" and Geometry.distance(x, z, player.x, player.z) <= reach then
-			Life.damage(run, player, projectile.damage, projectile.source)
-			Life.knockPlayer(run, player, x, z, projectile.knockback)
+end
+
+local function hitOf(projectile: Types.Projectile, amount: number): Damage.Hit
+	return {
+		source = projectile.source,
+		skill = projectile.kind,
+		amount = amount,
+		tags = projectile.tags,
+		effect = projectile.effect,
+		critChance = projectile.critChance,
+		knockback = projectile.knockback,
+		fromX = projectile.x,
+		fromZ = projectile.z,
+	}
+end
+
+-- A hero's bolt lands: on `struck` with its splash, or with no enemy struck
+-- as a splash alone.
+local function landBolt(run: Types.Run, projectile: Types.Projectile, struck: Types.Enemy?)
+	burstEvent(run, projectile)
+	if struck then
+		Damage.splash(run, struck, hitOf(projectile, projectile.damage), projectile.radius)
+	elseif projectile.radius > 0 then
+		local amount = projectile.damage * run.config.ranks.splashShare
+		for _, enemy in Targeting.within(run, projectile.x, projectile.z, projectile.radius) do
+			Damage.hit(run, enemy, hitOf(projectile, amount))
 		end
 	end
 end
 
--- The alive player nearest to the projectile within touching distance.
+-- An enemy shot bursts: every alive hero within its radius is hurt and
+-- pushed away from the point.
+local function burstOnPlayers(run: Types.Run, projectile: Types.Projectile)
+	burstEvent(run, projectile)
+	local reach = projectile.radius + run.config.player.radius
+	for _, player in State.alivePlayers(run) do
+		if Geometry.distance(projectile.x, projectile.z, player.x, player.z) <= reach then
+			Hero.damage(run, player, projectile.damage, projectile.source)
+			if projectile.knockback > 0 then
+				local dx, dz = Geometry.normalize(player.x - projectile.x, player.z - projectile.z)
+				Hero.knock(run, player, dx * projectile.knockback, dz * projectile.knockback)
+			end
+		end
+	end
+end
+
 local function touchedPlayer(run: Types.Run, x: number, z: number): Types.Player?
 	local reach = run.config.player.radius + run.config.projectiles.touchMargin
 	local best: Types.Player? = nil
 	local bestDistance = math.huge
-	for _, player in State.sortedPlayers(run) do
-		local d = Geometry.distance(x, z, player.x, player.z)
-		if player.state == "alive" and d <= reach and d < bestDistance then
+	for _, player in State.alivePlayers(run) do
+		local distance = Geometry.distance(x, z, player.x, player.z)
+		if distance <= reach and distance < bestDistance then
 			best = player
-			bestDistance = d
+			bestDistance = distance
 		end
 	end
 	return best
 end
 
 local function touchedEnemy(run: Types.Run, x: number, z: number): Types.Enemy?
+	local margin = run.config.projectiles.touchMargin
 	local best: Types.Enemy? = nil
 	local bestDistance = math.huge
 	for _, enemy in run.enemies do
-		local d = Geometry.distance(x, z, enemy.x, enemy.z)
-		if
-			d <= State.enemyRadius(run, enemy) + run.config.projectiles.touchMargin
-			and d < bestDistance
-		then
+		local distance = Geometry.distance(x, z, enemy.x, enemy.z)
+		if distance <= State.kind(run, enemy).radius + margin and distance < bestDistance then
 			best = enemy
-			bestDistance = d
+			bestDistance = distance
 		end
 	end
 	return best
 end
 
--- Checks the projectile at its current point. Returns true when it landed (and
--- did what landing does); the caller removes it.
-local function collide(run: Types.Run, projectile: Types.Projectile): boolean
-	local x, z = projectile.x, projectile.z
-	-- Stopped at a prop or the edge: the flight was cut short by the step.
-	local outside = projectile.remaining <= 1e-9
-
-	if projectile.owner == "player" then
-		if outside then
-			Combat.burst(run, projectile, x, z, nil)
+-- A hero's bolt: homing on its target, or straight without one. Returns true
+-- when it landed.
+local function stepPlayer(run: Types.Run, projectile: Types.Projectile, dt: number): boolean
+	local travel = math.min(projectile.remaining, projectile.speed * dt)
+	local targetId = projectile.targetId
+	if targetId ~= nil then
+		local target = State.enemyById(run, targetId)
+		if target == nil then
+			landBolt(run, projectile, nil)
 			return true
 		end
-		local enemy = touchedEnemy(run, x, z)
-		if enemy then
-			Combat.burst(run, projectile, x, z, enemy)
+		local x, z = Geometry.stepToward(projectile.x, projectile.z, target.x, target.z, travel)
+		projectile.dirX, projectile.dirZ = Geometry.normalize(x - projectile.x, z - projectile.z)
+		projectile.x, projectile.z = x, z
+		projectile.remaining -= travel
+		local reach = State.kind(run, target).radius + run.config.projectiles.touchMargin
+		if Geometry.distance(x, z, target.x, target.z) <= reach then
+			landBolt(run, projectile, target)
 			return true
 		end
-		return false
+	else
+		projectile.x += projectile.dirX * travel
+		projectile.z += projectile.dirZ * travel
+		projectile.remaining -= travel
+		local struck = touchedEnemy(run, projectile.x, projectile.z)
+		if struck then
+			landBolt(run, projectile, struck)
+			return true
+		end
 	end
-
-	if outside then
-		enemyBurst(run, projectile, x, z)
+	if projectile.remaining <= 1e-9 then
+		landBolt(run, projectile, nil)
 		return true
 	end
-	local player = touchedPlayer(run, x, z)
+	return false
+end
+
+-- An enemy shot flying straight. Returns true when it landed.
+local function stepEnemy(run: Types.Run, projectile: Types.Projectile, dt: number): boolean
+	local travel = math.min(projectile.remaining, projectile.speed * dt)
+	projectile.x += projectile.dirX * travel
+	projectile.z += projectile.dirZ * travel
+	projectile.remaining -= travel
+	local player = touchedPlayer(run, projectile.x, projectile.z)
 	if player then
 		if projectile.radius > 0 then
-			enemyBurst(run, projectile, x, z)
+			burstOnPlayers(run, projectile)
 		else
-			Life.damage(run, player, projectile.damage, projectile.source)
-			Life.knockPlayer(run, player, x, z, projectile.knockback)
+			Hero.damage(run, player, projectile.damage, projectile.source)
+			if projectile.knockback > 0 then
+				Hero.knock(
+					run,
+					player,
+					projectile.dirX * projectile.knockback,
+					projectile.dirZ * projectile.knockback
+				)
+			end
+		end
+		return true
+	end
+	if projectile.remaining <= 1e-9 then
+		if projectile.radius > 0 then
+			burstOnPlayers(run, projectile)
 		end
 		return true
 	end
 	return false
 end
 
--- The end of a flight: it lands where it stopped.
-local function expire(run: Types.Run, projectile: Types.Projectile)
-	if projectile.owner == "player" then
-		Combat.burst(run, projectile, projectile.x, projectile.z, nil)
-	else
-		enemyBurst(run, projectile, projectile.x, projectile.z)
-	end
-end
-
--- Advances every projectile by speed * dt, in sub-steps of at most one stud so
--- a fast one cannot skip a target.
+-- Moves every projectile by speed × dt and lands those that arrive.
 function Projectiles.step(run: Types.Run, dt: number)
 	-- Landing removes projectiles from the list being walked.
 	for _, projectile in table.clone(run.projectiles) do
-		local travel = math.min(projectile.remaining, projectile.speed * dt)
-		local steps = math.ceil(travel / SUBSTEP)
-		local length = if steps > 0 then travel / steps else 0
-
-		local landed = false
-		for _ = 1, steps do
-			local lastX, lastZ = projectile.x, projectile.z
-			projectile.x += projectile.dirX * length
-			projectile.z += projectile.dirZ * length
-			projectile.remaining -= length
-			-- A prop is hit at the last point before it, so the burst stays on
-			-- this side of the prop.
-			if Map.blocksShots(run.map, projectile.x, projectile.z) then
-				projectile.x, projectile.z = lastX, lastZ
-				projectile.remaining = 0
-			end
-			if collide(run, projectile) then
-				landed = true
-				break
-			end
-		end
-
-		if not landed and projectile.remaining <= 1e-9 then
-			expire(run, projectile)
-			landed = true
-		end
+		local landed = if projectile.owner == "player"
+			then stepPlayer(run, projectile, dt)
+			else stepEnemy(run, projectile, dt)
 		if landed then
-			local index = table.find(run.projectiles, projectile)
-			if index then
-				table.remove(run.projectiles, index)
-			end
+			remove(run, projectile)
 		end
 	end
 end
