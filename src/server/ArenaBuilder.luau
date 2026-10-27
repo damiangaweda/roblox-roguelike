@@ -11,15 +11,9 @@ local ArenaBuilder = {}
 -- Presentation constants, not gameplay numbers.
 local GROUND_THICKNESS = 4
 local GROUND_OVERHANG = 80
-local GROUND_COLOR = Color3.fromRGB(78, 122, 52)
-local GROUND_EDGE_COLOR = Color3.fromRGB(52, 86, 40)
-local PATCH_COLORS = {
-	Color3.fromRGB(92, 140, 60),
-	Color3.fromRGB(70, 112, 48),
-	Color3.fromRGB(104, 150, 70),
-	Color3.fromRGB(120, 140, 62),
-}
-local PATCH_COUNT = 160
+local PATCH_MATERIALS =
+	{ Enum.Material.LeafyGrass, Enum.Material.Ground, Enum.Material.LeafyGrass, Enum.Material.Mud }
+local PATCH_COUNT = 120
 local PATCH_RADIUS_MIN, PATCH_RADIUS_MAX = 6, 18
 local FLOWER_COUNT = 90
 local FLOWER_COLORS = {
@@ -249,14 +243,15 @@ local function buildRock(
 		)
 	end
 	if boulder then
-		ball(
+		local moss = ball(
 			"Moss",
-			Vector3.new(obstacle.x, r * 0.95, obstacle.z),
-			r * 1.1,
+			Vector3.new(obstacle.x, r * 0.9, obstacle.z),
+			r * 1.3,
 			MOSS_COLOR,
 			Enum.Material.Grass,
 			model
 		)
+		moss.Size = Vector3.new(r * 1.4, r * 0.5, r * 1.4)
 	end
 	body("Body", obstacle.x, obstacle.z, r, r * 1.6, model)
 	model.Parent = parent
@@ -313,36 +308,53 @@ local function buildObstacle(obstacle: Types.Obstacle, parent: Instance, random:
 	end
 end
 
+-- The ground is terrain: a grass disc with patches of other materials
+-- blended in, which gives the forest floor its texture and swaying grass for
+-- nothing per frame; above it the start's ring of stones and a few flowers.
 local function buildGround(arena: Types.Arena, parent: Instance, random: Random)
-	local ground = Instance.new("Model")
-	ground.Name = "Ground"
+	local terrain = workspace.Terrain
 	local outer = arena.radius + GROUND_OVERHANG
-	local disc = newPart("Disc", GROUND_EDGE_COLOR, Enum.Material.Grass, ground)
-	disc.Shape = Enum.PartType.Cylinder
-	disc.Size = Vector3.new(GROUND_THICKNESS, outer * 2, outer * 2)
-	disc.CFrame = CFrame.new(0, -GROUND_THICKNESS / 2, 0) * CFrame.Angles(0, 0, math.pi / 2)
-	local inner = newPart("Field", GROUND_COLOR, Enum.Material.Grass, ground)
-	inner.Shape = Enum.PartType.Cylinder
-	inner.Size = Vector3.new(GROUND_THICKNESS, arena.radius * 2, arena.radius * 2)
-	inner.CFrame = CFrame.new(0, -GROUND_THICKNESS / 2 + 0.05, 0) * CFrame.Angles(0, 0, math.pi / 2)
-	-- Patches of other greens, flat on the ground, break the single colour up.
+	terrain:FillCylinder(
+		CFrame.new(0, -GROUND_THICKNESS / 2, 0),
+		GROUND_THICKNESS,
+		outer,
+		Enum.Material.Grass
+	)
 	for index = 1, PATCH_COUNT do
 		local angle = random:NextNumber(0, 2 * math.pi)
 		local distance = arena.radius * math.sqrt(random:NextNumber())
 		local radius = random:NextNumber(PATCH_RADIUS_MIN, PATCH_RADIUS_MAX)
-		local patch = cylinder(
-			"Patch" .. index,
-			math.cos(angle) * distance,
-			math.sin(angle) * distance,
-			0.02,
-			0.1 + (index % 3) * 0.02,
+		local material = PATCH_MATERIALS[random:NextInteger(1, #PATCH_MATERIALS)]
+		terrain:FillCylinder(
+			CFrame.new(
+				math.cos(angle) * distance,
+				-GROUND_THICKNESS / 2,
+				math.sin(angle) * distance
+			),
+			GROUND_THICKNESS,
 			radius,
-			pick(PATCH_COLORS, random),
-			Enum.Material.Grass,
-			ground
+			material
 		)
-		patch.CastShadow = false
+		if index % 40 == 0 then
+			task.wait()
+		end
 	end
+	-- A dark ring of mud marks the edge of the map.
+	terrain:FillCylinder(
+		CFrame.new(0, -GROUND_THICKNESS / 2 - 0.5, 0),
+		GROUND_THICKNESS,
+		outer,
+		Enum.Material.Mud
+	)
+	terrain:FillCylinder(
+		CFrame.new(0, -GROUND_THICKNESS / 2, 0),
+		GROUND_THICKNESS,
+		arena.radius - 2,
+		Enum.Material.Grass
+	)
+
+	local ground = Instance.new("Model")
+	ground.Name = "Ground"
 	for index = 1, FLOWER_COUNT do
 		local angle = random:NextNumber(0, 2 * math.pi)
 		local distance = arena.radius * math.sqrt(random:NextNumber())
@@ -501,6 +513,7 @@ end
 -- Removes the current map and what a default place brings: the baseplate and
 -- any spawn location. Characters reach the map through the run's teleport.
 function ArenaBuilder.clear()
+	workspace.Terrain:Clear()
 	if folder then
 		folder:Destroy()
 		folder = nil

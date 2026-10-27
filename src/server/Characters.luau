@@ -2,13 +2,15 @@
 -- Keeps each player's character in line with the player the core tracks. The
 -- core's health is the truth: the Humanoid's own health never kills anyone
 -- (AGENTS.md rule 1), and the character only shows what the core decided. The
--- server reads one thing from a character: where it stands. The aim is an
--- intent (ADR-0009); the character's facing is the client's own drawing of it.
+-- server reads one thing from a character: where it stands. A character in a
+-- run is dressed for its class (HeroLook).
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Config = require(ReplicatedStorage.Shared.Config)
 local Types = require(ReplicatedStorage.Shared.Core.Types)
+
+local HeroLook = require(script.Parent.HeroLook)
 
 local Characters = {}
 
@@ -27,6 +29,14 @@ type Entry = {
 }
 
 local entries: { [Player]: Entry } = {}
+
+-- The class each player in a run is dressed for, and what redresses a respawn.
+type Look = {
+	class: Types.ClassConfig,
+	connections: { RBXScriptConnection },
+}
+
+local looks: { [Player]: Look } = {}
 
 -- The entry for the player's current character; a new character (a respawn)
 -- gets a fresh one, which is what restores everything.
@@ -165,8 +175,41 @@ function Characters.apply(player: Player, state: Types.PlayerState, walkSpeed: n
 	end
 end
 
+-- Dresses the player's character for `class`, now and after every respawn,
+-- until called again; nil stops dressing it.
+function Characters.dress(player: Player, class: Types.ClassConfig?)
+	local look = looks[player]
+	if look then
+		for _, connection in look.connections do
+			connection:Disconnect()
+		end
+		looks[player] = nil
+	end
+	if class == nil then
+		return
+	end
+	looks[player] = {
+		class = class,
+		connections = {
+			player.CharacterAdded:Connect(function(character)
+				-- A frame later the rig's parts are all in place.
+				task.defer(HeroLook.apply, character, class)
+			end),
+			-- The avatar's appearance arrives later and would paint over the look.
+			player.CharacterAppearanceLoaded:Connect(function(character)
+				HeroLook.apply(character, class)
+			end),
+		},
+	}
+	local character = player.Character
+	if character then
+		HeroLook.apply(character, class)
+	end
+end
+
 function Characters.forget(player: Player)
 	entries[player] = nil
+	Characters.dress(player, nil)
 end
 
 return Characters

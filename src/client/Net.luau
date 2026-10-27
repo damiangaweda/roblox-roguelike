@@ -1,6 +1,7 @@
 --!strict
--- The client end of every remote: sends intents, keeps the latest world and
--- the run's map and hands events to whoever listens. The client only asks (AGENTS.md rule 1).
+-- The client end of every remote: sends intents, keeps the latest world, the
+-- local player's own state and phase, and hands them to whoever listens. The
+-- client only asks (AGENTS.md rule 1; stage 3, criterion 3).
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -14,9 +15,9 @@ local remotes = ReplicatedStorage:WaitForChild("Remotes")
 local intentRemote = remotes:WaitForChild(Protocol.remotes.intent) :: RemoteEvent
 local worldRemote = remotes:WaitForChild(Protocol.remotes.world) :: RemoteEvent
 local eventsRemote = remotes:WaitForChild(Protocol.remotes.events) :: RemoteEvent
-local mapRemote = remotes:WaitForChild(Protocol.remotes.map) :: RemoteEvent
+local phaseRemote = remotes:WaitForChild(Protocol.remotes.phase) :: RemoteEvent
 
-local archetypeNames = Protocol.archetypeNames(Config)
+local enemyKinds = Protocol.enemyKinds(Config)
 local projectileKinds = Protocol.projectileKinds(Config)
 
 export type Snapshot = {
@@ -25,7 +26,12 @@ export type Snapshot = {
 	world: Protocol.WorldView,
 	enemies: { Protocol.EnemyView },
 	projectiles: { Protocol.ProjectileView },
+	crystals: { Protocol.CrystalView },
 }
+
+export type Phase = "pick" | "run" | "summary"
+
+local PHASES: { [string]: Phase } = { pick = "pick", run = "run", summary = "summary" }
 
 -- The two latest snapshots, newest last.
 Net.previous = nil :: Snapshot?
@@ -33,86 +39,73 @@ Net.latest = nil :: Snapshot?
 -- The local player's own state from the latest event batch, and when it came.
 Net.self = nil :: Protocol.SelfView?
 Net.selfAt = 0
--- The run's map and its decoded height grid, nil until the server sends one.
-Net.map = nil :: Protocol.MapView?
-Net.heights = nil :: { { number } }?
+-- Where the local player is: choosing a class, in the run, or reading how it went.
+Net.phase = "pick" :: Phase
+Net.summary = nil :: Protocol.SummaryView?
 
 local worldListeners: { (Snapshot) -> () } = {}
-local eventListeners: { ({ Types.Event }) -> () } = {}
-local mapListeners: { (Protocol.MapView) -> () } = {}
+local eventListeners: { ({ Types.Event }, Protocol.SelfView?) -> () } = {}
+local phaseListeners: { (Phase, Protocol.SummaryView?) -> () } = {}
 
 function Net.onWorld(listener: (Snapshot) -> ())
 	table.insert(worldListeners, listener)
 end
 
-function Net.onEvents(listener: ({ Types.Event }) -> ())
+function Net.onEvents(listener: ({ Types.Event }, Protocol.SelfView?) -> ())
 	table.insert(eventListeners, listener)
 end
 
-function Net.onMap(listener: (Protocol.MapView) -> ())
-	table.insert(mapListeners, listener)
+function Net.onPhase(listener: (Phase, Protocol.SummaryView?) -> ())
+	table.insert(phaseListeners, listener)
 end
 
--- The ground's drawn height at (x, z); 0 before the map arrives.
-function Net.heightAt(x: number, z: number): number
-	local map = Net.map
-	local heights = Net.heights
-	if map == nil or heights == nil then
-		return 0
-	end
-	return Protocol.heightAt(heights, map.heightCell, map.half, map.waterLevel, x, z)
+-- The ground's height under any point: the map is flat (ADR-0014).
+function Net.groundY(): number
+	return 0
 end
 
--- The basic attack's input went down (`held`) or up.
-function Net.setFiring(held: boolean)
-	intentRemote:FireServer("fire", held)
+function Net.pickClass(class: string)
+	intentRemote:FireServer("pickClass", class)
 end
 
--- The aim: radians from +x toward +z on the ground plane (ADR-0009).
-function Net.setAim(angle: number)
-	intentRemote:FireServer("aim", angle)
+-- Takes card `index` of the offer on screen.
+function Net.chooseCard(index: number)
+	intentRemote:FireServer("card", index)
 end
 
--- Fires active skill `index` (1..3) along `aim` (the last aim sent when nil).
--- `aimDistance` is how far the aim point is from the character, which shortens
--- a projectile's flight; nil for full range.
-function Net.useSkill(index: number, aim: number?, aimDistance: number?)
-	if aimDistance then
-		intentRemote:FireServer("skill", index, aim, aimDistance)
-	elseif aim then
-		intentRemote:FireServer("skill", index, aim)
-	else
-		intentRemote:FireServer("skill", index)
-	end
+-- Fires utility skill `index` (the button, 1..3).
+function Net.useUtility(index: number)
+	intentRemote:FireServer("utility", index)
 end
 
-function Net.dash()
-	intentRemote:FireServer("dash")
+-- The open button went down (`held`) or up: holding it at the chest opens it.
+function Net.setOpening(held: boolean)
+	intentRemote:FireServer("open", held)
 end
 
-function Net.drink()
-	intentRemote:FireServer("drink")
+-- Starts casting the extraction spell.
+function Net.castSpell()
+	intentRemote:FireServer("cast")
 end
 
--- The interact button went down (`held`) or up: reviving or extracting.
-function Net.interact(held: boolean)
-	intentRemote:FireServer("interact", held)
-end
-
-function Net.choosePerk(index: number)
-	intentRemote:FireServer("perk", index)
-end
-
--- Whether the aim should snap to enemies in the assist cone (touch, gamepad).
-function Net.setAssist(enabled: boolean)
-	intentRemote:FireServer("assist", enabled)
+function Net.enterPortal()
+	intentRemote:FireServer("enter")
 end
 
 worldRemote.OnClientEvent:Connect(
-	function(world: Protocol.WorldView, enemyData: buffer, projectileData: buffer)
-		local enemies = Protocol.decodeEnemies(enemyData, archetypeNames)
+	function(
+		world: Protocol.WorldView,
+		enemyData: buffer,
+		projectileData: buffer,
+		crystalData: buffer
+	)
+		if type(world) ~= "table" then
+			return
+		end
+		local enemies = Protocol.decodeEnemies(enemyData, enemyKinds)
 		local projectiles = Protocol.decodeProjectiles(projectileData, projectileKinds)
-		if enemies == nil or projectiles == nil then
+		local crystals = Protocol.decodeCrystals(crystalData)
+		if enemies == nil or projectiles == nil or crystals == nil then
 			return
 		end
 		local snapshot = {
@@ -120,6 +113,7 @@ worldRemote.OnClientEvent:Connect(
 			world = world,
 			enemies = enemies,
 			projectiles = projectiles,
+			crystals = crystals,
 		}
 		Net.previous = Net.latest
 		Net.latest = snapshot
@@ -129,27 +123,34 @@ worldRemote.OnClientEvent:Connect(
 	end
 )
 
-mapRemote.OnClientEvent:Connect(function(view: Protocol.MapView)
-	if type(view) ~= "table" then
-		return
-	end
-	local heights = Protocol.decodeHeights(view)
-	if heights == nil then
-		return
-	end
-	Net.map = view
-	Net.heights = heights
-	for _, listener in mapListeners do
-		listener(view)
-	end
-end)
-
 eventsRemote.OnClientEvent:Connect(function(events: { Types.Event }, selfView: Protocol.SelfView?)
+	if type(events) ~= "table" then
+		return
+	end
 	Net.self = selfView
 	Net.selfAt = os.clock()
 	for _, listener in eventListeners do
-		listener(events)
+		listener(events, selfView)
 	end
+end)
+
+local function notifyPhase(phase: Phase, summary: Protocol.SummaryView?)
+	for _, listener in phaseListeners do
+		listener(phase, summary)
+	end
+end
+
+phaseRemote.OnClientEvent:Connect(function(phase: any, summary: Protocol.SummaryView?)
+	if type(phase) ~= "string" then
+		return
+	end
+	if PHASES[phase] == nil then
+		return
+	end
+	local current: Phase = PHASES[phase]
+	Net.phase = current
+	Net.summary = if phase == "summary" and type(summary) == "table" then summary else nil
+	notifyPhase(current, Net.summary)
 end)
 
 return Net

@@ -1,9 +1,12 @@
 --!strict
--- The HUD, built in code: health, potions, level and experience, the three
--- active skills and the dash, the run clock, the zone compass, banners, notices
--- and announcements, the perk choice and list, the downed, extraction and
--- end-of-run panels, and the touch buttons; the map screen is MapScreen's. It
--- only shows state and sends intents through Net or Input (AGENTS.md rule 1).
+-- The HUD of the solo run, built in code: the class pick screen; in the run
+-- health with the barrier, level and experience, kills, the run clock and its
+-- timers, banners and notices, the skill bar with ranks and cooldowns, the
+-- three utility skills, the passives, the three-card level-up choice, the
+-- chest compass, the chest, spell and portal prompts with their bars, the
+-- touch buttons and the death and extraction overlay; then the summary. It
+-- only shows state and sends intents through Net or Input (AGENTS.md rule 1);
+-- every string it shows comes from Strings or Config.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -12,9 +15,10 @@ local UserInputService = game:GetService("UserInputService")
 
 local Config = require(ReplicatedStorage.Shared.Config)
 local Protocol = require(ReplicatedStorage.Shared.Protocol)
+local Skills = require(ReplicatedStorage.Shared.Core.Skills)
+local Strings = require(ReplicatedStorage.Shared.Strings)
 local Types = require(ReplicatedStorage.Shared.Core.Types)
 local Input = require(script.Parent.Input)
-local MapScreen = require(script.Parent.MapScreen)
 local Net = require(script.Parent.Net)
 
 local Hud = {}
@@ -53,104 +57,113 @@ local CRITICAL_HEALTH_ALPHA_MAX = 0.7
 local LOW_HEALTH_EASE = 4
 -- The health number's text stroke at full low health, darker so it reads on the pulse.
 local LOW_HEALTH_STROKE_TRANSPARENCY = 0.1
--- Drinking: the bar sits this far right of the potion hint, and flashes this long when
--- a drink lands or is interrupted.
-local DRINK_BAR_GAP = 26
-local DRINK_BAR_WIDTH = 96
-local DRINK_FLASH_SECONDS = 0.5
 -- Level-up: the popup's life, how much it grows over it, the share of its life
 -- before it starts to fade, and how long the experience bar flashes gold.
 local LEVEL_POPUP_SECONDS = 1.2
 local LEVEL_POPUP_GROWTH = 0.5
 local LEVEL_POPUP_HOLD = 0.35
 local LEVEL_FLASH_SECONDS = 0.6
--- Camp notices: how long a line stays, the fade at its end, and how many show at once.
+-- Notices: how long a line stays, the fade at its end, and how many show at once.
 local NOTICE_SECONDS = 2
 local NOTICE_FADE_SECONDS = 0.5
 local MAX_NOTICES = 3
--- Announcements of the run (zones, the flood, events, clues, chests) share the
--- notice lines and stay longer.
-local ANNOUNCEMENT_SECONDS = 4
--- The first notice line's top, clear of the flood note above it, and the step between lines.
-local NOTICE_TOP = 72
+-- The timer lines under the clock, the first notice line under them, and the step between lines.
+local TIMER_TOP = 48
+local NOTICE_TOP = 92
 local NOTICE_STEP = 20
--- "A camp has noticed you" shows only when an enemy this close to the local
--- character (on the ground plane) woke from idle to chase in the same snapshot.
-local NOTICED_RANGE = 40
--- "A clue is nearby" shows only when a clue was found this close to the local character.
-local CLUE_NEARBY_RANGE = 40
--- Downed, dead and extracted screens fade in over this long, to these tint opacities.
+-- Dead and extracted screens fade in over this long, to this tint opacity.
 local STATE_FADE_SECONDS = 0.6
-local DOWNED_TINT_ALPHA = 0.15
 local DEAD_TINT_ALPHA = 0.1
 local STATE_PANEL_TRANSPARENCY = 0.3
-local COMPASS_RADIUS = 110
--- A zone this close (edge to character) is on screen; its arrow is hidden.
-local COMPASS_HIDE_STUDS = 25
--- "No zone yet" (or "No zone left") sits where the arrow would point straight up, this faint.
-local NO_ZONE_TRANSPARENCY = 0.3
--- The touch Map button, under the stats panel.
-local MAP_BUTTON_SIZE = Vector2.new(76, 44)
-local MAP_BUTTON_TOP = 144
-local MAX_SKILL_SLOTS = 3
-local SKILL_KEYS = { "Q", "E", "R" }
-local POTION_SLOT_SIZE = 22
-local POTION_SLOT_STEP = 26
+-- The chest compass keeps this far inside the screen's edge, and hides while
+-- the chest itself is this far inside it.
+local COMPASS_MARGIN = 70
+-- The pick screen's note shows when a pick has not moved the player on in this long.
+local PICK_WAIT_SECONDS = 2
+-- The world dims behind an offer to this opacity.
+local OFFER_DIM_ALPHA = 0.55
+-- The skill bar: tiles, their step, the gap before the utilities.
+local MAX_SKILLS = Config.cards.maxSkills
+local TILE_SIZE = 52
+local TILE_STEP = 58
+local UTILITY_GAP = 20
+local PIP_GAP = 1
+-- Up to this many capitals of a skill's name stand on its tile.
+local MAX_INITIALS = 2
+-- Touch buttons: size and step.
+local BUTTON_SIZE = 76
+local BUTTON_STEP = 84
 
--- What a perk's property is called on a perk button.
-local PROPERTY_LABELS: { [string]: string } = {
-	damage = "Damage",
-	area = "Area size",
-	cooldown = "Cooldowns",
-	attackSpeed = "Attack speed",
-	range = "Range",
-	statusDuration = "Status duration",
-	projectileSplit = "Projectiles",
-	pierce = "Pierce",
-	chainJumps = "Chain jumps",
-	knockback = "Knockback",
-	maxHealth = "Max health",
-	moveSpeed = "Move speed",
-	dashCharges = "Dash charges",
-	dashDistance = "Dash distance",
-	potionCapacity = "Potion slots",
-	potionHeal = "Potion healing",
-	burnDamage = "Burn damage",
-	chillSlow = "Chill slow",
-	synergyBonus = "Synergy bonus",
-	xpGain = "Experience",
+-- Targeting kinds whose ranks 3, 5 and 7 add a target (ADR-0013).
+local COUNTED: { [string]: boolean } = {
+	bolt = true,
+	strike = true,
+	melee = true,
+	chain = true,
+	scatter = true,
+	orbit = true,
+}
+-- Kinds whose damage lands per tick of an area or per shot of a totem.
+local PER_TICK: { [string]: boolean } = {
+	ground = true,
+	groundSelf = true,
+	totem = true,
+}
+-- Stats a passive raises by a flat amount rather than a share.
+local FLAT_STATS: { [string]: boolean } = {
+	regeneration = true,
+	armour = true,
 }
 
 local WHITE = Color3.new(1, 1, 1)
+local BLACK = Color3.new(0, 0, 0)
 local PANEL_COLOR = Color3.fromRGB(20, 22, 28)
 local TRACK_COLOR = Color3.fromRGB(45, 48, 58)
 local HEALTH_COLOR = Color3.fromRGB(214, 69, 65)
+local BARRIER_COLOR = Color3.fromRGB(235, 240, 255)
 local XP_COLOR = Color3.fromRGB(86, 156, 236)
-local SKILL_COLOR = Color3.fromRGB(120, 200, 120)
-local SKILL_COOLDOWN_COLOR = Color3.fromRGB(110, 114, 126)
-local POTION_COLOR = Color3.fromRGB(214, 69, 65)
-local DASH_COLOR = Color3.fromRGB(150, 210, 240)
+local COOLDOWN_COLOR = Color3.fromRGB(110, 114, 126)
+local UTILITY_COLOR = Color3.fromRGB(70, 150, 200)
 local EXTRACT_COLOR = Color3.fromRGB(240, 196, 70)
-local BLEED_COLOR = Color3.fromRGB(190, 60, 60)
-local REVIVE_COLOR = Color3.fromRGB(110, 210, 150)
+local PORTAL_COLOR = Color3.fromRGB(170, 120, 255)
+local PIP_EMPTY_COLOR = Color3.fromRGB(30, 32, 40)
+local DEAD_COLOR = Color3.fromRGB(190, 60, 60)
+local GOOD_COLOR = Color3.fromRGB(110, 210, 150)
 local HURT_COLOR = Color3.fromRGB(230, 40, 40)
 local LOW_HEALTH_COLOR = Color3.fromRGB(110, 0, 0)
 -- The health bar's fill at the top of a low-health pulse; dark enough for the white number.
 local HEALTH_PULSE_COLOR = Color3.fromRGB(255, 96, 86)
 local LEVEL_COLOR = Color3.fromRGB(255, 214, 90)
-local DRANK_COLOR = Color3.fromRGB(110, 220, 120)
 local NOTICE_COLOR = Color3.fromRGB(225, 225, 232)
-local ANNOUNCEMENT_COLOR = Color3.fromRGB(255, 226, 140)
-local CLUE_COLOR = Color3.fromRGB(90, 170, 255)
-local MAP_COLOR = Color3.fromRGB(70, 90, 80)
 local FONT = Enum.Font.GothamMedium
 local FONT_BOLD = Enum.Font.GothamBold
 
-local PERK_KEYS: { [Enum.KeyCode]: number } = {
-	[Enum.KeyCode.One] = 1,
-	[Enum.KeyCode.Two] = 2,
-	[Enum.KeyCode.Three] = 3,
+-- A skill tile's colour, by the skill's first tag.
+local TAG_COLORS: { [string]: Color3 } = {
+	fire = Color3.fromRGB(255, 136, 40),
+	ice = Color3.fromRGB(140, 210, 255),
+	lightning = Color3.fromRGB(255, 226, 60),
+	arcane = Color3.fromRGB(160, 100, 240),
+	physical = Color3.fromRGB(150, 160, 175),
+	bleed = Color3.fromRGB(140, 20, 30),
+	poison = Color3.fromRGB(110, 200, 50),
+	nature = Color3.fromRGB(70, 160, 60),
 }
+
+-- A card's border, by how much it gives (stage 3: the colour changes nothing else).
+local RARITY_COLORS = {
+	common = Color3.fromRGB(235, 235, 240),
+	uncommon = Color3.fromRGB(90, 200, 100),
+	rare = Color3.fromRGB(70, 140, 240),
+	epic = Color3.fromRGB(175, 90, 235),
+	legendary = Color3.fromRGB(255, 150, 20),
+}
+
+-- The Strings tables read by a key known only at run time.
+local TARGETING_TEXT = Strings.targeting :: { [string]: string }
+local EFFECT_TEXT = Strings.effects :: { [string]: string }
+local STAT_TEXT = Strings.stats :: { [string]: string }
+local OUTCOME_TEXT = Strings.summary.outcomes :: { [string]: string }
 
 type Bar = {
 	root: Frame,
@@ -158,41 +171,19 @@ type Bar = {
 	label: TextLabel,
 }
 
-type SkillSlot = {
+-- A tile of the skill bar: a skill with its rank pips, or a utility skill.
+type Tile = {
 	root: Frame,
-	overlay: Frame,
-	name: TextLabel,
-	key: TextLabel,
+	sweep: Frame,
+	text: TextLabel,
 	time: TextLabel,
+	pips: { Frame },
 }
 
-type Pip = {
-	root: Frame,
-	fill: Frame,
-}
-
-type Arrow = {
-	root: Frame,
-	arrow: TextLabel,
-	distance: TextLabel,
-}
-
--- A notice line, the os.clock() it was shown at, how long it stays and its colour.
+-- A notice line and the os.clock() it was shown at.
 type Notice = {
 	text: string,
 	at: number,
-	seconds: number,
-	color: Color3,
-}
-
--- What each announcement says.
-local ANNOUNCEMENTS: { [string]: string } = {
-	zoneOpened = "A zone has opened",
-	zoneClosed = "A zone was lost to the flood",
-	chestDrop = "A chest fell",
-	wanderingBoss = "A boss is roaming",
-	incursionWave = "An incursion wave begins",
-	floodStarted = "The flood begins",
 }
 
 local function round(parent: GuiObject, radius: number)
@@ -242,6 +233,23 @@ local function newLabel(
 	return label
 end
 
+local function newButton(parent: Instance, name: string, size: UDim2, color: Color3): TextButton
+	local button = Instance.new("TextButton")
+	button.Name = name
+	button.Size = size
+	button.BackgroundColor3 = color
+	button.BackgroundTransparency = 0.1
+	button.BorderSizePixel = 0
+	button.AutoButtonColor = true
+	button.Font = FONT_BOLD
+	button.TextSize = 15
+	button.TextColor3 = WHITE
+	button.TextStrokeTransparency = STROKE_TRANSPARENCY
+	button.Text = ""
+	button.Parent = parent
+	return button
+end
+
 local function newBar(
 	parent: Instance,
 	name: string,
@@ -255,20 +263,13 @@ local function newBar(
 	local fill = newFrame(root, "Fill", UDim2.fromScale(1, 1), UDim2.new(), color, 0)
 	round(fill, 6)
 	local label = newLabel(root, "Label", UDim2.fromScale(1, 1), UDim2.new(), textSize, FONT_BOLD)
+	label.ZIndex = 2
 	return { root = root, fill = fill, label = label }
 end
 
 local function setBar(bar: Bar, fraction: number, text: string)
 	bar.fill.Size = UDim2.fromScale(math.clamp(fraction, 0, 1), 1)
 	bar.label.Text = text
-end
-
--- Fades a bar as a whole; 1 is as built, 0 is gone.
-local function setBarAlpha(bar: Bar, alpha: number)
-	bar.root.BackgroundTransparency = 1 - (1 - TRACK_TRANSPARENCY) * alpha
-	bar.fill.BackgroundTransparency = 1 - alpha
-	bar.label.TextTransparency = 1 - alpha
-	bar.label.TextStrokeTransparency = 1 - (1 - STROKE_TRANSPARENCY) * alpha
 end
 
 -- Fades a label's text and stroke; 1 is as built.
@@ -341,36 +342,196 @@ local function trimNumber(value: number): string
 	return text
 end
 
--- What a perk changes, in a plain sentence: "Damage ×1.15" or "Max health +25".
-local function describePerk(perk: Types.PerkConfig): string
-	local label = PROPERTY_LABELS[perk.property] or perk.property
+-- 0xRRGGBB as a Color3.
+local function hexColor(value: number): Color3
+	return Color3.fromRGB(
+		bit32.band(bit32.rshift(value, 16), 0xff),
+		bit32.band(bit32.rshift(value, 8), 0xff),
+		bit32.band(value, 0xff)
+	)
+end
+
+-- The capitals that start the words of a name: "Rime Dart" is "RD", "Fan of
+-- Arrows" is "FA".
+local function initials(name: string): string
+	local letters: { string } = {}
+	for word in string.gmatch(name, "%S+") do
+		local first = string.sub(word, 1, 1)
+		if string.upper(first) == first and #letters < MAX_INITIALS then
+			table.insert(letters, first)
+		end
+	end
+	return if #letters > 0 then table.concat(letters) else string.upper(string.sub(name, 1, 2))
+end
+
+local function skillColor(skill: Types.SkillConfig?): Color3
+	local tag = if skill then skill.tags[1] else nil
+	return if tag then TAG_COLORS[tag] else COOLDOWN_COLOR
+end
+
+-- How much a card gives, for its border.
+local function rarity(card: Types.Card): Color3
+	if card.kind == "skillRank" then
+		local skill = Config.skills[card.skill]
+		if card.rank >= Config.ranks.maxRank then
+			return RARITY_COLORS.legendary
+		elseif
+			skill
+			and COUNTED[skill.targeting]
+			and table.find(Config.ranks.extraTargetRanks, card.rank) ~= nil
+		then
+			return RARITY_COLORS.epic
+		end
+		return RARITY_COLORS.uncommon
+	elseif card.kind == "newSkill" then
+		return RARITY_COLORS.rare
+	elseif card.kind == "newPassive" then
+		return RARITY_COLORS.uncommon
+	elseif card.kind == "passiveRank" then
+		local passive = Config.passives[card.passive]
+		if passive and card.rank >= passive.maxRank then
+			return RARITY_COLORS.epic
+		end
+		return RARITY_COLORS.uncommon
+	end
+	return RARITY_COLORS.common
+end
+
+-- A skill card's lines: what it targets and its numbers at `rank`, after the
+-- hero's stats, as the core computes them.
+local function describeSkill(id: string, rank: number, stats: Types.HeroStats): string
+	local skill = Config.skills[id]
+	if skill == nil then
+		return ""
+	end
+	local effective = Skills.effective(Config, skill, rank, stats)
+	local targeting = effective.targeting
+	local lines: { string } = { TARGETING_TEXT[targeting] or "" }
+	if effective.toughest then
+		table.insert(lines, Strings.skill.toughest)
+	end
+	local amount = math.round(effective.damage)
+	if targeting == "shield" then
+		table.insert(lines, string.format(Strings.skill.absorbs, amount))
+	elseif targeting == "heal" then
+		table.insert(lines, string.format(Strings.skill.heals, amount))
+	elseif targeting == "thorns" then
+		table.insert(lines, string.format(Strings.skill.reflects, amount))
+	elseif PER_TICK[targeting] and effective.durationSeconds > 0 then
+		table.insert(lines, string.format(Strings.skill.damagePerTick, amount))
+	else
+		table.insert(lines, string.format(Strings.skill.damage, amount))
+	end
+	if COUNTED[targeting] then
+		local gained = rank > 1
+			and Skills.extraTargets(Config, rank) > Skills.extraTargets(Config, rank - 1)
+		if gained then
+			table.insert(lines, Strings.skill.extraTarget)
+		end
+		-- A chain strikes its first target and then `count` more.
+		local targets = effective.count + (if targeting == "chain" then 1 else 0)
+		if targets > 1 then
+			table.insert(lines, string.format(Strings.skill.targets, targets))
+		end
+	end
+	if (targeting == "bolt" or targeting == "strike") and effective.radius > 0 then
+		table.insert(lines, Strings.skill.splash)
+	end
+	table.insert(lines, string.format(Strings.skill.cooldown, effective.cooldownSeconds))
+	local effect = effective.effect
+	if effect then
+		if effect.kind == "dot" then
+			table.insert(lines, EFFECT_TEXT[effect.status or ""] or "")
+		elseif effect.kind == "execute" then
+			table.insert(
+				lines,
+				string.format(Strings.effects.execute, math.round((effect.factor or 0) * 100))
+			)
+		else
+			table.insert(lines, EFFECT_TEXT[effect.kind] or "")
+		end
+	end
+	return table.concat(lines, "\n")
+end
+
+-- A passive card's line: what one rank adds.
+local function describePassive(id: string): string
+	local passive = Config.passives[id]
+	if passive == nil then
+		return ""
+	end
+	local name = STAT_TEXT[passive.stat] or passive.stat
+	if FLAT_STATS[passive.stat] then
+		return string.format(Strings.passive.flat, trimNumber(passive.perRank), name)
+	end
+	return string.format(Strings.passive.percent, trimNumber(passive.perRank * 100), name)
+end
+
+-- A card's title, subtitle and description.
+local function describeCard(card: Types.Card, stats: Types.HeroStats): (string, string, string)
+	if card.kind == "skillRank" then
+		local skill = Config.skills[card.skill]
+		return if skill then skill.name else card.skill,
+			string.format(Strings.cards.skillRank, card.rank),
+			describeSkill(card.skill, card.rank, stats)
+	elseif card.kind == "newSkill" then
+		local skill = Config.skills[card.skill]
+		return if skill then skill.name else card.skill,
+			Strings.cards.newSkill,
+			describeSkill(card.skill, 1, stats)
+	elseif card.kind == "passiveRank" then
+		local passive = Config.passives[card.passive]
+		return if passive then passive.name else card.passive,
+			string.format(Strings.cards.passiveRank, card.rank),
+			describePassive(card.passive)
+	elseif card.kind == "newPassive" then
+		local passive = Config.passives[card.passive]
+		return if passive then passive.name else card.passive,
+			Strings.cards.newPassive,
+			describePassive(card.passive)
+	end
+	return Strings.cards.heal,
+		"",
+		string.format(Strings.cards.healText, math.round(Config.cards.healShare * 100))
+end
+
+-- A stable key for an offer, so its buttons are rebuilt only when it changes.
+local function offerKey(offer: { Types.Card }?): string
+	if offer == nil then
+		return ""
+	end
 	local parts: { string } = {}
-	if perk.mul then
-		table.insert(parts, "×" .. trimNumber(perk.mul))
+	for _, card in offer do
+		local id = (card :: any).skill or (card :: any).passive or ""
+		local rank = (card :: any).rank or 0
+		table.insert(parts, string.format("%s:%s:%d", card.kind, id, rank))
 	end
-	if perk.add then
-		table.insert(parts, string.format("%+g", perk.add))
+	return table.concat(parts, ",")
+end
+
+-- Classes in the order of their names, for the pick screen.
+local function sortedClasses(): { Types.ClassConfig }
+	local classes: { Types.ClassConfig } = {}
+	for _, class in Config.classes do
+		table.insert(classes, class)
 	end
-	return label .. " " .. table.concat(parts, " ")
+	table.sort(classes, function(a, b)
+		return a.name < b.name
+	end)
+	return classes
 end
 
 local started = false
-
--- Opens or closes the map screen (M, or the touch Map button).
-function Hud.toggleMap()
-	MapScreen.toggle()
-end
 
 function Hud.start()
 	if started then
 		return
 	end
 	started = true
-	MapScreen.start()
 
 	local player = Players.LocalPlayer
 	local userId = player.UserId
-	local touch = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+	local touch = UserInputService.TouchEnabled
 
 	local gui = Instance.new("ScreenGui")
 	gui.Name = "Hud"
@@ -389,97 +550,78 @@ function Hud.start()
 	local lowHealthRim = newVignette(root, "LowHealth", LOW_HEALTH_COLOR)
 	local hurtRim = newVignette(root, "HurtFlash", HURT_COLOR)
 
-	-- Top left: health, potions, experience, kills.
-	local stats = newFrame(
-		root,
-		"Stats",
-		UDim2.fromOffset(280, 120),
-		UDim2.fromOffset(16, 16),
-		PANEL_COLOR,
-		1
-	)
+	-- The run's HUD, shown only in the run phase.
+	local runLayer = newFrame(root, "Run", UDim2.fromScale(1, 1), UDim2.new(), WHITE, 1)
+	runLayer.Visible = false
+
+	-- Top left: health with the barrier, experience, kills.
+	local stats =
+		newFrame(runLayer, "Stats", UDim2.fromOffset(280, 90), UDim2.fromOffset(16, 16), WHITE, 1)
 	local healthBar =
 		newBar(stats, "Health", UDim2.fromOffset(280, 28), UDim2.new(), HEALTH_COLOR, 18)
+	-- The barrier: a lighter segment after the health, or over its end when full.
+	local barrierFill =
+		newFrame(healthBar.root, "Barrier", UDim2.new(), UDim2.new(), BARRIER_COLOR, 0.25)
+	round(barrierFill, 6)
 	-- An outline that pulses with low health.
 	local healthStroke = Instance.new("UIStroke")
 	healthStroke.Color = HURT_COLOR
 	healthStroke.Thickness = 2
 	healthStroke.Transparency = 1
 	healthStroke.Parent = healthBar.root
-
-	local potionRow = newFrame(
-		stats,
-		"Potions",
-		UDim2.fromOffset(280, POTION_SLOT_SIZE),
-		UDim2.fromOffset(0, 34),
-		PANEL_COLOR,
-		1
-	)
-	local potionSlots: { Frame } = {}
-	local potionHint = newLabel(
-		potionRow,
-		"Hint",
-		UDim2.fromOffset(20, POTION_SLOT_SIZE),
-		UDim2.new(),
-		14,
-		FONT_BOLD
-	)
-	potionHint.Text = if touch then "" else "C"
-	-- Placed after the potion hint by setPotionCapacity.
-	local drinkBar = newBar(
-		potionRow,
-		"Drinking",
-		UDim2.fromOffset(DRINK_BAR_WIDTH, POTION_SLOT_SIZE),
-		UDim2.new(),
-		POTION_COLOR,
-		13
-	)
-	drinkBar.root.Visible = false
-	local shownCapacity = 0
-
 	local xpBar = newBar(
 		stats,
 		"Experience",
 		UDim2.fromOffset(280, 22),
-		UDim2.fromOffset(0, 62),
+		UDim2.fromOffset(0, 34),
 		XP_COLOR,
 		15
 	)
 	local killsLabel =
-		newLabel(stats, "Kills", UDim2.fromOffset(280, 22), UDim2.fromOffset(0, 90), 16, FONT)
+		newLabel(stats, "Kills", UDim2.fromOffset(280, 22), UDim2.fromOffset(0, 62), 16, FONT)
 	killsLabel.TextXAlignment = Enum.TextXAlignment.Left
 
-	-- Right edge: the perks taken so far.
-	local perkList =
-		newLabel(root, "PerkList", UDim2.fromOffset(200, 0), UDim2.new(1, -16, 0, 16), 16, FONT)
-	perkList.AnchorPoint = Vector2.new(1, 0)
-	perkList.AutomaticSize = Enum.AutomaticSize.Y
-	perkList.TextXAlignment = Enum.TextXAlignment.Right
-	perkList.TextYAlignment = Enum.TextYAlignment.Top
-	local shownPerkList = ""
+	-- Right edge: the passives taken, with their ranks.
+	local passiveList =
+		newLabel(runLayer, "Passives", UDim2.fromOffset(200, 0), UDim2.new(1, -16, 0, 16), 16, FONT)
+	passiveList.AnchorPoint = Vector2.new(1, 0)
+	passiveList.AutomaticSize = Enum.AutomaticSize.Y
+	passiveList.TextXAlignment = Enum.TextXAlignment.Right
+	passiveList.TextYAlignment = Enum.TextYAlignment.Top
+	local shownPassives = ""
 
-	-- Top centre: run clock, flood note, banner.
+	-- Top centre: the run clock, the final boss's and the portal's timers, the
+	-- notices and the banner.
 	local clockLabel = newLabel(
-		root,
+		runLayer,
 		"Clock",
 		UDim2.fromOffset(220, 36),
 		UDim2.new(0.5, -110, 0, 12),
 		30,
 		FONT_BOLD
 	)
-	local floodLabel = newLabel(
-		root,
-		"FloodNote",
-		UDim2.fromOffset(460, 22),
-		UDim2.new(0.5, -230, 0, 48),
-		16,
-		FONT
+	local bossTimerLabel = newLabel(
+		runLayer,
+		"FinalBossTimer",
+		UDim2.fromOffset(460, 20),
+		UDim2.new(0.5, -230, 0, TIMER_TOP),
+		17,
+		FONT_BOLD
 	)
-	-- Camp notices and announcements: short lines under the flood note, the newest last.
+	bossTimerLabel.TextColor3 = HURT_COLOR
+	local portalTimerLabel = newLabel(
+		runLayer,
+		"PortalTimer",
+		UDim2.fromOffset(460, 20),
+		UDim2.new(0.5, -230, 0, TIMER_TOP + 20),
+		17,
+		FONT_BOLD
+	)
+	portalTimerLabel.TextColor3 = PORTAL_COLOR
 	local noticeLabels: { TextLabel } = {}
 	for index = 1, MAX_NOTICES do
 		local label = newLabel(
-			root,
+			runLayer,
 			"Notice" .. index,
 			UDim2.fromOffset(460, NOTICE_STEP),
 			UDim2.new(0.5, -230, 0, NOTICE_TOP + (index - 1) * NOTICE_STEP),
@@ -491,71 +633,53 @@ function Hud.start()
 		noticeLabels[index] = label
 	end
 	local bannerLabel = newLabel(
-		root,
+		runLayer,
 		"Banner",
-		UDim2.fromOffset(560, 48),
-		UDim2.new(0.5, -280, 0, NOTICE_TOP + MAX_NOTICES * NOTICE_STEP),
+		UDim2.fromOffset(640, 48),
+		UDim2.new(0.5, -320, 0, NOTICE_TOP + MAX_NOTICES * NOTICE_STEP),
 		28,
 		FONT_BOLD
 	)
 	bannerLabel.TextColor3 = EXTRACT_COLOR
 	bannerLabel.Visible = false
 
-	-- The zone compass: an arrow toward the nearest open zone on a ring around
-	-- the screen centre, or "No zone yet" while none is open ("No zone left"
-	-- once the flood has started).
+	-- The chest compass: an arrow near the screen's edge pointing at the chest,
+	-- with the distance under it, hidden while the chest is on screen.
 	local compass =
-		newFrame(root, "Compass", UDim2.fromOffset(0, 0), UDim2.fromScale(0.5, 0.5), PANEL_COLOR, 1)
-	local function newArrow(): Arrow
-		local frame =
-			newFrame(compass, "Zone", UDim2.fromOffset(56, 48), UDim2.new(), PANEL_COLOR, 1)
-		frame.AnchorPoint = Vector2.new(0.5, 0.5)
-		local arrow = newLabel(frame, "Arrow", UDim2.fromOffset(56, 28), UDim2.new(), 26, FONT_BOLD)
-		arrow.Text = "▲"
-		arrow.TextColor3 = EXTRACT_COLOR
-		local distance = newLabel(
-			frame,
-			"Distance",
-			UDim2.fromOffset(56, 18),
-			UDim2.fromOffset(0, 28),
-			14,
-			FONT_BOLD
-		)
-		distance.TextColor3 = EXTRACT_COLOR
-		return { root = frame, arrow = arrow, distance = distance }
-	end
-	local zoneArrow = newArrow()
-	zoneArrow.root.Visible = false
-	local noZoneLabel = newLabel(
-		compass,
-		"NoZone",
-		UDim2.fromOffset(160, 22),
-		UDim2.fromOffset(0, -COMPASS_RADIUS),
-		16,
+		newFrame(runLayer, "Compass", UDim2.fromOffset(0, 0), UDim2.fromScale(0.5, 0.5), WHITE, 1)
+	local compassArrow = newFrame(compass, "Chest", UDim2.fromOffset(56, 48), UDim2.new(), WHITE, 1)
+	compassArrow.AnchorPoint = Vector2.new(0.5, 0.5)
+	compassArrow.Visible = false
+	local arrowLabel =
+		newLabel(compassArrow, "Arrow", UDim2.fromOffset(56, 28), UDim2.new(), 26, FONT_BOLD)
+	arrowLabel.Text = "▲"
+	arrowLabel.TextColor3 = EXTRACT_COLOR
+	local distanceLabel = newLabel(
+		compassArrow,
+		"Distance",
+		UDim2.fromOffset(56, 18),
+		UDim2.fromOffset(0, 28),
+		14,
 		FONT_BOLD
 	)
-	noZoneLabel.AnchorPoint = Vector2.new(0.5, 0.5)
-	noZoneLabel.Text = "No zone yet"
-	noZoneLabel.TextColor3 = EXTRACT_COLOR
-	noZoneLabel.TextTransparency = NO_ZONE_TRANSPARENCY
-	noZoneLabel.Visible = false
+	distanceLabel.TextColor3 = EXTRACT_COLOR
 
-	-- Extraction, reading a clue or opening a chest: one bar above the middle of the screen.
-	local extractBar = newBar(
-		root,
-		"Extraction",
+	-- Opening the chest or casting the spell: one bar above the middle of the screen.
+	local actionBar = newBar(
+		runLayer,
+		"Action",
 		UDim2.fromOffset(320, 28),
 		UDim2.new(0.5, -160, 0.28, 0),
 		EXTRACT_COLOR,
 		16
 	)
-	extractBar.root.Visible = false
+	actionBar.root.Visible = false
 
 	-- Level-up: "Level N" in the upper middle, growing as it fades; below the
 	-- banner, clear of its full growth, while the banner shows.
 	local levelPopupPosition = UDim2.fromScale(0.5, 0.22)
 	local levelPopup =
-		newLabel(root, "LevelUp", UDim2.fromOffset(320, 56), levelPopupPosition, 40, FONT_BOLD)
+		newLabel(runLayer, "LevelUp", UDim2.fromOffset(320, 56), levelPopupPosition, 40, FONT_BOLD)
 	local levelPopupBelowBanner = UDim2.new(
 		0.5,
 		0,
@@ -570,150 +694,146 @@ function Hud.start()
 	local levelPopupScale = Instance.new("UIScale")
 	levelPopupScale.Parent = levelPopup
 
-	-- Bottom centre: the three active skills, then the dash.
-	local skillRow = newFrame(
-		root,
-		"Skills",
-		UDim2.fromOffset(376, 60),
-		UDim2.new(0.5, -188, 1, -76),
-		PANEL_COLOR,
+	-- Bottom centre: up to six skills, then the three utility skills.
+	local utilityCount = #Config.utilities
+	local skillsWidth = MAX_SKILLS * TILE_STEP - (TILE_STEP - TILE_SIZE)
+	local barWidth = skillsWidth + UTILITY_GAP + utilityCount * TILE_STEP - (TILE_STEP - TILE_SIZE)
+	local skillBar = newFrame(
+		runLayer,
+		"SkillBar",
+		UDim2.fromOffset(barWidth, TILE_SIZE),
+		UDim2.new(0.5, -barWidth / 2, 1, -TILE_SIZE - 16),
+		WHITE,
 		1
 	)
-	local skillSlots: { SkillSlot } = {}
-	for index = 1, MAX_SKILL_SLOTS do
-		local slot = newFrame(
-			skillRow,
-			"Skill" .. index,
-			UDim2.fromOffset(120, 60),
-			UDim2.fromOffset((index - 1) * 128, 0),
-			SKILL_COLOR,
-			0.25
+
+	local function newTile(name: string, x: number, pipCount: number): Tile
+		local tile = newFrame(
+			skillBar,
+			name,
+			UDim2.fromOffset(TILE_SIZE, TILE_SIZE),
+			UDim2.fromOffset(x, 0),
+			COOLDOWN_COLOR,
+			0.1
 		)
-		round(slot, 8)
-		-- Drains from full to empty as the cooldown runs out.
-		local overlay =
-			newFrame(slot, "Cooldown", UDim2.fromScale(0, 1), UDim2.new(), PANEL_COLOR, 0.35)
-		round(overlay, 8)
-		local name =
-			newLabel(slot, "Name", UDim2.new(1, -8, 0, 24), UDim2.fromOffset(4, 6), 17, FONT_BOLD)
-		local key =
-			newLabel(slot, "Key", UDim2.fromOffset(40, 20), UDim2.new(0, 6, 1, -24), 15, FONT_BOLD)
-		key.TextXAlignment = Enum.TextXAlignment.Left
-		key.Text = if touch then "" else (SKILL_KEYS[index] or "")
-		local time = newLabel(
-			slot,
-			"Time",
-			UDim2.fromOffset(60, 20),
-			UDim2.new(1, -66, 1, -24),
-			15,
+		round(tile, 8)
+		-- Covers the tile from the bottom up while the cooldown runs, draining away.
+		local sweep = newFrame(tile, "Cooldown", UDim2.new(), UDim2.fromScale(0, 1), BLACK, 0.45)
+		sweep.AnchorPoint = Vector2.new(0, 1)
+		round(sweep, 8)
+		local text = newLabel(
+			tile,
+			"Text",
+			UDim2.new(1, 0, 1, if pipCount > 0 then -10 else 0),
+			UDim2.new(),
+			18,
 			FONT_BOLD
 		)
-		time.TextXAlignment = Enum.TextXAlignment.Right
-		skillSlots[index] = {
-			root = slot,
-			overlay = overlay,
-			name = name,
-			key = key,
-			time = time,
-		}
+		text.ZIndex = 2
+		local time =
+			newLabel(tile, "Time", UDim2.new(1, -4, 0, 16), UDim2.new(0, 2, 1, -18), 14, FONT_BOLD)
+		time.ZIndex = 2
+		local pips: { Frame } = {}
+		if pipCount > 0 then
+			local pipSize = math.floor((TILE_SIZE - 4 - (pipCount - 1) * PIP_GAP) / pipCount)
+			local left = (TILE_SIZE - pipCount * pipSize - (pipCount - 1) * PIP_GAP) / 2
+			for index = 1, pipCount do
+				local pip = newFrame(
+					tile,
+					"Pip" .. index,
+					UDim2.fromOffset(pipSize, pipSize),
+					UDim2.new(0, left + (index - 1) * (pipSize + PIP_GAP), 1, -pipSize - 3),
+					PIP_EMPTY_COLOR,
+					0
+				)
+				pip.ZIndex = 2
+				pips[index] = pip
+			end
+		end
+		return { root = tile, sweep = sweep, text = text, time = time, pips = pips }
 	end
 
-	local dashPanel = newFrame(
-		root,
-		"Dash",
-		UDim2.fromOffset(120, 60),
-		UDim2.new(0.5, 194, 1, -76),
-		PANEL_COLOR,
-		0.25
-	)
-	round(dashPanel, 8)
-	local pipRow =
-		newFrame(dashPanel, "Pips", UDim2.new(1, 0, 0, 28), UDim2.fromOffset(0, 6), PANEL_COLOR, 1)
-	local pipLayout = Instance.new("UIListLayout")
-	pipLayout.FillDirection = Enum.FillDirection.Horizontal
-	pipLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-	pipLayout.VerticalAlignment = Enum.VerticalAlignment.Center
-	pipLayout.Padding = UDim.new(0, 6)
-	pipLayout.Parent = pipRow
-	local pips: { Pip } = {}
-	local dashKey =
-		newLabel(dashPanel, "Key", UDim2.new(1, 0, 0, 20), UDim2.new(0, 0, 1, -24), 15, FONT_BOLD)
-	dashKey.Text = if touch then "Dash" else "Space"
+	local skillTiles: { Tile } = {}
+	for index = 1, MAX_SKILLS do
+		local tile = newTile("Skill" .. index, (index - 1) * TILE_STEP, Config.ranks.maxRank)
+		tile.root.Visible = false
+		skillTiles[index] = tile
+	end
+	local utilityTiles: { Tile } = {}
+	for index, utility in Config.utilities do
+		local tile =
+			newTile("Utility" .. index, skillsWidth + UTILITY_GAP + (index - 1) * TILE_STEP, 0)
+		-- The name between the key above and the cooldown below.
+		tile.text.Size = UDim2.new(1, -4, 0, 18)
+		tile.text.Position = UDim2.fromOffset(2, 16)
+		tile.text.TextSize = 12
+		tile.text.Text = utility.name
+		tile.text.TextWrapped = true
+		local key = newLabel(
+			tile.root,
+			"Key",
+			UDim2.fromOffset(16, 16),
+			UDim2.fromOffset(4, 2),
+			13,
+			FONT_BOLD
+		)
+		key.ZIndex = 2
+		key.TextXAlignment = Enum.TextXAlignment.Left
+		key.Text = if touch then "" else (Strings.keys.utilities[index] or "")
+		utilityTiles[index] = tile
+	end
 
-	-- Touch: a cluster of large round buttons in the bottom-right corner, kept
-	-- clear of the aim pad above it. Skills in the bottom row, dash, potion and
-	-- hold above. Held, not tapped, for interact: revive and extraction take seconds.
-	local skillButtons: { TextButton } = {}
-	local dashButton: TextButton? = nil
-	local potionButton: TextButton? = nil
+	-- What the interact or cast key would do here, if anything.
+	local prompt = newLabel(
+		runLayer,
+		"Prompt",
+		UDim2.fromOffset(520, 26),
+		UDim2.new(0.5, -260, 1, -TILE_SIZE - 52),
+		20,
+		FONT_BOLD
+	)
+	prompt.TextColor3 = EXTRACT_COLOR
+	prompt.Visible = false
+	local interactName = if touch then Strings.buttons.interact else Strings.keys.interact
+	local castName = if touch then Strings.buttons.cast else Strings.keys.cast
+
+	-- Touch: large round buttons in the bottom-right corner: the utility skills
+	-- in the bottom row, interact and cast above. Interact is held: opening the
+	-- chest takes a moment.
+	local utilityButtons: { TextButton } = {}
 	if touch then
-		local function newButton(
+		local function cornerButton(
 			name: string,
 			text: string,
 			color: Color3,
 			column: number,
 			row: number
 		): TextButton
-			local button = Instance.new("TextButton")
-			button.Name = name
+			local button =
+				newButton(runLayer, name, UDim2.fromOffset(BUTTON_SIZE, BUTTON_SIZE), color)
 			button.AnchorPoint = Vector2.new(1, 1)
-			button.Position = UDim2.new(1, -16 - column * 84, 1, -16 - row * 84)
-			button.Size = UDim2.fromOffset(76, 76)
-			button.BackgroundColor3 = color
-			button.BackgroundTransparency = 0.15
-			button.BorderSizePixel = 0
-			button.AutoButtonColor = true
-			button.Font = FONT_BOLD
-			button.TextSize = 15
-			button.TextColor3 = WHITE
-			button.TextStrokeTransparency = 0.6
+			button.Position = UDim2.new(1, -16 - column * BUTTON_STEP, 1, -16 - row * BUTTON_STEP)
 			button.Text = text
-			button.Parent = root
-			round(button, 38)
+			round(button, BUTTON_SIZE / 2)
 			return button
 		end
 
-		for index = 1, MAX_SKILL_SLOTS do
-			local button =
-				newButton("SkillButton" .. index, "SKILL " .. index, SKILL_COLOR, index - 1, 0)
+		for index, utility in Config.utilities do
+			local button = cornerButton(
+				"UtilityButton" .. index,
+				utility.name,
+				UTILITY_COLOR,
+				utilityCount - index,
+				0
+			)
 			button.Activated:Connect(function()
-				Input.useSkill(index)
+				Input.useUtility(index)
 			end)
-			skillButtons[index] = button
+			utilityButtons[index] = button
 		end
 
-		local dash = newButton("DashButton", "DASH", DASH_COLOR, 0, 1)
-		dash.Activated:Connect(function()
-			Input.dash()
-		end)
-		dashButton = dash
-
-		local potion = newButton("PotionButton", "POTION", POTION_COLOR, 1, 1)
-		potion.Activated:Connect(function()
-			Input.drink()
-		end)
-		potionButton = potion
-
-		local map = Instance.new("TextButton")
-		map.Name = "MapButton"
-		map.Position = UDim2.fromOffset(16, MAP_BUTTON_TOP)
-		map.Size = UDim2.fromOffset(MAP_BUTTON_SIZE.X, MAP_BUTTON_SIZE.Y)
-		map.BackgroundColor3 = MAP_COLOR
-		map.BackgroundTransparency = 0.15
-		map.BorderSizePixel = 0
-		map.AutoButtonColor = true
-		map.Font = FONT_BOLD
-		map.TextSize = 15
-		map.TextColor3 = WHITE
-		map.TextStrokeTransparency = 0.6
-		map.Text = "Map"
-		map.Parent = root
-		round(map, 10)
-		map.Activated:Connect(function()
-			Hud.toggleMap()
-		end)
-
-		local interact = newButton("InteractButton", "HOLD", EXTRACT_COLOR, 2, 1)
+		local interact =
+			cornerButton("InteractButton", Strings.buttons.interact, EXTRACT_COLOR, 1, 1)
 		interact.MouseButton1Down:Connect(function()
 			Input.interact(true)
 		end)
@@ -723,51 +843,21 @@ function Hud.start()
 		interact.MouseLeave:Connect(function()
 			Input.interact(false)
 		end)
+
+		local cast = cornerButton("CastButton", Strings.buttons.cast, PORTAL_COLOR, 0, 1)
+		cast.Activated:Connect(function()
+			Input.cast()
+		end)
 	end
 
-	-- What holding interact would do here, if anything.
-	local interactPrompt = newLabel(
-		root,
-		"InteractPrompt",
-		UDim2.fromOffset(420, 26),
-		UDim2.new(0.5, -210, 1, -112),
-		20,
-		FONT_BOLD
-	)
-	interactPrompt.Visible = false
-	local holdWord = if touch then "Hold HOLD" else "Hold F"
-
-	-- Perk choice: a row of buttons that leaves the middle and the corners free
-	-- for movement.
-	local perkPanel = newFrame(
-		root,
-		"Perks",
-		UDim2.fromOffset(660, 170),
-		UDim2.new(0.5, -330, 0.6, 0),
-		PANEL_COLOR,
-		1
-	)
-	local perkTitle =
-		newLabel(perkPanel, "Title", UDim2.new(1, 0, 0, 30), UDim2.new(), 22, FONT_BOLD)
-	perkTitle.Text = if touch then "Choose a perk" else "Choose a perk (1 / 2 / 3)"
-	local perkRow =
-		newFrame(perkPanel, "Row", UDim2.new(1, 0, 1, -36), UDim2.fromOffset(0, 36), PANEL_COLOR, 1)
-	local perkLayout = Instance.new("UIListLayout")
-	perkLayout.FillDirection = Enum.FillDirection.Horizontal
-	perkLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-	perkLayout.Padding = UDim.new(0, 10)
-	perkLayout.Parent = perkRow
-	perkPanel.Visible = false
-	local shownOffer = ""
-
-	-- Downed, dead and extracted overlay for the local player.
+	-- Dead and extracted overlay for the local player.
 	local stateTint =
-		newFrame(root, "StateTint", UDim2.fromScale(1, 1), UDim2.new(), BLEED_COLOR, 1)
+		newFrame(runLayer, "StateTint", UDim2.fromScale(1, 1), UDim2.new(), DEAD_COLOR, 1)
 	stateTint.Visible = false
 	local statePanel = newFrame(
 		stateTint,
 		"Panel",
-		UDim2.fromOffset(460, 160),
+		UDim2.fromOffset(460, 110),
 		UDim2.new(0.5, -230, 0.38, 0),
 		PANEL_COLOR,
 		STATE_PANEL_TRANSPARENCY
@@ -782,45 +872,134 @@ function Hud.start()
 		FONT_BOLD
 	)
 	local stateText =
-		newLabel(statePanel, "Text", UDim2.new(1, -20, 0, 24), UDim2.fromOffset(10, 54), 18, FONT)
-	local bleedBar = newBar(
-		statePanel,
-		"Bleed",
-		UDim2.fromOffset(400, 22),
-		UDim2.new(0.5, -200, 0, 88),
-		BLEED_COLOR,
-		14
+		newLabel(statePanel, "Text", UDim2.new(1, -20, 0, 24), UDim2.fromOffset(10, 58), 18, FONT)
+
+	-- The level-up choice: the world dims and three cards stand in the middle.
+	-- The run is paused while it is up.
+	local offerLayer =
+		newFrame(root, "Offer", UDim2.fromScale(1, 1), UDim2.new(), BLACK, 1 - OFFER_DIM_ALPHA)
+	offerLayer.Visible = false
+	local offerTitle = newLabel(
+		offerLayer,
+		"Title",
+		UDim2.fromOffset(600, 40),
+		UDim2.new(0.5, -300, 0.5, -190),
+		28,
+		FONT_BOLD
 	)
-	local reviveBar = newBar(
-		statePanel,
-		"Revive",
-		UDim2.fromOffset(400, 22),
-		UDim2.new(0.5, -200, 0, 118),
-		REVIVE_COLOR,
-		14
+	offerTitle.Text = Strings.cards.title
+	offerTitle.TextColor3 = LEVEL_COLOR
+	local cardRow = newFrame(
+		offerLayer,
+		"Cards",
+		UDim2.fromOffset(720, 250),
+		UDim2.new(0.5, -360, 0.5, -135),
+		WHITE,
+		1
 	)
+	local cardLayout = Instance.new("UIListLayout")
+	cardLayout.FillDirection = Enum.FillDirection.Horizontal
+	cardLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	cardLayout.Padding = UDim.new(0, 16)
+	cardLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	cardLayout.Parent = cardRow
+	local shownOffer = ""
+
+	-- The pick screen: the title and one card per class.
+	local pickLayer = newFrame(root, "Pick", UDim2.fromScale(1, 1), UDim2.new(), PANEL_COLOR, 0.15)
+	local pickTitle = newLabel(
+		pickLayer,
+		"Title",
+		UDim2.fromOffset(600, 50),
+		UDim2.new(0.5, -300, 0.5, -230),
+		36,
+		FONT_BOLD
+	)
+	pickTitle.Text = Strings.pick.title
+	local pickRow = newFrame(
+		pickLayer,
+		"Classes",
+		UDim2.fromOffset(780, 280),
+		UDim2.new(0.5, -390, 0.5, -160),
+		WHITE,
+		1
+	)
+	local pickLayout = Instance.new("UIListLayout")
+	pickLayout.FillDirection = Enum.FillDirection.Horizontal
+	pickLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	pickLayout.Padding = UDim.new(0, 20)
+	pickLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	pickLayout.Parent = pickRow
+	local pickNote = newLabel(
+		pickLayer,
+		"Waiting",
+		UDim2.fromOffset(600, 30),
+		UDim2.new(0.5, -300, 0.5, 140),
+		20,
+		FONT_BOLD
+	)
+	pickNote.Text = Strings.pick.waiting
+	pickNote.TextColor3 = EXTRACT_COLOR
+	pickNote.Visible = false
+	-- os.clock() of the last pick still waiting for the run to start.
+	local pickedAt: number? = nil
+
+	for order, class in sortedClasses() do
+		local colour = hexColor(class.colour)
+		local button = newButton(pickRow, class.id, UDim2.fromOffset(240, 270), PANEL_COLOR)
+		button.LayoutOrder = order
+		round(button, 10)
+		local stroke = Instance.new("UIStroke")
+		stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+		stroke.Color = colour
+		stroke.Thickness = 3
+		stroke.Parent = button
+		local name =
+			newLabel(button, "Name", UDim2.new(1, 0, 0, 44), UDim2.fromOffset(0, 18), 30, FONT_BOLD)
+		name.Text = class.name
+		name.TextColor3 = colour
+		local start = Config.skills[class.startSkill]
+		local lines =
+			newLabel(button, "Lines", UDim2.new(1, -24, 0, 180), UDim2.fromOffset(12, 74), 17, FONT)
+		lines.TextWrapped = true
+		lines.TextYAlignment = Enum.TextYAlignment.Top
+		local synergies = class.synergies
+		lines.Text = table.concat({
+			string.format(Strings.pick.startSkill, if start then start.name else class.startSkill),
+			string.format(Strings.pick.stats, class.maxHealth, class.walkSpeed),
+			string.format(
+				Strings.pick.synergies,
+				if synergies[1] then synergies[1].name else "",
+				if synergies[2] then synergies[2].name else ""
+			),
+		}, "\n\n")
+		local classId = class.id
+		button.Activated:Connect(function()
+			pickedAt = os.clock()
+			Net.pickClass(classId)
+		end)
+	end
 
 	-- End-of-run summary.
 	local summary = newFrame(
 		root,
 		"Summary",
-		UDim2.fromOffset(380, 230),
-		UDim2.new(0.5, -190, 0.5, -115),
+		UDim2.fromOffset(400, 290),
+		UDim2.new(0.5, -200, 0.5, -145),
 		PANEL_COLOR,
 		0.1
 	)
 	round(summary, 12)
 	local summaryTitle =
-		newLabel(summary, "Title", UDim2.new(1, 0, 0, 56), UDim2.fromOffset(0, 12), 36, FONT_BOLD)
+		newLabel(summary, "Title", UDim2.new(1, 0, 0, 56), UDim2.fromOffset(0, 12), 34, FONT_BOLD)
 	local summaryLines =
-		newLabel(summary, "Lines", UDim2.new(1, 0, 0, 90), UDim2.fromOffset(0, 74), 22, FONT)
-	local summaryHint =
-		newLabel(summary, "Hint", UDim2.new(1, 0, 0, 30), UDim2.fromOffset(0, 184), 16, FONT)
-	summaryHint.Text = "The next run starts shortly."
+		newLabel(summary, "Lines", UDim2.new(1, 0, 0, 150), UDim2.fromOffset(0, 74), 21, FONT)
+	local summaryNext =
+		newLabel(summary, "Next", UDim2.new(1, 0, 0, 30), UDim2.fromOffset(0, 240), 17, FONT)
 	summary.Visible = false
 
 	-- What the HUD remembers between frames.
-	local lastWorldTime = -1
+	local phaseAt = os.clock()
 	local bannerUntil = 0
 	local hurtAt = -math.huge
 	-- The hurt flash's opacity when it popped.
@@ -828,64 +1007,39 @@ function Hud.start()
 	-- How far into the low-health state the HUD is, 0 to 1, and the pulse's phase in turns.
 	local lowLevel = 0
 	local pulsePhase = 0
-	-- os.clock() when the local player started drinking, by the event; nil when not.
-	local drinkStartedAt: number? = nil
-	-- The drink bar's last fill, and its flash when a drink lands or is interrupted.
-	local drinkFraction = 0
-	local drinkFlashAt = -math.huge
-	local drinkFlashColor = DRANK_COLOR
-	local drinkFlashText = ""
 	local levelUpAt = -math.huge
 	local notices: { Notice } = {}
 	-- The local player's state on screen and when it began, for the fade-in.
 	local shownState: Types.PlayerState = "alive"
 	local stateAt = -math.huge
-	local ended = false
-	-- The run time when the local player extracted or died, and which.
-	local finishedAt: number? = nil
-	local outcome: "Extracted" | "Died" | nil = nil
 
-	local function worldTime(): number
-		local snapshot = Net.latest
-		return if snapshot then snapshot.world.time else 0
-	end
-
-	local function showBanner(text: string, seconds: number)
+	local function showBanner(text: string)
 		bannerLabel.Text = text
 		bannerLabel.Visible = true
-		bannerUntil = os.clock() + seconds
+		bannerUntil = os.clock() + BANNER_SECONDS
 	end
 
 	local function resetRun()
-		ended = false
-		finishedAt = nil
-		outcome = nil
-		summary.Visible = false
 		bannerLabel.Visible = false
 		bannerUntil = 0
 		hurtAt = -math.huge
 		hurtStrength = 0
-		drinkStartedAt = nil
-		drinkFlashAt = -math.huge
+		lowLevel = 0
 		levelUpAt = -math.huge
+		shownState = "alive"
 		table.clear(notices)
 	end
 
 	-- Adds a notice line, dropping the oldest beyond MAX_NOTICES; the same line
-	-- again only refreshes the newest. Announcements stay longer, in their own colour.
-	local function pushNotice(text: string, announcement: boolean?)
+	-- again only refreshes the newest.
+	local function pushNotice(text: string)
 		local now = os.clock()
 		local newest = notices[#notices]
 		if newest and newest.text == text then
 			newest.at = now
 			return
 		end
-		table.insert(notices, {
-			text = text,
-			at = now,
-			seconds = if announcement then ANNOUNCEMENT_SECONDS else NOTICE_SECONDS,
-			color = if announcement then ANNOUNCEMENT_COLOR else NOTICE_COLOR,
-		})
+		table.insert(notices, { text = text, at = now })
 		while #notices > MAX_NOTICES do
 			table.remove(notices, 1)
 		end
@@ -894,62 +1048,6 @@ function Hud.start()
 	local function hurtAlpha(now: number): number
 		local t = (now - hurtAt) / HURT_FLASH_SECONDS
 		return if t < 1 then hurtStrength * (1 - t) else 0
-	end
-
-	local function flashDrink(color: Color3, text: string)
-		drinkStartedAt = nil
-		drinkFlashAt = os.clock()
-		drinkFlashColor = color
-		drinkFlashText = text
-	end
-
-	-- Whether an enemy within `NOTICED_RANGE` of the local character went from
-	-- idle to chase between the previous and the latest snapshot. The server
-	-- sends a tick's snapshot before its events, so the latest one shows the
-	-- camp that woke.
-	local function nearbyEnemyWoke(): boolean
-		local latest = Net.latest
-		local previous = Net.previous
-		local character = Players.LocalPlayer.Character
-		local ownRoot = if character then character:FindFirstChild("HumanoidRootPart") else nil
-		if latest == nil or previous == nil or ownRoot == nil or not ownRoot:IsA("BasePart") then
-			return false
-		end
-		local here = ownRoot.Position
-		local idle: { [number]: boolean } = {}
-		for _, enemy in previous.enemies do
-			if enemy.state == "idle" then
-				idle[enemy.id] = true
-			end
-		end
-		for _, enemy in latest.enemies do
-			if enemy.state == "chase" and idle[enemy.id] then
-				local dx, dz = enemy.x - here.X, enemy.z - here.Z
-				if dx * dx + dz * dz <= NOTICED_RANGE * NOTICED_RANGE then
-					return true
-				end
-			end
-		end
-		return false
-	end
-
-	-- Whether a clue just found stands near the local character. The server
-	-- sends a tick's snapshot before its events, so the latest one holds the clue.
-	local function clueNearby(clueId: number): boolean
-		local latest = Net.latest
-		local character = Players.LocalPlayer.Character
-		local ownRoot = if character then character:FindFirstChild("HumanoidRootPart") else nil
-		if latest == nil or ownRoot == nil or not ownRoot:IsA("BasePart") then
-			return false
-		end
-		local here = ownRoot.Position
-		for _, clue in latest.world.clues do
-			if clue.id == clueId then
-				local dx, dz = clue.x - here.X, clue.z - here.Z
-				return dx * dx + dz * dz <= CLUE_NEARBY_RANGE * CLUE_NEARBY_RANGE
-			end
-		end
-		return false
 	end
 
 	local function localView(snapshot: Net.Snapshot?): Protocol.PlayerView?
@@ -964,79 +1062,60 @@ function Hud.start()
 		return nil
 	end
 
-	Net.onWorld(function(snapshot)
-		-- The world time dropping means the next run has started.
-		if snapshot.world.time < lastWorldTime then
-			resetRun()
-		end
-		lastWorldTime = snapshot.world.time
-		local view = localView(snapshot)
-		if view and finishedAt == nil then
-			if view.state == "dead" then
-				finishedAt = snapshot.world.time
-				outcome = "Died"
-			elseif view.state == "extracted" then
-				finishedAt = snapshot.world.time
-				outcome = "Extracted"
+	-- A boss's name, from the latest snapshot's enemy with that id.
+	local function bossName(enemyId: number): string
+		local latest = Net.latest
+		if latest then
+			for _, enemy in latest.enemies do
+				if enemy.id == enemyId then
+					local kind = Config.enemies[enemy.kind]
+					if kind then
+						return kind.name
+					end
+				end
 			end
+		end
+		return Strings.banners.someBoss
+	end
+
+	Net.onPhase(function(phase)
+		phaseAt = os.clock()
+		pickedAt = nil
+		if phase == "run" then
+			resetRun()
 		end
 	end)
 
-	local function showSummary()
-		local selfView = Net.self
-		local view = localView(Net.latest)
-		local result = outcome
-		if result == nil then
-			result = if view and view.state == "extracted" then "Extracted" else "Died"
-		end
-		summaryTitle.Text = if result == "Extracted" then "Extracted" else "You died"
-		summaryTitle.TextColor3 = if result == "Extracted" then REVIVE_COLOR else HEALTH_COLOR
-		summaryLines.Text = string.format(
-			"Time survived: %s\nLevel: %d\nKills: %d",
-			formatTime(finishedAt or worldTime()),
-			if selfView then selfView.level else 1,
-			if selfView then selfView.kills else 0
-		)
-		summary.Visible = true
-	end
-
 	Net.onEvents(function(events: { Types.Event })
 		for _, event in events do
-			if event.kind == "flood" then
-				showBanner("The horde floods the map", BANNER_SECONDS)
-			elseif event.kind == "campAlerted" then
-				-- The event names no player; it is about the local one only when
-				-- an enemy close by has just woken.
-				if nearbyEnemyWoke() then
-					pushNotice("A camp has noticed you")
-				end
-			elseif event.kind == "campReturned" then
-				-- The client does not know where points are, so there is no "nearby" filter.
-				pushNotice("A camp has returned")
-			elseif event.kind == "announcement" then
-				local text = ANNOUNCEMENTS[event.what]
-				if text then
-					pushNotice(text, true)
-				end
-			elseif event.kind == "clueFound" then
-				-- The clue itself appears on the ground and the map screen once the
-				-- world view carries it.
-				if clueNearby(event.clueId) then
-					pushNotice("A clue is nearby")
-				end
-			elseif event.kind == "clueRead" then
-				pushNotice(
-					string.format("A clue narrows the leader's area (%d left)", event.remaining),
-					true
+			if event.kind == "bossSpawned" then
+				local kind = Config.enemies[event.enemyKind]
+				local name = if kind then kind.name else Strings.banners.someBoss
+				showBanner(
+					string.format(
+						if event.final
+							then Strings.banners.finalBossAwakens
+							else Strings.banners.bossApproaches,
+						name
+					)
 				)
-			elseif event.kind == "chestOpened" and event.playerId == userId then
-				pushNotice(
-					if event.reward == "perk" then "Chest: a perk" else "Chest: potions",
-					true
-				)
+			elseif event.kind == "closingRing" then
+				showBanner(Strings.banners.closingRing)
+			elseif event.kind == "bossPhase" then
+				showBanner(string.format(Strings.banners.bossEnraged, bossName(event.enemyId)))
+			elseif event.kind == "finalBossTimer" then
+				showBanner(string.format(Strings.banners.finalBossTimer, math.ceil(event.seconds)))
+			elseif event.kind == "compass" then
+				showBanner(Strings.banners.compass)
+			elseif event.kind == "chestOpened" and event.player == userId then
+				showBanner(Strings.banners.chestOpened)
+			elseif event.kind == "portalOpened" then
+				showBanner(Strings.banners.portalOpened)
+			elseif event.kind == "castInterrupted" and event.player == userId then
+				pushNotice(Strings.notices.interrupted)
 			elseif event.kind == "levelUp" and event.player == userId then
 				levelUpAt = os.clock()
-				levelPopup.Text = "Level " .. event.level
+				levelPopup.Text = string.format(Strings.levelUp, event.level)
 			elseif event.kind == "playerHurt" and event.player == userId then
 				-- Scaled by the hit's share of max health; a hit during a flash keeps the stronger.
 				local now = os.clock()
@@ -1048,90 +1127,87 @@ function Hud.start()
 					math.min(HURT_FLASH_MAX, HURT_FLASH_MIN + share * HURT_FLASH_PER_SHARE)
 				hurtStrength = math.max(hurtAlpha(now), strength)
 				hurtAt = now
-			elseif event.kind == "drinking" and event.player == userId then
-				drinkStartedAt = os.clock()
-				drinkFlashAt = -math.huge
-			elseif event.kind == "drank" and event.player == userId then
-				drinkFraction = 1
-				flashDrink(DRANK_COLOR, string.format("+%d", math.floor(event.amount + 0.5)))
-			elseif event.kind == "drinkInterrupted" and event.player == userId then
-				flashDrink(SKILL_COOLDOWN_COLOR, "Interrupted")
-			elseif event.kind == "died" and event.player == userId then
-				finishedAt = finishedAt or worldTime()
-				outcome = "Died"
-			elseif event.kind == "extracted" and event.player == userId then
-				finishedAt = finishedAt or worldTime()
-				outcome = "Extracted"
-			elseif event.kind == "ended" then
-				ended = true
-				showSummary()
 			end
 		end
 	end)
 
-	-- Rebuilds the perk buttons when the offer changes.
-	local function showOffer(offer: { string }?)
-		local key = if offer then table.concat(offer, ",") else ""
+	-- Rebuilds the card buttons when the offer changes.
+	local function showOffer(offer: { Types.Card }?, heroStats: Types.HeroStats?)
+		local key = offerKey(offer)
+		offerLayer.Visible = offer ~= nil
 		if key == shownOffer then
 			return
 		end
 		shownOffer = key
-		for _, child in perkRow:GetChildren() do
+		for _, child in cardRow:GetChildren() do
 			if child:IsA("TextButton") then
 				child:Destroy()
 			end
 		end
-		perkPanel.Visible = offer ~= nil
-		if offer == nil then
+		if offer == nil or heroStats == nil then
 			return
 		end
-		local taken = if Net.self then Net.self.perks else {}
-		for index, id in offer do
-			local perk = Config.perks.pool[id]
-			local button = Instance.new("TextButton")
-			button.Name = "Perk" .. index
+		for index, card in offer do
+			local title, subtitle, description = describeCard(card, heroStats)
+			local colour = rarity(card)
+			local button =
+				newButton(cardRow, "Card" .. index, UDim2.fromOffset(220, 250), PANEL_COLOR)
 			button.LayoutOrder = index
-			button.Size = UDim2.fromOffset(204, 124)
-			button.BackgroundColor3 = PANEL_COLOR
-			button.BackgroundTransparency = 0.1
-			button.BorderSizePixel = 0
-			button.AutoButtonColor = true
-			button.Font = FONT_BOLD
-			button.TextSize = 18
-			button.TextColor3 = WHITE
-			button.TextWrapped = true
-			local prefix = if touch then "" else index .. ". "
-			if perk then
-				button.Text = string.format(
-					"%s%s\n%s\n(%d/%d)",
-					prefix,
-					perk.name,
-					describePerk(perk),
-					taken[id] or 0,
-					perk.maxStacks
+			button.BackgroundTransparency = 0.05
+			round(button, 10)
+			local stroke = Instance.new("UIStroke")
+			stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+			stroke.Color = colour
+			stroke.Thickness = 3
+			stroke.Parent = button
+			if not touch then
+				local hint = newLabel(
+					button,
+					"Key",
+					UDim2.fromOffset(24, 24),
+					UDim2.fromOffset(8, 6),
+					16,
+					FONT_BOLD
 				)
-			else
-				button.Text = prefix .. id
+				hint.Text = Strings.keys.utilities[index] or ""
+				hint.TextColor3 = colour
 			end
-			button.Parent = perkRow
-			round(button, 8)
+			local titleLabel = newLabel(
+				button,
+				"Title",
+				UDim2.new(1, -20, 0, 50),
+				UDim2.fromOffset(10, 26),
+				20,
+				FONT_BOLD
+			)
+			titleLabel.TextWrapped = true
+			titleLabel.Text = title
+			local subtitleLabel = newLabel(
+				button,
+				"Subtitle",
+				UDim2.new(1, -20, 0, 20),
+				UDim2.fromOffset(10, 78),
+				15,
+				FONT_BOLD
+			)
+			subtitleLabel.Text = subtitle
+			subtitleLabel.TextColor3 = colour
+			local descriptionLabel = newLabel(
+				button,
+				"Description",
+				UDim2.new(1, -20, 0, 140),
+				UDim2.fromOffset(10, 104),
+				14,
+				FONT
+			)
+			descriptionLabel.TextWrapped = true
+			descriptionLabel.TextYAlignment = Enum.TextYAlignment.Top
+			descriptionLabel.Text = description
 			button.Activated:Connect(function()
-				Net.choosePerk(index)
+				Net.chooseCard(index)
 			end)
 		end
 	end
-
-	-- Keys 1/2/3 choose a perk, except while typing in chat or another text box.
-	UserInputService.InputBegan:Connect(function(input: InputObject)
-		local index = PERK_KEYS[input.KeyCode]
-		if index == nil or UserInputService:GetFocusedTextBox() then
-			return
-		end
-		local selfView = Net.self
-		if selfView and selfView.offer and index <= #selfView.offer then
-			Net.choosePerk(index)
-		end
-	end)
 
 	local function updateScale()
 		local camera = workspace.CurrentCamera
@@ -1153,237 +1229,195 @@ function Hud.start()
 		updateScale()
 	end)
 
-	-- Builds or hides potion slots to match the capacity.
-	local function setPotionCapacity(capacity: number)
-		if capacity == shownCapacity then
-			return
-		end
-		shownCapacity = capacity
-		for index = #potionSlots + 1, capacity do
-			local slot = newFrame(
-				potionRow,
-				"Slot" .. index,
-				UDim2.fromOffset(POTION_SLOT_SIZE, POTION_SLOT_SIZE),
-				UDim2.fromOffset((index - 1) * POTION_SLOT_STEP, 0),
-				TRACK_COLOR,
-				0.15
-			)
-			round(slot, 11)
-			potionSlots[index] = slot
-		end
-		for index, slot in potionSlots do
-			slot.Visible = index <= capacity
-		end
-		potionHint.Position = UDim2.fromOffset(capacity * POTION_SLOT_STEP + 2, 0)
-		drinkBar.root.Position = UDim2.fromOffset(capacity * POTION_SLOT_STEP + DRINK_BAR_GAP, 0)
+	-- Seconds of a cooldown left now: the event batch's count, run down since
+	-- it came, except while the run stands still.
+	local function cooldownLeft(readyIn: number, elapsed: number): number
+		return math.max(0, readyIn - elapsed)
 	end
 
-	local function updatePotions(
-		selfView: Protocol.SelfView?,
-		view: Protocol.PlayerView?,
-		now: number
-	)
-		local capacity = if selfView then selfView.potionCapacity else Config.player.potionCapacity
-		local potions = if selfView then selfView.potions else 0
-		setPotionCapacity(capacity)
-		for index, slot in potionSlots do
-			slot.BackgroundColor3 = if index <= potions then POTION_COLOR else TRACK_COLOR
-		end
-		-- Seconds of the drink left, from the snapshot or, until one shows it, the event.
-		local snapshot = Net.latest
-		local drinking = 0
-		if view and snapshot and view.drinkingFor > 0 then
-			drinking = math.max(0, view.drinkingFor - (now - snapshot.receivedAt))
-		end
-		local startedAt = drinkStartedAt
-		if startedAt then
-			local left = Config.player.drinkSeconds - (now - startedAt)
-			if left > 0 then
-				drinking = math.max(drinking, left)
-			else
-				drinkStartedAt = nil
-			end
-		end
-		local sinceFlash = now - drinkFlashAt
-		if sinceFlash < DRINK_FLASH_SECONDS then
-			-- A landed or interrupted drink: the bar in green or grey, fading out.
-			drinkBar.root.Visible = true
-			drinkBar.fill.BackgroundColor3 = drinkFlashColor
-			setBar(drinkBar, drinkFraction, drinkFlashText)
-			setBarAlpha(drinkBar, 1 - sinceFlash / DRINK_FLASH_SECONDS)
-		elseif drinking > 0 then
-			drinkBar.root.Visible = true
-			drinkBar.fill.BackgroundColor3 = POTION_COLOR
-			drinkFraction = 1 - drinking / Config.player.drinkSeconds
-			setBar(drinkBar, drinkFraction, "Drinking…")
-			setBarAlpha(drinkBar, 1)
-		else
-			drinkBar.root.Visible = false
-		end
-		if potionButton then
-			potionButton.BackgroundColor3 = if potions > 0
-				then POTION_COLOR
-				else SKILL_COOLDOWN_COLOR
-			potionButton.Text = string.format("POTION\n%d", potions)
-		end
-	end
-
-	local function updateSkills(selfView: Protocol.SelfView?, now: number)
-		local elapsed = now - Net.selfAt
-		local actives = Config.classes.elementalist.actives
-		for index = 1, MAX_SKILL_SLOTS do
-			local slot = skillSlots[index]
-			local skill = if selfView then selfView.skills[index] else nil
-			local remaining = 0
-			local fraction = 0
-			if skill then
-				remaining = skill.readyIn - elapsed
-				fraction = if skill.cooldown > 0
-					then math.clamp(remaining / skill.cooldown, 0, 1)
+	local function updateSkillBar(selfView: Protocol.SelfView?, elapsed: number)
+		local owned = if selfView then selfView.skills else {}
+		for index, tile in skillTiles do
+			local skillView = owned[index]
+			tile.root.Visible = skillView ~= nil
+			if skillView then
+				local skill = Config.skills[skillView.id]
+				tile.root.BackgroundColor3 = skillColor(skill)
+				tile.text.Text = initials(if skill then skill.name else skillView.id)
+				local left = cooldownLeft(skillView.readyIn, elapsed)
+				local fraction = if skillView.cooldown > 0
+					then math.clamp(left / skillView.cooldown, 0, 1)
 					else 0
+				tile.sweep.Size = UDim2.fromScale(1, fraction)
+				for rank, pip in tile.pips do
+					pip.BackgroundColor3 = if rank <= skillView.rank then WHITE else PIP_EMPTY_COLOR
+				end
 			end
-			local cooling = remaining > 0
-			slot.name.Text = if skill
-				then skill.name
-				else (actives[index] and actives[index].name or "")
-			slot.root.BackgroundColor3 = if cooling then SKILL_COOLDOWN_COLOR else SKILL_COLOR
-			slot.overlay.Size = UDim2.fromScale(if cooling then fraction else 0, 1)
-			slot.time.Text = if cooling then string.format("%.1f", remaining) else ""
-			local button = skillButtons[index]
+		end
+		local utilities = if selfView then selfView.utilities else {}
+		for index, tile in utilityTiles do
+			local utilityView = utilities[index]
+			local left = if utilityView then cooldownLeft(utilityView.readyIn, elapsed) else 0
+			local fraction = if utilityView and utilityView.cooldown > 0
+				then math.clamp(left / utilityView.cooldown, 0, 1)
+				else 0
+			local cooling = left > 0
+			tile.root.BackgroundColor3 = if cooling then COOLDOWN_COLOR else UTILITY_COLOR
+			tile.sweep.Size = UDim2.fromScale(1, fraction)
+			tile.time.Text = if cooling then string.format("%.1f", left) else ""
+			local button = utilityButtons[index]
 			if button then
-				button.BackgroundColor3 = if cooling then SKILL_COOLDOWN_COLOR else SKILL_COLOR
+				local utility = Config.utilities[index]
+				button.BackgroundColor3 = if cooling then COOLDOWN_COLOR else UTILITY_COLOR
 				button.Text = if cooling
-					then string.format("%.1f", remaining)
-					else "SKILL " .. index
+					then string.format("%.1f", left)
+					else (if utility then utility.name else "")
 			end
 		end
 	end
 
-	local function updateDash(selfView: Protocol.SelfView?, now: number)
-		local maxCharges = if selfView then selfView.dashMaxCharges else 0
-		local charges = if selfView then selfView.dashCharges else 0
-		for index = #pips + 1, maxCharges do
-			local pip = newFrame(
-				pipRow,
-				"Pip" .. index,
-				UDim2.fromOffset(24, 24),
-				UDim2.new(),
-				TRACK_COLOR,
-				0.15
-			)
-			pip.LayoutOrder = index
-			round(pip, 12)
-			local fill =
-				newFrame(pip, "Fill", UDim2.fromScale(1, 0), UDim2.fromScale(0, 1), DASH_COLOR, 0)
-			fill.AnchorPoint = Vector2.new(0, 1)
-			round(fill, 12)
-			pips[index] = { root = pip, fill = fill }
-		end
-		local recharge = Config.classes.elementalist.dash.rechargeSeconds
-		local rechargeLeft = if selfView then selfView.dashRechargeIn - (now - Net.selfAt) else 0
-		for index, pip in pips do
-			pip.root.Visible = index <= maxCharges
-			if index <= charges then
-				pip.fill.Size = UDim2.fromScale(1, 1)
-			elseif index == charges + 1 and recharge > 0 then
-				pip.fill.Size = UDim2.fromScale(1, math.clamp(1 - rechargeLeft / recharge, 0, 1))
-			else
-				pip.fill.Size = UDim2.fromScale(1, 0)
-			end
-		end
-		if dashButton then
-			dashButton.BackgroundColor3 = if charges > 0 then DASH_COLOR else SKILL_COOLDOWN_COLOR
-			dashButton.Text = string.format("DASH\n%d", charges)
-		end
-	end
-
-	-- The perks taken, one per line, sorted by name; the text is set only on a change.
-	local function updatePerkList(selfView: Protocol.SelfView?)
+	-- The passives taken, one per line, sorted by name; the text is set only on a change.
+	local function updatePassives(selfView: Protocol.SelfView?)
 		local entries: { string } = {}
 		if selfView then
-			for id, stacks in selfView.perks do
-				local perk = Config.perks.pool[id]
+			for id, rank in selfView.passives do
+				local passive = Config.passives[id]
 				table.insert(
 					entries,
-					string.format("%s ×%d", if perk then perk.name else id, stacks)
+					string.format(
+						Strings.passiveLine,
+						if passive then passive.name else id,
+						rank,
+						if passive then passive.maxRank else rank
+					)
 				)
 			end
 			table.sort(entries)
 		end
 		local text = table.concat(entries, "\n")
-		if text ~= shownPerkList then
-			shownPerkList = text
-			perkList.Text = text
+		if text ~= shownPassives then
+			shownPassives = text
+			passiveList.Text = text
 		end
 	end
 
-	-- Points the arrow from the character toward the nearest open zone, hidden
-	-- when that zone is already on screen; with none open, "No zone yet", or
-	-- "No zone left" once the flood has started and every zone is closed.
-	local function updateCompass(
-		snapshot: Net.Snapshot?,
-		view: Protocol.PlayerView?,
-		ownRoot: BasePart?
-	)
-		local showing = snapshot ~= nil and view ~= nil and view.state == "alive" and ownRoot ~= nil
-		local nearest: Types.Zone? = nil
-		local nearestDistance = math.huge
-		local dx, dz = 0, 0
-		if snapshot and ownRoot then
-			local here = ownRoot.Position
-			for _, zone in snapshot.world.zones do
-				if zone.open then
-					local zx, zz = zone.x - here.X, zone.z - here.Z
-					local distance = math.sqrt(zx * zx + zz * zz)
-					if distance < nearestDistance then
-						nearest = zone
-						nearestDistance = distance
-						dx, dz = zx, zz
-					end
-				end
-			end
+	-- Points the arrow from the screen's centre toward the chest, near the
+	-- screen's edge, hidden while the chest itself is well on screen.
+	local function updateCompass(chest: Protocol.ChestView?, here: Vector3?)
+		local camera = workspace.CurrentCamera
+		if chest == nil or here == nil or camera == nil then
+			compassArrow.Visible = false
+			return
 		end
-		noZoneLabel.Visible = showing and nearest == nil
-		if snapshot and nearest == nil then
-			local map = Net.map
-			local flooding = map ~= nil and snapshot.world.floodHalf < map.half
-			noZoneLabel.Text = if flooding then "No zone left" else "No zone yet"
+		local scale = uiScale.Scale
+		local viewport = camera.ViewportSize
+		local point, onScreen =
+			camera:WorldToViewportPoint(Vector3.new(chest.x, Net.groundY(), chest.z))
+		local margin = COMPASS_MARGIN * scale
+		if
+			onScreen
+			and point.X > margin
+			and point.X < viewport.X - margin
+			and point.Y > margin
+			and point.Y < viewport.Y - margin
+		then
+			compassArrow.Visible = false
+			return
 		end
-		local visible = false
-		if showing and nearest and nearestDistance > 0 then
-			if nearestDistance - nearest.radius > COMPASS_HIDE_STUDS then
-				visible = true
-				zoneArrow.root.Position = UDim2.fromOffset(
-					dx / nearestDistance * COMPASS_RADIUS,
-					dz / nearestDistance * COMPASS_RADIUS
-				)
-				-- World +x is screen right and +z screen down; the arrow points up at 0.
-				zoneArrow.arrow.Rotation = math.deg(math.atan2(dx, -dz))
-				zoneArrow.distance.Text = tostring(math.floor(nearestDistance + 0.5))
-			end
+		local dx, dz = chest.x - here.X, chest.z - here.Z
+		local distance = math.sqrt(dx * dx + dz * dz)
+		if distance <= 0 then
+			compassArrow.Visible = false
+			return
 		end
-		zoneArrow.root.Visible = visible
+		-- World +x is screen right and +z screen down, as the camera looks.
+		local ux, uy = dx / distance, dz / distance
+		local halfX = viewport.X / scale / 2 - COMPASS_MARGIN
+		local halfY = viewport.Y / scale / 2 - COMPASS_MARGIN
+		local reach = math.min(
+			if math.abs(ux) > 1e-6 then halfX / math.abs(ux) else math.huge,
+			if math.abs(uy) > 1e-6 then halfY / math.abs(uy) else math.huge
+		)
+		compassArrow.Visible = true
+		compassArrow.Position = UDim2.fromOffset(ux * reach, uy * reach)
+		-- The arrow points up at 0.
+		arrowLabel.Rotation = math.deg(math.atan2(dx, -dz))
+		distanceLabel.Text = string.format(Strings.compassDistance, math.floor(distance + 0.5))
 	end
 
-	local function render(deltaTime: number)
-		local now = os.clock()
+	local function renderPick(now: number)
+		local waiting = pickedAt
+		pickNote.Visible = waiting ~= nil and now - waiting >= PICK_WAIT_SECONDS
+	end
+
+	local function renderSummary(now: number)
+		local result = Net.summary
+		if result == nil then
+			summaryTitle.Text = ""
+			summaryLines.Text = ""
+			summaryNext.Text = ""
+			return
+		end
+		summaryTitle.Text = OUTCOME_TEXT[result.reason] or ""
+		summaryTitle.TextColor3 = if result.extracted or result.reason == "finalBossKilled"
+			then GOOD_COLOR
+			else HEALTH_COLOR
+		local class = Config.classes[result.class]
+		summaryLines.Text = table.concat({
+			string.format(Strings.summary.class, if class then class.name else result.class),
+			string.format(Strings.summary.time, formatTime(result.time)),
+			string.format(Strings.summary.level, result.level),
+			string.format(Strings.summary.kills, result.kills),
+			string.format(Strings.summary.damage, math.round(result.damageDone)),
+		}, "\n")
+		summaryNext.Text = string.format(
+			Strings.summary.nextIn,
+			math.max(0, math.ceil(result.nextIn - (now - phaseAt)))
+		)
+	end
+
+	local function renderRun(now: number, deltaTime: number)
 		local snapshot = Net.latest
 		local selfView = Net.self
 		local view = localView(snapshot)
+		local world = if snapshot then snapshot.world else nil
+		-- Seconds since the snapshot, which the clock and timers run on; none
+		-- while the run stands still or has ended.
+		local sinceSnapshot = if snapshot
+				and world
+				and not world.paused
+				and not world.ended
+			then now - snapshot.receivedAt
+			else 0
+		local sinceSelf = if world and (world.paused or world.ended) then 0 else now - Net.selfAt
 
-		-- Health, experience, kills.
+		-- Health with the barrier, experience, kills.
 		if view then
+			local maxHealth = math.max(view.maxHealth, 1)
+			local healthShare = math.clamp(view.health / maxHealth, 0, 1)
+			local barrierShare = math.clamp(view.barrier / maxHealth, 0, 1)
 			setBar(
 				healthBar,
-				if view.maxHealth > 0 then view.health / view.maxHealth else 0,
-				string.format(
-					"%d / %d",
-					math.ceil(math.max(0, view.health)),
-					math.ceil(view.maxHealth)
-				)
+				healthShare,
+				if view.barrier > 0
+					then string.format(
+						Strings.healthWithBarrier,
+						math.ceil(math.max(0, view.health)),
+						math.ceil(view.maxHealth),
+						math.ceil(view.barrier)
+					)
+					else string.format(
+						Strings.health,
+						math.ceil(math.max(0, view.health)),
+						math.ceil(view.maxHealth)
+					)
 			)
+			barrierFill.Visible = barrierShare > 0
+			barrierFill.Position = UDim2.fromScale(math.min(healthShare, 1 - barrierShare), 0)
+			barrierFill.Size = UDim2.fromScale(barrierShare, 1)
 		else
 			setBar(healthBar, 0, "")
+			barrierFill.Visible = false
 		end
 
 		-- Low health: a dark rim and the health bar pulsing, faster when critical;
@@ -1414,13 +1448,13 @@ function Hud.start()
 				xpBar,
 				if selfView.xpToNext > 0 then selfView.xp / selfView.xpToNext else 0,
 				string.format(
-					"Level %d  -  %d / %d XP",
+					Strings.experience,
 					selfView.level,
-					selfView.xp,
-					selfView.xpToNext
+					math.floor(selfView.xp),
+					math.floor(selfView.xpToNext)
 				)
 			)
-			killsLabel.Text = "Kills: " .. selfView.kills
+			killsLabel.Text = string.format(Strings.kills, selfView.kills)
 		else
 			setBar(xpBar, 0, "")
 			killsLabel.Text = ""
@@ -1445,52 +1479,32 @@ function Hud.start()
 			)
 		end
 
-		updatePotions(selfView, view, now)
-		updatePerkList(selfView)
+		updatePassives(selfView)
+		updateSkillBar(selfView, sinceSelf)
 
-		-- Run clock and flood note; the clock runs on between snapshots and
-		-- freezes once the run has ended.
-		local duration = if snapshot
-			then snapshot.world.durationSeconds
-			else Config.run.durationSeconds
-		local runTime = 0
-		if snapshot then
-			runTime = snapshot.world.time
-			if not ended then
-				runTime = math.min(duration, runTime + (now - snapshot.receivedAt))
-			end
+		-- The run clock and the timers under it, run on between snapshots.
+		clockLabel.Text = formatTime(if world then world.time + sinceSnapshot else 0)
+		local bossLeft = if world then world.finalBossLeft else nil
+		bossTimerLabel.Visible = bossLeft ~= nil
+		if bossLeft then
+			bossTimerLabel.Text =
+				string.format(Strings.mapClosesIn, formatTime(bossLeft - sinceSnapshot))
 		end
-		clockLabel.Text = formatTime(runTime)
-		-- Before the flood: when it begins; while it advances: when it meets
-		-- at the centre, in red while the local character stands in it.
-		local floodStart = Config.run.arc.flood.startMinute * 60
-		-- The flood reaches the centre as the run ends.
-		local floodEnd = duration
-		local character = Players.LocalPlayer.Character
-		local ownRoot = if character then character:FindFirstChild("HumanoidRootPart") else nil
-		local ownPart = if ownRoot and ownRoot:IsA("BasePart") then ownRoot else nil
-		local flooded = false
-		if snapshot and ownPart and view and view.state == "alive" and runTime >= floodStart then
-			local here = ownPart.Position
-			flooded = math.max(math.abs(here.X), math.abs(here.Z)) > snapshot.world.floodHalf
+		local portal = if world then world.portal else nil
+		portalTimerLabel.Visible = portal ~= nil
+		if portal then
+			portalTimerLabel.Text = string.format(
+				Strings.portalClosesIn,
+				math.max(0, math.ceil(portal.secondsLeft - sinceSnapshot))
+			)
 		end
-		if runTime < floodStart then
-			floodLabel.Text = "flood in " .. formatTime(floodStart - runTime)
-		elseif runTime < floodEnd then
-			floodLabel.Text = (if flooded then "You are in the flood! " else "")
-				.. "The flood meets in "
-				.. formatTime(floodEnd - runTime)
-		else
-			floodLabel.Text = ""
-		end
-		floodLabel.TextColor3 = if flooded then HURT_COLOR else WHITE
 		if bannerLabel.Visible and now >= bannerUntil then
 			bannerLabel.Visible = false
 		end
 
 		-- Notices, fading out at the end of their time.
 		for index = #notices, 1, -1 do
-			if now - notices[index].at >= notices[index].seconds then
+			if now - notices[index].at >= NOTICE_SECONDS then
 				table.remove(notices, index)
 			end
 		end
@@ -1499,133 +1513,100 @@ function Hud.start()
 			label.Visible = notice ~= nil
 			if notice then
 				label.Text = notice.text
-				label.TextColor3 = notice.color
-				local left = notice.seconds - (now - notice.at)
+				local left = NOTICE_SECONDS - (now - notice.at)
 				setTextAlpha(label, math.clamp(left / NOTICE_FADE_SECONDS, 0, 1))
 			end
 		end
 
-		-- Skills and dash, counted down locally between event batches.
-		updateSkills(selfView, now)
-		updateDash(selfView, now)
-
-		-- Perk choice.
-		-- Only a player still in the run can choose; the summary hides the panel.
-		local choosing = view ~= nil
-			and (view.state == "alive" or view.state == "downed")
-			and not summary.Visible
-		showOffer(if selfView and choosing then selfView.offer else nil)
-
-		-- The interact prompt and the zone compass, from where the local character
-		-- stands. What holding does, as the run decides it: extract in an open
-		-- zone, else read a clue, else open a chest; reviving wins over all.
-		local prompt: string? = nil
-		if view and view.state == "alive" and snapshot and ownPart then
-			local here = ownPart.Position
+		-- The prompt, the action bar and the compass, from where the local
+		-- character stands. The portal wins over the chest, the chest over the spell.
+		local character = player.Character
+		local ownRoot = if character then character:FindFirstChild("HumanoidRootPart") else nil
+		local here: Vector3? = if ownRoot and ownRoot:IsA("BasePart")
+			then ownRoot.Position
+			elseif view then Vector3.new(view.x, Net.groundY(), view.z)
+			else nil
+		local extraction = Config.extraction
+		local promptText: string? = nil
+		local barShown = false
+		if alive and world and view and here then
 			local function near(x: number, z: number, radius: number): boolean
 				local dx, dz = x - here.X, z - here.Z
 				return dx * dx + dz * dz <= radius * radius
 			end
-			for _, zone in snapshot.world.zones do
-				if zone.open and near(zone.x, zone.z, zone.radius) then
-					prompt = holdWord .. " to extract"
-				end
+			local chest = world.chest
+			if portal and near(portal.x, portal.z, extraction.portalRadius) then
+				promptText = string.format(Strings.prompts.portal, interactName)
+			elseif not chest.opened and near(chest.x, chest.z, extraction.openRadius) then
+				promptText = string.format(Strings.prompts.open, interactName)
+			elseif selfView and selfView.hasSpell and portal == nil and view.castingLeft <= 0 then
+				promptText = string.format(Strings.prompts.cast, castName)
 			end
-			if prompt == nil then
-				for _, clue in snapshot.world.clues do
-					if not clue.read and near(clue.x, clue.z, Config.run.arc.clues.readRadius) then
-						prompt = holdWord .. " to read the clue"
-					end
-				end
-			end
-			if prompt == nil then
-				for _, chest in snapshot.world.chests do
-					if
-						not chest.opened
-						and near(chest.x, chest.z, Config.run.arc.events.chest.openRadius)
-					then
-						prompt = holdWord .. " to open the chest"
-					end
-				end
-			end
-			for _, other in snapshot.world.players do
-				local otherPlayer = if other.state == "downed"
-					then Players:GetPlayerByUserId(other.id)
-					else nil
-				local otherCharacter = if otherPlayer then otherPlayer.Character else nil
-				local otherRoot = if otherCharacter
-					then otherCharacter:FindFirstChild("HumanoidRootPart")
-					else nil
-				if
-					otherRoot
-					and otherRoot:IsA("BasePart")
-					-- On the ground plane, as the server measures it: hills tilt the line.
-					and ((otherRoot.Position - here) * Vector3.new(1, 0, 1)).Magnitude
-						<= Config.player.reviveRadius
-				then
-					prompt = holdWord .. " to revive"
-				end
+			if view.castingLeft > 0 then
+				barShown = true
+				local left = math.max(0, view.castingLeft - sinceSnapshot)
+				actionBar.fill.BackgroundColor3 = PORTAL_COLOR
+				setBar(actionBar, 1 - left / extraction.castSeconds, Strings.bars.casting)
+			elseif view.openProgress > 0 and not chest.opened then
+				barShown = true
+				actionBar.fill.BackgroundColor3 = EXTRACT_COLOR
+				setBar(actionBar, view.openProgress / extraction.openSeconds, Strings.bars.opening)
 			end
 		end
-		interactPrompt.Visible = prompt ~= nil
-		interactPrompt.Text = prompt or ""
-		updateCompass(if summary.Visible then nil else snapshot, view, ownPart)
+		prompt.Visible = promptText ~= nil
+		prompt.Text = promptText or ""
+		actionBar.root.Visible = barShown
+		local compassChest = if alive
+				and world
+				and world.compassOn
+				and not world.chest.opened
+			then world.chest
+			else nil
+		updateCompass(compassChest, here)
 
-		-- Extracting, reading or opening: the one bar, whichever is held.
-		local holding = false
-		if view and view.state == "alive" then
-			local arc = Config.run.arc
-			if view.extractProgress > 0 then
-				holding = true
-				extractBar.fill.BackgroundColor3 = EXTRACT_COLOR
-				setBar(
-					extractBar,
-					view.extractProgress / Config.run.extractSeconds,
-					"Extracting..."
-				)
-			elseif view.clueProgress > 0 then
-				holding = true
-				extractBar.fill.BackgroundColor3 = CLUE_COLOR
-				setBar(extractBar, view.clueProgress / arc.clues.readSeconds, "Reading...")
-			elseif view.chestProgress > 0 then
-				holding = true
-				extractBar.fill.BackgroundColor3 = EXTRACT_COLOR
-				setBar(extractBar, view.chestProgress / arc.events.chest.openSeconds, "Opening...")
-			end
-		end
-		extractBar.root.Visible = holding
+		-- The level-up choice, while the local player is alive with an offer waiting.
+		local offer = if alive and selfView then selfView.offer else nil
+		showOffer(offer, if selfView then selfView.stats else nil)
 
-		-- Downed, dead, extracted: the tint and the panel fade in when the state begins.
+		-- Dead, extracted: the tint and the panel fade in when the state begins.
 		local state: Types.PlayerState = if view then view.state else "alive"
 		if state ~= shownState then
 			shownState = state
 			stateAt = now
 		end
 		local fadeIn = easeOut(math.clamp((now - stateAt) / STATE_FADE_SECONDS, 0, 1))
-		stateTint.Visible = state ~= "alive" and not summary.Visible
+		stateTint.Visible = state ~= "alive"
 		statePanel.BackgroundTransparency = 1 - (1 - STATE_PANEL_TRANSPARENCY) * fadeIn
 		setTextAlpha(stateTitle, fadeIn)
 		setTextAlpha(stateText, fadeIn)
-		setBarAlpha(bleedBar, fadeIn)
-		setBarAlpha(reviveBar, fadeIn)
-		bleedBar.root.Visible = false
-		reviveBar.root.Visible = false
-		if state == "downed" and view then
-			stateTint.BackgroundTransparency = 1 - DOWNED_TINT_ALPHA * fadeIn
-			stateTitle.Text = "Downed"
-			stateText.Text = "Another player can revive you"
-			bleedBar.root.Visible = true
-			reviveBar.root.Visible = true
-			setBar(bleedBar, 1 - view.downedFor / Config.player.downedSeconds, "Bleeding out")
-			setBar(reviveBar, view.reviveProgress / Config.player.reviveSeconds, "Being revived")
-		elseif state == "dead" then
+		if state == "dead" then
 			stateTint.BackgroundTransparency = 1 - DEAD_TINT_ALPHA * fadeIn
-			stateTitle.Text = "You died"
-			stateText.Text = "Spectating the rest of the run"
+			stateTitle.Text = Strings.state.deadTitle
+			stateText.Text = Strings.state.deadText
 		elseif state == "extracted" then
 			stateTint.BackgroundTransparency = 1
-			stateTitle.Text = "Extracted"
-			stateText.Text = "Waiting for the run to end"
+			stateTitle.Text = Strings.state.extractedTitle
+			stateText.Text = Strings.state.extractedText
+		end
+	end
+
+	local function render(deltaTime: number)
+		local now = os.clock()
+		local phase = Net.phase
+		pickLayer.Visible = phase == "pick"
+		runLayer.Visible = phase == "run"
+		summary.Visible = phase == "summary"
+		if phase == "run" then
+			renderRun(now, deltaTime)
+		else
+			setVignette(lowHealthRim, 0)
+			setVignette(hurtRim, 0)
+			showOffer(nil, nil)
+			if phase == "pick" then
+				renderPick(now)
+			else
+				renderSummary(now)
+			end
 		end
 	end
 

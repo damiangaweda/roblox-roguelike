@@ -11,17 +11,19 @@ local RunService = game:GetService("RunService")
 local Config = require(ReplicatedStorage.Shared.Config)
 local Protocol = require(ReplicatedStorage.Shared.Protocol)
 local Types = require(ReplicatedStorage.Shared.Core.Types)
+local BossLooks = require(script.Parent.BossLooks)
 local Net = require(script.Parent.Net)
 
 local EnemyView = {}
 
 -- Greybox stand-in (ADR-0010): two to four plain parts per archetype, each
--- with its own silhouette and colour family so it reads from the top-down
--- camera. The rigged store pack replaces `LOOKS` and `spawnRig`; nothing else
--- here cares what an enemy looks like.
+-- with its own silhouette so it reads from the top-down camera; a kind draws
+-- its archetype's look at its own scale, tinted toward its own colour, and a
+-- boss draws its look from BossLooks. The rigged store pack replaces `LOOKS`
+-- and `spawnRig`; nothing else here cares what an enemy looks like.
 --
 -- A piece's role picks its pool: `body` and `detail` pieces are solid, aim
--- targets and take the enemy's tint (level, health, status); `glow` pieces are
+-- targets and take the enemy's tint (kind, health, status); `glow` pieces are
 -- neon, keep their own colour and are not aim targets.
 type Role = "body" | "detail" | "glow"
 
@@ -50,8 +52,8 @@ type Piece = {
 	glowsOnTelegraph: boolean?,
 }
 
--- One small neon block per level on top of piece `on`: the first at `at`,
--- the rest stepping toward the front.
+-- Small neon blocks on top of piece `on`, one per boss phase from the
+-- second: the first at `at`, the rest stepping toward the front.
 type Chevrons = { on: number, at: Vector3, scale: number }
 
 type Look = { pieces: { Piece }, chevrons: Chevrons }
@@ -265,66 +267,34 @@ local LOOKS: { [string]: Look } = {
 		},
 		chevrons = { on = 1, at = Vector3.new(0, 1.95, 0.55), scale = 1 },
 	},
-	campLeader = {
-		pieces = {
-			-- The biggest body, drawn up in the telegraph and slamming down.
-			{
-				role = "body",
-				shape = BLOCK,
-				size = Vector3.new(5, 5.6, 3.6),
-				color = Color3.fromRGB(112, 22, 28),
-				offset = pose(0, 3, 0.3),
-				telegraphPose = pose(0, 3.4, 0.4, -0.08),
-				strike = pose(0, 2.6, 0, 0.15),
-			},
-			{
-				role = "detail",
-				shape = BLOCK,
-				size = Vector3.new(2.4, 1.8, 2.2),
-				color = Color3.fromRGB(132, 28, 34),
-				offset = pose(0, 6.7, -0.5),
-				telegraphPose = pose(0, 7.2, -0.3),
-				strike = pose(0, 6.1, -1),
-			},
-			-- The crown: a gold band on the head.
-			{
-				role = "glow",
-				shape = BLOCK,
-				size = Vector3.new(2.7, 0.8, 2.5),
-				color = Color3.fromRGB(255, 196, 64),
-				on = 2,
-				offset = pose(0, 1.3, 0),
-			},
-			-- The ring at its feet: a translucent gold plate turning slowly,
-			-- fast and wider in the telegraph.
-			{
-				role = "glow",
-				shape = BLOCK,
-				size = Vector3.new(8, 0.15, 8),
-				color = Color3.fromRGB(255, 176, 48),
-				offset = pose(0, 0.12, 0),
-				transparency = 0.55,
-				swell = 1.25,
-				spin = 0.6,
-				telegraphSpin = 5,
-			},
-		},
-		chevrons = { on = 1, at = Vector3.new(0, 2.85, 1.45), scale = 1.5 },
-	},
 }
 
-local CHILLED_COLOR = Color3.fromRGB(150, 210, 255)
+-- Status tints, strongest first: slowed (chilled) > burning > poisoned >
+-- bleeding > feared > rooted > weakened > buffed. A stunned enemy flickers
+-- yellow over whichever it shows; a burning one flickers orange.
+local SLOWED_COLOR = Color3.fromRGB(150, 210, 255)
 local BURNING_COLOR = Color3.fromRGB(255, 140, 30)
-local BRITTLE_COLOR = Color3.fromRGB(255, 235, 120)
+local POISONED_COLOR = Color3.fromRGB(120, 230, 60)
+local BLEEDING_COLOR = Color3.fromRGB(130, 10, 20)
+local FEARED_COLOR = Color3.fromRGB(165, 90, 230)
+local ROOTED_COLOR = Color3.fromRGB(110, 140, 60)
+local WEAKENED_COLOR = Color3.fromRGB(130, 130, 130)
 local BUFFED_COLOR = Color3.fromRGB(120, 255, 130)
 local FLICKER_COLOR = Color3.fromRGB(255, 220, 90)
+local STUNNED_COLOR = Color3.fromRGB(255, 245, 80)
 local CHEVRON_COLOR = Color3.fromRGB(255, 236, 160)
 local WHITE = Color3.new(1, 1, 1)
--- How far a status colour pulls the archetype's own colour.
+-- How far a status colour pulls the kind's own colour.
 local STATUS_BLEND = 0.55
 local BUFFED_BLEND = 0.3
--- Colour multiplier by level (1, 2, 3 and beyond).
-local LEVEL_SHADE = { 1, 0.85, 0.7 }
+-- How far a solid piece's look colour is pulled toward its kind's colour: a
+-- grunt's all the way but for a hint of the look, an elite's halfway, a
+-- boss's not at all (its look is its kind's own).
+local GRUNT_BLEND = 0.8
+local ELITE_BLEND = 0.45
+-- A detail piece is drawn this much brighter than the body, so a tinted head
+-- stays apart from its body.
+local DETAIL_SHADE = 1.15
 -- The colour keeps this share of its brightness at no health, plus the rest
 -- scaled by health.
 local HEALTH_FLOOR = 0.6
@@ -335,16 +305,21 @@ local TELEGRAPH_FLASH = 0.7
 -- A swelling piece throbs by this share of its swell with the telegraph pulse.
 local SWELL_PULSE = 0.25
 local HIT_FLASH_SECONDS = 0.08
--- A burning enemy flickers toward `FLICKER_COLOR` in a few steps, so the
--- colour is rewritten only when the step changes.
+-- A burning or stunned enemy flickers in a few steps, so the colour is
+-- rewritten only when the step changes.
 local FLICKER_SPEED = 21
 local FLICKER_STEPS = 3
 local FLICKER_BLEND = 0.45
+local STUN_FLICKER_BLEND = 0.65
 -- After a telegraph: a snap into the strike pose, a hold, then back to rest.
 local STRIKE_SNAP = 0.08
 local STRIKE_HOLD = 0.25
 local SETTLE_SECONDS = 0.3
 local SETTLE_END = STRIKE_SNAP + STRIKE_HOLD + SETTLE_SECONDS
+-- A charge holds the strike pose thrust this many studs forward, every piece
+-- this many times longer front to back.
+local CHARGE_LUNGE = 0.6
+local CHARGE_STRETCH = 1.3
 local BOB_HZ = 0.8
 local CHEVRON_SIZE = Vector3.new(0.9, 0.22, 0.32)
 local CHEVRON_GAP = 0.5
@@ -355,11 +330,12 @@ local COLLAPSE = 0.35
 -- How long the last drawn position of a vanished enemy stays answerable, so
 -- the hit that killed it can still find it.
 local DEPARTED_SECONDS = 1
--- Parts made at the start so the first camps do not hitch; each pool grows
--- past this on demand, never during a frame.
-local PREWARM_BODIES = 40
-local PREWARM_DETAILS = 60
-local PREWARM_GLOWS = 80
+-- Parts made at the start so a full horde (220 alive, mostly two-part grunts)
+-- does not hitch; each pool grows past this on demand, never during a frame.
+local PREWARM_BODIES = 240
+local PREWARM_DETAILS = 360
+local PREWARM_GLOWS = 240
+local PREWARM_MODELS = 240
 -- Enemies farther than this from the local character, on the ground plane, are
 -- not laid out or painted: their parts are parked once at `PARKED`, far below
 -- the map, until they come back in range. The same range as Effects.
@@ -368,11 +344,8 @@ local PARKED = CFrame.new(0, -10000, 0)
 -- Roblox draws at most 31 Highlights; the nearest buffed enemies in range get
 -- the green rim, the rest keep only their tint.
 local MAX_RIMS = 24
--- The wandering boss: its look this many times bigger, inside a red glow as
--- tall as the scaled look times AURA_SHARE, pulsing between two transparencies,
--- with a red light. The scale matches the boss's hit radius on the server
--- (the wandering boss's radiusMultiplier in Config).
-local BOSS_SCALE = 1.6
+-- A boss stands inside a red glow as tall as its scaled look times
+-- AURA_SHARE, pulsing between two transparencies, with a red light.
 local BOSS_AURA_COLOR = Color3.fromRGB(255, 40, 40)
 local BOSS_AURA_SHARE = 1.15
 local BOSS_AURA_HZ = 0.8
@@ -380,6 +353,8 @@ local BOSS_AURA_MIN = 0.72
 local BOSS_AURA_MAX = 0.88
 local BOSS_LIGHT_BRIGHTNESS = 2
 local BOSS_LIGHT_RANGE = 18
+-- A telegraph's length before the event that names it arrives.
+local DEFAULT_TELEGRAPH = 0.5
 
 -- Enemies are drawn one snapshot interval behind the newest data, so there is
 -- always a next position to glide to.
@@ -397,6 +372,8 @@ type Rig = {
 	frames: { CFrame },
 	scales: { number },
 	angles: { number },
+	-- Each piece's colour tinted toward the kind's, before statuses and health.
+	own: { Color3 },
 	-- Each part's colour apart from flashes, and the colour and material last
 	-- written to it.
 	base: { Color3 },
@@ -408,22 +385,30 @@ type Rig = {
 	phase: number,
 	state: Types.EnemyState,
 	colorKey: number,
-	level: number,
-	-- How long the archetype's shortest telegraph lasts.
+	chevronCount: number,
+	-- How long the telegraph in progress lasts: the kind's first attack's
+	-- until a telegraph event names the attack's own.
 	telegraphSeconds: number,
 	telegraphAt: number?,
 	-- When the last telegraph ended, how far it got and whether an attack landed.
 	endedAt: number?,
 	reached: number,
 	struck: boolean,
+	-- When the charge in progress started.
+	chargeAt: number?,
+	-- How many times longer front to back the pieces are drawn (the charge).
+	stretch: number,
 	flashUntil: number,
 	-- Held still until then by a skill hit (the hit-stop).
 	holdUntil: number,
+	-- Weakened until then: the wire carries no flag for it, the event does.
+	weakenedUntil: number,
 	stamp: number,
 	-- The green rim of a buffed enemy.
 	rim: Highlight?,
-	-- How many times bigger than its look it is drawn: BOSS_SCALE for the boss.
+	-- How many times bigger than its look it is drawn: the kind's scale.
 	size: number,
+	boss: boolean,
 	-- The boss's red glow, and how high its centre sits and how wide it is.
 	aura: Part?,
 	auraRise: number,
@@ -450,7 +435,7 @@ local freeRims: { Highlight } = {}
 local freeAuras: { Part } = {}
 local rigs: { [number]: Rig } = {}
 local dying: { Dying } = {}
-local shortestTelegraphs: { [string]: number } = {}
+local firstTelegraphs: { [string]: number } = {}
 local generation = 0
 -- The previous snapshot's enemies by id.
 local previousById: { [number]: Protocol.EnemyView } = {}
@@ -491,7 +476,7 @@ end
 
 local function take(role: Role): Part
 	local part = table.remove(poolOf(role)) or newPart(role)
-	-- Solid pieces are queryable so the mouse aim lands on an enemy (Input).
+	-- Solid pieces are queryable, so a ray from the camera can land on an enemy.
 	part.CanQuery = role ~= "glow"
 	return part
 end
@@ -501,30 +486,28 @@ local function give(role: Role, part: Part)
 	table.insert(poolOf(role), part)
 end
 
-local function telegraphOf(archetype: string): number
-	local known = shortestTelegraphs[archetype]
+-- The telegraph of the kind's first attack.
+local function telegraphOf(kindId: string): number
+	local known = firstTelegraphs[kindId]
 	if known then
 		return known
 	end
-	local shortest = math.huge
-	local config = Config.enemies.archetypes[archetype]
-	if config then
-		for _, attack in config.attacks do
-			shortest = math.min(shortest, attack.telegraphSeconds)
-		end
-	end
-	local seconds = if shortest < math.huge and shortest > 0 then shortest else 0.5
-	shortestTelegraphs[archetype] = seconds
+	local kind = Config.enemies[kindId]
+	local first = if kind then kind.attacks[1] else nil
+	local seconds = if first and first.telegraphSeconds > 0
+		then first.telegraphSeconds
+		else DEFAULT_TELEGRAPH
+	firstTelegraphs[kindId] = seconds
 	return seconds
 end
 
 local function rootFrame(x: number, z: number, facing: number): CFrame
 	-- The front is -Z; the facing is measured from +X toward +Z.
-	return CFrame.new(x, Net.heightAt(x, z), z) * CFrame.Angles(0, -facing - math.pi / 2, 0)
+	return CFrame.new(x, Net.groundY(), z) * CFrame.Angles(0, -facing - math.pi / 2, 0)
 end
 
--- One chevron per level (up to `MAX_CHEVRONS`), replacing any it had.
-local function setChevrons(rig: Rig, level: number)
+-- `count` chevrons (up to `MAX_CHEVRONS`; 0 for none), replacing any it had.
+local function setChevrons(rig: Rig, count: number)
 	local first = #rig.look.pieces + 1
 	for index = #rig.parts, first, -1 do
 		give("glow", rig.parts[index])
@@ -539,7 +522,7 @@ local function setChevrons(rig: Rig, level: number)
 	local chevrons = rig.look.chevrons
 	local size = CHEVRON_SIZE * chevrons.scale * rig.size
 	local on = rig.frames[chevrons.on] or rig.root
-	for step = 1, math.clamp(level, 1, MAX_CHEVRONS) do
+	for step = 1, math.min(count, MAX_CHEVRONS) do
 		local part = take("glow")
 		part.Shape = BLOCK
 		part.Size = size
@@ -557,7 +540,7 @@ local function setChevrons(rig: Rig, level: number)
 		rig.materials[index] = Enum.Material.Neon
 		rig.chevronOffsets[step] = offset
 	end
-	rig.level = level
+	rig.chevronCount = count
 	-- The new chevrons need their colours.
 	rig.colorKey = -1
 end
@@ -569,13 +552,19 @@ local function layout(rig: Rig, now: number, pulse: number, dt: number)
 	if telegraphAt then
 		progress = math.clamp((now - telegraphAt) / rig.telegraphSeconds, 0, 1)
 	end
+	local chargeAt = rig.chargeAt
 	local endedAt = rig.endedAt
 	local since = if endedAt then now - endedAt else math.huge
 	local pieces = rig.look.pieces
 	for index, piece in pieces do
 		local offset = piece.offset
 		local raised = piece.telegraphPose
-		if telegraphAt then
+		if chargeAt then
+			-- The charge: snapped from the telegraph's pose into the strike's, thrust forward.
+			local from = if raised then offset:Lerp(raised, rig.reached) else offset
+			local strike = CFrame.new(0, 0, -CHARGE_LUNGE) * (piece.strike or raised or offset)
+			offset = from:Lerp(strike, math.min(1, (now - chargeAt) / STRIKE_SNAP))
+		elseif telegraphAt then
 			if raised then
 				offset = offset:Lerp(raised, progress)
 			end
@@ -603,7 +592,8 @@ local function layout(rig: Rig, now: number, pulse: number, dt: number)
 		end
 		if scale ~= rig.scales[index] then
 			rig.scales[index] = scale
-			rig.parts[index].Size = piece.size * scale * rig.size
+			local size = piece.size * scale * rig.size
+			rig.parts[index].Size = Vector3.new(size.X, size.Y, size.Z * rig.stretch)
 		end
 		local on = piece.on
 		if on then
@@ -695,27 +685,51 @@ local function setAura(rig: Rig, on: boolean)
 	end
 end
 
--- Draws the rig at its look's size or the boss's, rebuilding the chevrons and the glow.
-local function setBoss(rig: Rig, boss: boolean)
-	rig.size = if boss then BOSS_SCALE else 1
-	local height = heightOf(rig.look) * rig.size
-	rig.auraRise = height / 2
-	rig.auraDiameter = height * BOSS_AURA_SHARE
-	for index, piece in rig.look.pieces do
-		rig.parts[index].Size = piece.size * rig.scales[index] * rig.size
+local function clampColor(r: number, g: number, b: number): Color3
+	return Color3.new(math.min(r, 1), math.min(g, 1), math.min(b, 1))
+end
+
+local function shade(color: Color3, factor: number): Color3
+	return clampColor(color.R * factor, color.G * factor, color.B * factor)
+end
+
+local function fromHex(rgb: number): Color3
+	return Color3.fromRGB(bit32.rshift(rgb, 16) % 256, bit32.rshift(rgb, 8) % 256, rgb % 256)
+end
+
+-- The look a kind is drawn with and how far its pieces take the kind's colour.
+local function lookOf(kind: Types.EnemyKindConfig?): (Look, number)
+	if kind == nil then
+		return GRUNT, 0
 	end
-	setChevrons(rig, rig.level)
-	setAura(rig, false)
+	local boss = BossLooks.looks[kind.archetype]
 	if boss then
-		setAura(rig, true)
+		return boss, 0
 	end
+	local look = LOOKS[kind.archetype]
+	if look == nil or look == GRUNT then
+		return GRUNT, GRUNT_BLEND
+	end
+	return look, ELITE_BLEND
+end
+
+local function isBoss(kind: Types.EnemyKindConfig?): boolean
+	return kind ~= nil and (kind.role == "boss" or kind.role == "finalBoss")
+end
+
+-- The chevrons a phase shows: one per phase from the second.
+local function chevronsFor(phase: number): number
+	return if phase >= 2 then phase else 0
 end
 
 local function spawnRig(id: number, enemy: Protocol.EnemyView): Rig
-	local look = LOOKS[enemy.archetype] or GRUNT
-	local size = if enemy.boss then BOSS_SCALE else 1
+	local kind = Config.enemies[enemy.kind]
+	local look, blend = lookOf(kind)
+	local size = if kind then kind.scale else 1
+	local tint = if kind then fromHex(kind.colour) else WHITE
+	local boss = isBoss(kind)
 	local model = table.remove(freeModels) or Instance.new("Model")
-	model.Name = enemy.archetype
+	model.Name = enemy.kind
 	local rig: Rig = {
 		look = look,
 		model = model,
@@ -725,6 +739,7 @@ local function spawnRig(id: number, enemy: Protocol.EnemyView): Rig
 		frames = {},
 		scales = {},
 		angles = {},
+		own = {},
 		base = {},
 		shown = {},
 		materials = {},
@@ -732,17 +747,21 @@ local function spawnRig(id: number, enemy: Protocol.EnemyView): Rig
 		phase = (id * 0.618) % 1,
 		state = enemy.state,
 		colorKey = -1,
-		level = enemy.level,
-		telegraphSeconds = telegraphOf(enemy.archetype),
+		chevronCount = 0,
+		telegraphSeconds = telegraphOf(enemy.kind),
 		telegraphAt = if enemy.state == "telegraph" then os.clock() else nil,
 		endedAt = nil,
 		reached = 0,
 		struck = false,
+		chargeAt = if enemy.state == "charge" then os.clock() else nil,
+		stretch = if enemy.state == "charge" then CHARGE_STRETCH else 1,
 		flashUntil = 0,
 		holdUntil = 0,
+		weakenedUntil = 0,
 		stamp = generation,
 		rim = nil,
 		size = size,
+		boss = boss,
 		aura = nil,
 		auraRise = 0,
 		auraDiameter = 0,
@@ -755,7 +774,8 @@ local function spawnRig(id: number, enemy: Protocol.EnemyView): Rig
 	for index, piece in look.pieces do
 		local part = take(piece.role)
 		part.Shape = piece.shape
-		part.Size = piece.size * size
+		local scaled = piece.size * size
+		part.Size = Vector3.new(scaled.X, scaled.Y, scaled.Z * rig.stretch)
 		part.Transparency = piece.transparency or 0
 		part.Parent = model
 		rig.parts[index] = part
@@ -763,6 +783,14 @@ local function spawnRig(id: number, enemy: Protocol.EnemyView): Rig
 		rig.scales[index] = 1
 		rig.angles[index] = 0
 		rig.materials[index] = part.Material
+		local own = piece.color
+		if piece.role ~= "glow" and blend > 0 then
+			own = own:Lerp(tint, blend)
+			if piece.role == "detail" then
+				own = shade(own, DETAIL_SHADE)
+			end
+		end
+		rig.own[index] = own
 	end
 	model.PrimaryPart = rig.parts[1]
 	-- Appears where it is, not where a stale pooled part was.
@@ -770,9 +798,12 @@ local function spawnRig(id: number, enemy: Protocol.EnemyView): Rig
 	for index, part in rig.parts do
 		part.CFrame = rig.frames[index]
 	end
-	setChevrons(rig, enemy.level)
-	if enemy.boss then
-		setBoss(rig, true)
+	setChevrons(rig, chevronsFor(enemy.phase))
+	if boss then
+		local height = heightOf(look) * size
+		rig.auraRise = height / 2
+		rig.auraDiameter = height * BOSS_AURA_SHARE
+		setAura(rig, true)
 	end
 	model.Parent = folder
 	rigs[id] = rig
@@ -804,46 +835,61 @@ local function setRim(rig: Rig, on: boolean)
 	end
 end
 
-local function shade(color: Color3, factor: number): Color3
-	return Color3.new(color.R * factor, color.G * factor, color.B * factor)
+-- The status colour an enemy shows, strongest first, and how far it pulls.
+local function statusTint(enemy: Protocol.EnemyView, weakened: boolean): (Color3?, number)
+	if enemy.slowed then
+		return SLOWED_COLOR, STATUS_BLEND
+	elseif enemy.burning then
+		return BURNING_COLOR, STATUS_BLEND
+	elseif enemy.poisoned then
+		return POISONED_COLOR, STATUS_BLEND
+	elseif enemy.bleeding then
+		return BLEEDING_COLOR, STATUS_BLEND
+	elseif enemy.feared then
+		return FEARED_COLOR, STATUS_BLEND
+	elseif enemy.rooted then
+		return ROOTED_COLOR, STATUS_BLEND
+	elseif weakened then
+		return WEAKENED_COLOR, STATUS_BLEND
+	elseif enemy.buffed then
+		return BUFFED_COLOR, BUFFED_BLEND
+	end
+	return nil, 0
 end
 
--- The colour of a solid piece at rest: its own, shaded by level, tinted by
--- the status the enemy carries (chilled > burning > brittle > buffed), darker
--- as its health falls.
-local function baseColor(own: Color3, enemy: Protocol.EnemyView): Color3
-	local color = shade(own, LEVEL_SHADE[math.min(enemy.level, #LEVEL_SHADE)] or 1)
-	if enemy.chilled then
-		color = color:Lerp(CHILLED_COLOR, STATUS_BLEND)
-	elseif enemy.burning then
-		color = color:Lerp(BURNING_COLOR, STATUS_BLEND)
-	elseif enemy.brittle then
-		color = color:Lerp(BRITTLE_COLOR, STATUS_BLEND)
-	elseif enemy.buffed then
-		color = color:Lerp(BUFFED_COLOR, BUFFED_BLEND)
+-- The colour of a solid piece at rest: its kind-tinted own, pulled toward the
+-- status it carries, darker as its health falls.
+local function baseColor(own: Color3, enemy: Protocol.EnemyView, weakened: boolean): Color3
+	local color = own
+	local status, blend = statusTint(enemy, weakened)
+	if status then
+		color = color:Lerp(status, blend)
 	end
 	local health = math.round(math.clamp(enemy.health, 0, 1) * HEALTH_STEPS) / HEALTH_STEPS
 	return shade(color, HEALTH_FLOOR + (1 - HEALTH_FLOOR) * health)
 end
 
-local function colorKey(enemy: Protocol.EnemyView): number
-	local flags = (if enemy.chilled then 1 else 0)
+local function colorKey(enemy: Protocol.EnemyView, weakened: boolean): number
+	local flags = (if enemy.slowed then 1 else 0)
 		+ (if enemy.burning then 2 else 0)
-		+ (if enemy.brittle then 4 else 0)
-		+ (if enemy.buffed then 8 else 0)
+		+ (if enemy.poisoned then 4 else 0)
+		+ (if enemy.bleeding then 8 else 0)
+		+ (if enemy.feared then 16 else 0)
+		+ (if enemy.rooted then 32 else 0)
+		+ (if weakened then 64 else 0)
+		+ (if enemy.buffed then 128 else 0)
 	local health = math.round(math.clamp(enemy.health, 0, 1) * HEALTH_STEPS)
-	return enemy.level * 1024 + flags * 64 + health
+	return flags * 64 + health
 end
 
--- The material of a solid piece: icy when chilled, cracked when brittle (the
--- tint's order), neon when it glows in the telegraph.
+-- The material of a piece: neon when it glows, or when it glows in the
+-- telegraph and the charge; icy when slowed.
 local function materialOf(piece: Piece, enemy: Protocol.EnemyView): Enum.Material
-	if piece.role == "glow" or (piece.glowsOnTelegraph and enemy.state == "telegraph") then
+	local windUp = enemy.state == "telegraph" or enemy.state == "charge"
+	if piece.role == "glow" or (piece.glowsOnTelegraph and windUp) then
 		return Enum.Material.Neon
-	elseif enemy.chilled then
+	elseif enemy.slowed then
 		return Enum.Material.Ice
-	elseif enemy.brittle and not enemy.burning then
-		return Enum.Material.CrackedLava
 	end
 	return Enum.Material.SmoothPlastic
 end
@@ -859,7 +905,7 @@ end
 
 -- Where a parked enemy is: its snapshot position on the ground.
 local function groundPosition(rig: Rig): Vector3
-	return Vector3.new(rig.x, Net.heightAt(rig.x, rig.z), rig.z)
+	return Vector3.new(rig.x, Net.groundY(), rig.z)
 end
 
 local function kill(id: number, rig: Rig, now: number)
@@ -913,6 +959,53 @@ local function assignRims()
 	table.clear(rimCandidates)
 end
 
+-- Draws every size anew on the next layout (the stretch changed).
+local function resize(rig: Rig)
+	for index in rig.scales do
+		rig.scales[index] = -1
+	end
+end
+
+-- Follows the enemy's state: the telegraph's wind-up, the charge's lunge and
+-- the strike pose after an attack.
+local function setState(rig: Rig, state: Types.EnemyState, now: number)
+	local was = rig.state
+	if state == was then
+		return
+	end
+	if state == "telegraph" then
+		rig.telegraphAt = now
+		rig.endedAt = nil
+		rig.chargeAt = nil
+	elseif state == "charge" then
+		if was == "telegraph" then
+			local telegraphAt = rig.telegraphAt or now
+			rig.reached = math.clamp((now - telegraphAt) / rig.telegraphSeconds, 0, 1)
+		end
+		rig.telegraphAt = nil
+		rig.endedAt = nil
+		rig.chargeAt = now
+	elseif was == "charge" then
+		-- Out of the charge: the strike pose held, then back to rest.
+		rig.chargeAt = nil
+		rig.endedAt = now - STRIKE_SNAP
+		rig.struck = true
+	elseif was == "telegraph" then
+		local telegraphAt = rig.telegraphAt or now
+		rig.reached = math.clamp((now - telegraphAt) / rig.telegraphSeconds, 0, 1)
+		rig.telegraphAt = nil
+		rig.endedAt = now
+		-- A telegraph followed by a recovery is an attack that landed.
+		rig.struck = state == "recover"
+	end
+	rig.state = state
+	local stretch = if state == "charge" then CHARGE_STRETCH else 1
+	if stretch ~= rig.stretch then
+		rig.stretch = stretch
+		resize(rig)
+	end
+end
+
 -- Runs once per snapshot: pairs models with enemies and sets how they look.
 local function sync(snapshot: Net.Snapshot)
 	generation += 1
@@ -940,34 +1033,19 @@ local function sync(snapshot: Net.Snapshot)
 			rig.distance = 0
 		end
 		rig.culled = rig.distance > range
-		if enemy.boss ~= (rig.aura ~= nil) then
-			setBoss(rig, enemy.boss)
-		end
 		-- The boss's glow says more than the green rim.
-		if enemy.buffed and not enemy.boss and not rig.culled then
+		if enemy.buffed and not rig.boss and not rig.culled then
 			table.insert(rimCandidates, rig)
 		end
 
-		local state: Types.EnemyState = enemy.state
-		if state ~= rig.state then
-			if state == "telegraph" then
-				rig.telegraphAt = now
-				rig.endedAt = nil
-			elseif rig.state == "telegraph" then
-				local telegraphAt = rig.telegraphAt or now
-				rig.reached = math.clamp((now - telegraphAt) / rig.telegraphSeconds, 0, 1)
-				rig.telegraphAt = nil
-				rig.endedAt = now
-				-- A telegraph followed by a recovery is an attack that landed.
-				rig.struck = state == "recover"
-			end
-			rig.state = state
-		end
+		setState(rig, enemy.state, now)
 
-		if enemy.level ~= rig.level then
-			setChevrons(rig, enemy.level)
+		local chevrons = chevronsFor(enemy.phase)
+		if chevrons ~= rig.chevronCount then
+			setChevrons(rig, chevrons)
 		end
-		local key = colorKey(enemy)
+		local weakened = rig.weakenedUntil > now
+		local key = colorKey(enemy, weakened)
 		if rig.colorKey ~= key then
 			rig.colorKey = key
 			local pieces = rig.look.pieces
@@ -978,7 +1056,7 @@ local function sync(snapshot: Net.Snapshot)
 				elseif piece.role == "glow" then
 					rig.base[index] = piece.color
 				else
-					rig.base[index] = baseColor(piece.color, enemy)
+					rig.base[index] = baseColor(rig.own[index], enemy, weakened)
 				end
 			end
 		end
@@ -1025,16 +1103,26 @@ local function angleDelta(from: number, to: number): number
 	return (to - from + math.pi) % (2 * math.pi) - math.pi
 end
 
+-- A flicker in FLICKER_STEPS steps, offset by the rig's phase.
+local function flickerOf(rig: Rig, now: number, blend: number): number
+	local wave = math.sin(now * FLICKER_SPEED + rig.phase * 7)
+		* math.sin(now * FLICKER_SPEED * 0.61 + rig.phase * 13)
+	return math.round((0.5 + 0.5 * wave) * FLICKER_STEPS) / FLICKER_STEPS * blend
+end
+
 -- Writes each part's colour for this frame: white in a hit flash, pulsing
--- toward white in a telegraph, flickering while burning.
+-- toward white in a telegraph, flickering yellow while stunned and orange
+-- while burning.
 local function paint(rig: Rig, enemy: Protocol.EnemyView, now: number, pulse: number)
 	local flash = rig.flashUntil > now
 	local telegraph = enemy.state == "telegraph"
 	local flicker = 0
-	if enemy.burning and not enemy.chilled then
-		local wave = math.sin(now * FLICKER_SPEED + rig.phase * 7)
-			* math.sin(now * FLICKER_SPEED * 0.61 + rig.phase * 13)
-		flicker = math.round((0.5 + 0.5 * wave) * FLICKER_STEPS) / FLICKER_STEPS * FLICKER_BLEND
+	local flickerColor = FLICKER_COLOR
+	if enemy.stunned then
+		flicker = flickerOf(rig, now, STUN_FLICKER_BLEND)
+		flickerColor = STUNNED_COLOR
+	elseif enemy.burning and not enemy.slowed then
+		flicker = flickerOf(rig, now, FLICKER_BLEND)
 	end
 	for index, part in rig.parts do
 		local color = rig.base[index]
@@ -1043,7 +1131,7 @@ local function paint(rig: Rig, enemy: Protocol.EnemyView, now: number, pulse: nu
 		elseif telegraph then
 			color = color:Lerp(WHITE, TELEGRAPH_FLASH * pulse)
 		elseif flicker > 0 and rig.roles[index] ~= "glow" then
-			color = color:Lerp(FLICKER_COLOR, flicker)
+			color = color:Lerp(flickerColor, flicker)
 		end
 		if rig.shown[index] ~= color then
 			rig.shown[index] = color
@@ -1167,6 +1255,23 @@ function EnemyView.hitStop(id: number, seconds: number)
 	end
 end
 
+-- The telegraph event names how long the wind-up of enemy `id` lasts.
+function EnemyView.telegraph(id: number, seconds: number)
+	local rig = rigs[id]
+	if rig and seconds > 0 then
+		rig.telegraphSeconds = seconds
+	end
+end
+
+-- A status the wire carries no flag for (weakened) was put on enemy `id`.
+function EnemyView.markStatus(id: number, status: Types.Status, seconds: number)
+	local rig = rigs[id]
+	if rig and status == "weakened" then
+		rig.weakenedUntil = math.max(rig.weakenedUntil, os.clock() + seconds)
+		rig.colorKey = -1
+	end
+end
+
 -- Where the enemy's body is drawn now, or was drawn just before it vanished;
 -- for an enemy out of range, its snapshot position on the ground.
 function EnemyView.position(id: number): Vector3?
@@ -1177,6 +1282,15 @@ function EnemyView.position(id: number): Vector3?
 	return departed[id]
 end
 
+-- How tall enemy `id` stands as drawn, for effects placed above it.
+function EnemyView.height(id: number): number?
+	local rig = rigs[id]
+	if rig then
+		return heightOf(rig.look) * rig.size
+	end
+	return nil
+end
+
 function EnemyView.start()
 	folder = Instance.new("Folder")
 	folder.Name = "ClientEnemies"
@@ -1185,6 +1299,9 @@ function EnemyView.start()
 	prewarm("body", PREWARM_BODIES)
 	prewarm("detail", PREWARM_DETAILS)
 	prewarm("glow", PREWARM_GLOWS)
+	for _ = 1, PREWARM_MODELS do
+		table.insert(freeModels, Instance.new("Model"))
+	end
 
 	Net.onWorld(sync)
 	local latest = Net.latest

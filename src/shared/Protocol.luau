@@ -17,6 +17,9 @@ Protocol.remotes = {
 	world = "World",
 	-- Server to one client: events it may see and its own state.
 	events = "Events",
+	-- Server to one client: its phase (pick, run or summary) and, with the
+	-- summary, how its run went.
+	phase = "Phase",
 }
 
 export type Intent =
@@ -574,6 +577,21 @@ function Protocol.selfView(run: Types.Run, player: Types.Player): SelfView
 		stats = Hero.stats(run, player),
 	}
 end
+
+-- How one player's run went, sent with the summary phase.
+export type SummaryView = {
+	-- Why the run ended (the `ended` event's reason).
+	reason: string,
+	extracted: boolean,
+	-- The run's time when it ended, in seconds.
+	time: number,
+	level: number,
+	kills: number,
+	damageDone: number,
+	class: string,
+	-- Seconds until the pick screen returns.
+	nextIn: number,
+}
 
 -- Whether an event goes only to the player it is about rather than to every
 -- client: a player's own offers, cards, level-ups and utilities.

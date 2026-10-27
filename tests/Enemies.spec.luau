@@ -323,15 +323,15 @@ return {
 		local shaman = fighter(run, "shaman", 0, 0)
 		local near = Fixtures.enemy(run, "mossTroll", 0, 6)
 		local far = Fixtures.enemy(run, "mossTroll", 0, -25)
-		near.health = 100
-		far.health = 100
+		near.health = near.maxHealth - 20
+		far.health = far.maxHealth - 20
 		local landedAt = windUp(run, shaman, function()
 			return Assert.findEvent(run.events, "enemyHealed") ~= nil
 		end)
 		expectRecovery(run, shaman, landedAt)
-		Assert.equal(near.health, 120)
+		Assert.equal(near.health, near.maxHealth)
 		Assert.near(near.buffedUntil, landedAt + 4)
-		Assert.equal(far.health, 100)
+		Assert.equal(far.health, far.maxHealth - 20)
 		Assert.equal(far.buffedUntil, 0)
 		for _, event in events(run, "enemyHealed") do
 			Assert.equal(event.by, shaman.id)
@@ -357,7 +357,10 @@ return {
 		run.time = 0.5
 		Enemies.step(run, DT)
 		Assert.near(walker.x, -20 + run.config.enemies.sproutImp.speed * horde.buffSpeedFactor * DT)
-		Assert.near(player.health, maxHealth(run, player) - 8 * horde.buffDamageFactor)
+		Assert.near(
+			player.health,
+			maxHealth(run, player) - run.config.enemies.greyWolf.damage * horde.buffDamageFactor
+		)
 	end,
 
 	["a charge hits a hero on its line once and ends past the aim"] = function()
@@ -570,7 +573,7 @@ return {
 		grunt.contactReadyAt = 0
 		tick(run)
 		Assert.near(walker.x, 20)
-		Assert.near(player.health, maxHealth(run, player) - 8)
+		Assert.near(player.health, maxHealth(run, player) - run.config.enemies.greyWolf.damage)
 	end,
 
 	["a feared enemy walks away and does not hit"] = function()
@@ -589,7 +592,10 @@ return {
 		grunt.weakenFactor = 0.5
 		grunt.contactReadyAt = 0
 		tick(run)
-		Assert.near(player.health, maxHealth(run, player) - 4)
+		Assert.near(
+			player.health,
+			maxHealth(run, player) - run.config.enemies.greyWolf.damage * 0.5
+		)
 
 		local other, hero = open()
 		Fixtures.place(other, 1, 4, 0)
@@ -604,7 +610,10 @@ return {
 		local grunt = State.newEnemy(run, "greyWolf", 3, 0, 1, 1.5)
 		grunt.contactReadyAt = 0
 		tick(run)
-		Assert.near(player.health, maxHealth(run, player) - 12)
+		Assert.near(
+			player.health,
+			maxHealth(run, player) - run.config.enemies.greyWolf.damage * 1.5
+		)
 	end,
 
 	["thorns return a contact hit's damage to the grunt"] = function()
