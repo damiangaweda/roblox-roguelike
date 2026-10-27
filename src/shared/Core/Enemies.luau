@@ -5,11 +5,14 @@
 
 local Geometry = require("./Geometry")
 local Life = require("./Life")
+local Map = require("./Map")
 local State = require("./State")
 local Types = require("./Types")
-local World = require("./World")
 
 local Enemies = {}
+
+-- Spots a wanderer draws before it waits for the next draw.
+local WANDER_DRAWS = 8
 
 -- Per-step lookups shared by every enemy: the alive players by ascending id,
 -- and the enemies by id (a heal reaches its camp through camp.members).
@@ -26,8 +29,8 @@ local function face(enemy: Types.Enemy, x: number, z: number)
 	end
 end
 
--- Whether `enemy` notices `player`: alive, in the same room or corridor, and
--- within the detection range, which cover halves.
+-- Whether `enemy` notices `player`: alive and within the detection range,
+-- which cover halves. The map is open: nothing else hides a player.
 function Enemies.detects(run: Types.Run, enemy: Types.Enemy, player: Types.Player): boolean
 	if player.state ~= "alive" then
 		return false
@@ -36,13 +39,7 @@ function Enemies.detects(run: Types.Run, enemy: Types.Enemy, player: Types.Playe
 	if player.inCover then
 		range *= run.config.enemies.coverDetectionFactor
 	end
-	if Geometry.distance(enemy.x, enemy.z, player.x, player.z) > range then
-		return false
-	end
-	-- Walls hide players: a short distance across a wall is not seen.
-	local here = World.locate(run.world, enemy.x, enemy.z)
-	local there = World.locate(run.world, player.x, player.z)
-	return here.kind ~= "outside" and here.kind == there.kind and here.id == there.id
+	return Geometry.distance(enemy.x, enemy.z, player.x, player.z) <= range
 end
 
 -- The nearest alive player the enemy notices; a tie goes to the lowest id.
@@ -91,6 +88,7 @@ function Enemies.provoke(run: Types.Run, enemy: Types.Enemy, playerId: number)
 		end
 		enemy.state = "chase"
 		enemy.target = playerId
+		enemy.stuckSince = nil
 	end
 	local camp = if enemy.campId then State.campById(run, enemy.campId) else nil
 	if camp and run.config.enemies.campAlerts then
@@ -146,17 +144,42 @@ local function hurtMemberInRadius(
 	return false
 end
 
--- Moves one step toward (toX, toZ) along the world's graph, kept inside it.
+-- Moves one step toward (toX, toZ) along the map's paths or around what
+-- blocks the way, kept on walkable ground. Returns whether the map found a
+-- way on; when it does not, the enemy stays.
 local function walkToward(
 	run: Types.Run,
 	enemy: Types.Enemy,
 	toX: number,
 	toZ: number,
 	step: number
-)
-	local wx, wz = World.waypointToward(run.world, enemy.x, enemy.z, toX, toZ)
+): boolean
+	local wx, wz = Map.waypointToward(run.map, enemy.x, enemy.z, toX, toZ)
+	if wx == enemy.x and wz == enemy.z then
+		return false
+	end
 	local x, z = Geometry.stepToward(enemy.x, enemy.z, wx, wz, step)
-	enemy.x, enemy.z = World.clamp(run.world, x, z)
+	enemy.x, enemy.z = Map.clamp(run.map, x, z)
+	return true
+end
+
+-- Whether an enemy that found no way on has been stuck for giveUpSeconds;
+-- records when it got stuck, and forgets it once a way is found.
+local function givesUp(run: Types.Run, enemy: Types.Enemy, found: boolean): boolean
+	if found then
+		enemy.stuckSince = nil
+		return false
+	end
+	local since = enemy.stuckSince or run.time
+	enemy.stuckSince = since
+	return run.time - since >= run.config.enemies.giveUpSeconds
+end
+
+-- Ends a chase: the enemy walks home.
+local function giveUpChase(enemy: Types.Enemy)
+	enemy.state = "return"
+	enemy.target = nil
+	enemy.stuckSince = nil
 end
 
 -- Starts the telegraph of the current attack: the aim is locked now, so a
@@ -341,8 +364,7 @@ local function chase(
 		target == nil
 		or Geometry.distance(enemy.x, enemy.z, enemy.homeX, enemy.homeZ) > archetype.leash
 	then
-		enemy.state = "return"
-		enemy.target = nil
+		giveUpChase(enemy)
 		return
 	end
 	enemy.target = target.id
@@ -362,16 +384,22 @@ local function chase(
 	end
 
 	local step = speed * dt
+	local found = true
 	if archetype.preferredRange and distance < archetype.preferredRange then
 		local nx, nz = Geometry.normalize(enemy.x - target.x, enemy.z - target.z)
-		enemy.x, enemy.z = World.clamp(run.world, enemy.x + nx * step, enemy.z + nz * step)
+		enemy.x, enemy.z = Map.clamp(run.map, enemy.x + nx * step, enemy.z + nz * step)
 	elseif distance > attack.range * run.config.enemies.approachFactor then
 		-- Never closer than touching.
 		local gap = archetype.radius + run.config.player.radius
 		local allowed = math.min(step, math.max(0, distance - gap))
 		if allowed > 0 then
-			walkToward(run, enemy, target.x, target.z, allowed)
+			found = walkToward(run, enemy, target.x, target.z, allowed)
 		end
+	end
+	-- A target the map finds no way to (across water) ends the chase as the
+	-- leash does.
+	if givesUp(run, enemy, found) then
+		giveUpChase(enemy)
 	end
 end
 
@@ -388,33 +416,78 @@ local function walkHome(
 		enemy.x, enemy.z = enemy.homeX, enemy.homeZ
 		enemy.health = math.max(enemy.health, enemy.maxHealth * config.returnHealFraction)
 		enemy.target = nil
+		enemy.stuckSince = nil
 		enemy.state = if enemy.patrolId then "patrol" else "idle"
 		calmCamp(run, enemy, context)
 		return
 	end
 	face(enemy, enemy.homeX, enemy.homeZ)
-	walkToward(run, enemy, enemy.homeX, enemy.homeZ, speed * dt)
+	-- With no way home for giveUpSeconds, where it stands becomes its home,
+	-- so it does not stand in the return forever, blind to players.
+	if givesUp(run, enemy, walkToward(run, enemy, enemy.homeX, enemy.homeZ, speed * dt)) then
+		enemy.homeX, enemy.homeZ = enemy.x, enemy.z
+	end
 end
 
--- Sends the patrol on to a neighbour of its room, not back where it came from
--- unless the room is a dead end.
+-- Sends the patrol on to a neighbour of its point, not back where it came
+-- from unless the point is a dead end.
 local function advancePatrol(run: Types.Run, patrol: Types.Patrol)
-	local room = run.world.rooms[patrol.routeRoom]
+	local point = run.map.points[patrol.routePoint]
 	local options: { number } = {}
-	for _, neighbour in room.neighbours do
-		if neighbour ~= patrol.previousRoom then
+	for _, neighbour in point.neighbours do
+		if neighbour ~= patrol.previousPoint then
 			table.insert(options, neighbour)
 		end
 	end
 	if #options == 0 then
-		options = room.neighbours
+		options = point.neighbours
 	end
 	if #options == 0 then
 		return
 	end
 	local next = if #options > 1 then options[run.rng:integer(1, #options)] else options[1]
-	patrol.previousRoom = patrol.routeRoom
-	patrol.routeRoom = next
+	patrol.previousPoint = patrol.routePoint
+	patrol.routePoint = next
+end
+
+-- Sends a wanderer to a walkable spot drawn within wanderRadius of (x, z),
+-- or keeps it where it stands when no draw is walkable, until wanderSeconds
+-- pass.
+local function drawWanderSpot(run: Types.Run, patrol: Types.Patrol, x: number, z: number)
+	local patrols = run.config.enemies.patrols
+	patrol.wanderX, patrol.wanderZ = x, z
+	patrol.wanderUntil = run.time + patrols.wanderSeconds
+	for _ = 1, WANDER_DRAWS do
+		local angle = run.rng:next() * 2 * math.pi
+		-- Uniform over the disc, not bunched at its centre.
+		local radius = patrols.wanderRadius * math.sqrt(run.rng:next())
+		local sx, sz = x + math.cos(angle) * radius, z + math.sin(angle) * radius
+		if Map.walkable(run.map, sx, sz) then
+			patrol.wanderX, patrol.wanderZ = sx, sz
+			return
+		end
+	end
+end
+
+-- A wanderer roams the open ground: to its spot, then to a new one drawn
+-- where it arrived, or drawn where it stands once wanderSeconds pass.
+local function wanderWalk(
+	run: Types.Run,
+	enemy: Types.Enemy,
+	patrol: Types.Patrol,
+	speed: number,
+	dt: number,
+	arriveDistance: number
+)
+	local arrived = Geometry.distance(enemy.x, enemy.z, patrol.wanderX, patrol.wanderZ)
+		<= arriveDistance
+	if patrol.members[1] == enemy.id and (arrived or run.time >= patrol.wanderUntil) then
+		drawWanderSpot(run, patrol, enemy.x, enemy.z)
+	end
+	if Geometry.distance(enemy.x, enemy.z, patrol.wanderX, patrol.wanderZ) > arriveDistance then
+		face(enemy, patrol.wanderX, patrol.wanderZ)
+		walkToward(run, enemy, patrol.wanderX, patrol.wanderZ, speed * dt)
+	end
 end
 
 local function patrolWalk(
@@ -428,19 +501,23 @@ local function patrolWalk(
 	if patrol == nil then
 		return
 	end
-	local room = run.world.rooms[patrol.routeRoom]
+	if patrol.wanders then
+		wanderWalk(run, enemy, patrol, speed, dt, arriveDistance)
+		return
+	end
+	local point = run.map.points[patrol.routePoint]
 	-- One member decides where the patrol goes next, so it stays together.
 	if
 		patrol.members[1] == enemy.id
-		and Geometry.distance(enemy.x, enemy.z, room.x, room.z) <= arriveDistance
+		and Geometry.distance(enemy.x, enemy.z, point.x, point.z) <= arriveDistance
 	then
 		advancePatrol(run, patrol)
-		room = run.world.rooms[patrol.routeRoom]
+		point = run.map.points[patrol.routePoint]
 	end
-	enemy.routeRoom = patrol.routeRoom
-	if Geometry.distance(enemy.x, enemy.z, room.x, room.z) > arriveDistance then
-		face(enemy, room.x, room.z)
-		walkToward(run, enemy, room.x, room.z, speed * dt)
+	enemy.routePoint = patrol.routePoint
+	if Geometry.distance(enemy.x, enemy.z, point.x, point.z) > arriveDistance then
+		face(enemy, point.x, point.z)
+		walkToward(run, enemy, point.x, point.z, speed * dt)
 	end
 end
 
@@ -450,11 +527,12 @@ local function stepEnemy(run: Types.Run, enemy: Types.Enemy, dt: number, context
 	-- The last step of a knockback covers only what is left of it.
 	local knockLeft = math.clamp(enemy.knockUntil - (run.time - dt), 0, dt)
 	if knockLeft > 0 then
-		enemy.x, enemy.z = World.clamp(
-			run.world,
-			enemy.x + enemy.knockX * knockLeft,
-			enemy.z + enemy.knockZ * knockLeft
-		)
+		-- Water or a prop on the way stops the push there.
+		local toX = enemy.x + enemy.knockX * knockLeft
+		local toZ = enemy.z + enemy.knockZ * knockLeft
+		local reach = Map.reach(run.map, enemy.x, enemy.z, toX, toZ)
+		local x, z = Geometry.stepToward(enemy.x, enemy.z, toX, toZ, reach)
+		enemy.x, enemy.z = Map.clamp(run.map, x, z)
 		-- A telegraph in progress still lands on time; nothing else is decided.
 		if enemy.state == "telegraph" and run.time >= enemy.stateUntil then
 			finishTelegraph(run, enemy, context)
@@ -476,7 +554,8 @@ local function stepEnemy(run: Types.Run, enemy: Types.Enemy, dt: number, context
 		if found then
 			enemy.state = "chase"
 			enemy.target = found.id
-			-- A roamer's leash starts where it noticed the player.
+			-- A patrol member's or a wanderer's leash starts where it noticed
+			-- the player.
 			if enemy.patrolId then
 				enemy.homeX, enemy.homeZ = enemy.x, enemy.z
 			end
@@ -575,7 +654,7 @@ local function separate(run: Types.Run)
 end
 
 -- Advances every enemy by `dt` seconds: knockback, behaviour, separation, and
--- the walls of the world.
+-- back onto walkable ground.
 function Enemies.step(run: Types.Run, dt: number)
 	local players: { Types.Player } = {}
 	for _, player in State.sortedPlayers(run) do
@@ -596,7 +675,7 @@ function Enemies.step(run: Types.Run, dt: number)
 
 	separate(run)
 	for _, enemy in run.enemies do
-		enemy.x, enemy.z = World.clamp(run.world, enemy.x, enemy.z)
+		enemy.x, enemy.z = Map.clamp(run.map, enemy.x, enemy.z)
 	end
 end
 

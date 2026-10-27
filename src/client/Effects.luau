@@ -35,7 +35,8 @@ local DASH_SPREAD = 0.8
 -- Where a player was this long ago is where a dash trail starts.
 local SAMPLE_SECONDS = 0.1
 
--- Flat discs on the ground: skill bursts, explosions, enemy attacks.
+-- Flat discs on the ground: skill bursts, explosions, enemy attacks. Heights
+-- here are above the ground, which Net.heightAt gives.
 local DISC_HEIGHT = 0.15
 local DISC_POOL = 60
 local DISC_START_DIAMETER = 1
@@ -146,6 +147,7 @@ local ZONE_COLOR = Color3.fromRGB(80, 255, 140)
 local ZONE_HEIGHT = 0.4
 local ZONE_TRANSPARENCY = 0.6
 local DOWNED_COLOR = Color3.fromRGB(255, 50, 50)
+local DOWNED_HEIGHT = 0.15
 -- Pixels of the square canvas the downed ring is drawn on.
 local DOWNED_CANVAS = 256
 
@@ -331,11 +333,12 @@ local function showDisc(
 	seconds: number,
 	color: Color3
 )
-	local slot = start(discs, seconds, Vector3.new(x, DISC_HEIGHT, z))
+	local y = Net.heightAt(x, z) + DISC_HEIGHT
+	local slot = start(discs, seconds, Vector3.new(x, y, z))
 	slot.from = from
 	slot.to = to
 	slot.part.Color = color
-	slot.part.CFrame = CFrame.new(x, DISC_HEIGHT, z) * CFrame.Angles(0, 0, math.pi / 2)
+	slot.part.CFrame = CFrame.new(x, y, z) * CFrame.Angles(0, 0, math.pi / 2)
 	slot.part.Size = Vector3.new(0.2, from, from)
 	slot.part.Transparency = 0.3
 end
@@ -405,10 +408,11 @@ local function showTelegraph(enemyId: number, x: number, z: number, radius: numb
 	local diameter = radius * 2
 	-- The cylinders' axis (X) points up; the fill sits a hair above the base.
 	local lie = CFrame.Angles(0, 0, math.pi / 2)
+	local y = Net.heightAt(x, z) + DISC_HEIGHT
 	marker.base.Size = Vector3.new(TELEGRAPH_THICKNESS, diameter, diameter)
-	marker.base.CFrame = CFrame.new(x, DISC_HEIGHT - 0.03, z) * lie
+	marker.base.CFrame = CFrame.new(x, y - 0.03, z) * lie
 	marker.fill.Size = Vector3.new(TELEGRAPH_THICKNESS, TELEGRAPH_MIN_FILL, TELEGRAPH_MIN_FILL)
-	marker.fill.CFrame = CFrame.new(x, DISC_HEIGHT + 0.03, z) * lie
+	marker.fill.CFrame = CFrame.new(x, y + 0.03, z) * lie
 	marker.base.Parent = folder
 	marker.fill.Parent = folder
 	markers[enemyId] = marker
@@ -466,7 +470,7 @@ local function trackPart(tracker: Tracker, id: number, style: Style, x: number, 
 	end
 	local fresh = table.remove(tracker.free) or newEffectPart()
 	applyStyle(fresh, style)
-	fresh.CFrame = CFrame.new(x, style.height, z)
+	fresh.CFrame = CFrame.new(x, Net.heightAt(x, z) + style.height, z)
 	fresh.Parent = folder
 	tracker.live[id] = fresh
 	return fresh
@@ -526,7 +530,7 @@ local function renderTracked()
 			end
 			count += 1
 			moveParts[count] = part
-			moveFrames[count] = CFrame.new(x, style.height, z)
+			moveFrames[count] = CFrame.new(x, Net.heightAt(x, z) + style.height, z)
 				* CFrame.Angles(0, -projectile.facing - math.pi / 2, 0)
 		end
 	end
@@ -538,7 +542,8 @@ local function renderTracked()
 			local bob = math.sin((now * BOB_HERTZ + pickup.id * 0.37) * 2 * math.pi) * style.bob
 			count += 1
 			moveParts[count] = part
-			moveFrames[count] = CFrame.new(pickup.x, style.height + bob, pickup.z)
+			local ground = Net.heightAt(pickup.x, pickup.z)
+			moveFrames[count] = CFrame.new(pickup.x, ground + style.height + bob, pickup.z)
 				* (if style.upright then CFrame.Angles(0, 0, math.pi / 2) else CFrame.identity)
 		end
 	end
@@ -705,6 +710,13 @@ local function sameZone(a: Types.Zone, b: Types.Zone): boolean
 	return a.x == b.x and a.z == b.z and a.radius == b.radius
 end
 
+-- Stands the zone's cylinder on the ground at its centre; its axis (X) points up.
+local function placeZone(visual: ZoneVisual)
+	local zone = visual.zone
+	local y = Net.heightAt(zone.x, zone.z) + ZONE_HEIGHT / 2
+	visual.part.CFrame = CFrame.new(zone.x, y, zone.z) * CFrame.Angles(0, 0, math.pi / 2)
+end
+
 local function buildZone(zone: Types.Zone): ZoneVisual
 	local part = newEffectPart()
 	part.Name = "ExtractionZone"
@@ -712,8 +724,6 @@ local function buildZone(zone: Types.Zone): ZoneVisual
 	part.Color = ZONE_COLOR
 	part.Transparency = ZONE_TRANSPARENCY
 	part.Size = Vector3.new(ZONE_HEIGHT, zone.radius * 2, zone.radius * 2)
-	-- The cylinder's axis (X) points up.
-	part.CFrame = CFrame.new(zone.x, ZONE_HEIGHT / 2, zone.z) * CFrame.Angles(0, 0, math.pi / 2)
 
 	local light = Instance.new("PointLight")
 	light.Color = ZONE_COLOR
@@ -721,8 +731,10 @@ local function buildZone(zone: Types.Zone): ZoneVisual
 	light.Brightness = 2
 	light.Parent = part
 
+	local visual = { zone = zone, part = part }
+	placeZone(visual)
 	part.Parent = folder
-	return { zone = zone, part = part }
+	return visual
 end
 
 local function syncZones(zones: { Types.Zone })
@@ -804,7 +816,11 @@ local function followDowned()
 		if root then
 			local position = root.Position
 			ring.Parent = folder
-			ring.Position = Vector3.new(position.X, 0.15, position.Z)
+			ring.Position = Vector3.new(
+				position.X,
+				Net.heightAt(position.X, position.Z) + DOWNED_HEIGHT,
+				position.Z
+			)
 		else
 			ring.Parent = nil
 		end
@@ -837,6 +853,12 @@ function Effects.start()
 
 	Net.onEvents(onEvents)
 	Net.onWorld(onWorld)
+	-- Zones drawn before the map came stand at 0; the map puts them on the ground.
+	Net.onMap(function()
+		for _, visual in zoneVisuals do
+			placeZone(visual)
+		end
+	end)
 	local latest = Net.latest
 	if latest then
 		onWorld(latest)

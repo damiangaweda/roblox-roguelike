@@ -1,7 +1,47 @@
 --!strict
 local Assert = require("./Assert")
+local Config = require("../src/shared/Config")
 local Fixtures = require("./Fixtures")
+local Map = require("../src/shared/Core/Map")
 local Protocol = require("../src/shared/Protocol")
+local Rng = require("../src/shared/Core/Rng")
+local Types = require("../src/shared/Core/Types")
+
+-- A 3 x 2 map with one point, one path and one bush; mapView reads only its ground.
+local function smallMap(): Types.Map
+	return {
+		half = 8,
+		points = {
+			{
+				id = 1,
+				x = 1,
+				z = -2,
+				template = "entry",
+				radius = 6,
+				paths = { 1 },
+				neighbours = { 2 },
+				distance = 0,
+				level = 1,
+				isEntry = true,
+				hasZone = false,
+				campX = nil,
+				campZ = nil,
+				cover = { { x = 2, z = 2 } },
+				props = {},
+			},
+		},
+		paths = { { id = 1, a = 1, b = 2, halfWidth = 4 } },
+		entries = { 1 },
+		zonePoints = {},
+		nextHop = {},
+		hops = {},
+		heights = { { 0, 1.25, 23.96 }, { 4, 4.04, 12.3 } },
+		heightCell = 8,
+		waterLevel = 4,
+		fieldCover = { { x = -3.5, z = 7 } },
+		pointCells = {},
+	}
+end
 
 return {
 	["fire intent takes a boolean"] = function()
@@ -197,6 +237,66 @@ return {
 		Assert.near(view.players[2].drinkingFor, 0.5)
 		Assert.equal(view.players[1].drinkingFor, 0)
 		Assert.equal(#view.zones, #run.zones)
+	end,
+
+	["the map view carries only the ground, its heights to the tenth"] = function()
+		local view = Protocol.mapView(smallMap())
+		Assert.equal(view.rows, 2)
+		Assert.equal(view.cols, 3)
+		Assert.equal(view.half, 8)
+		Assert.equal(view.heightCell, 8)
+		Assert.equal(view.waterLevel, 4)
+		local heights = Protocol.decodeHeights(view)
+		assert(heights, "decoding failed")
+		Assert.equal(#heights, 2)
+		Assert.equal(#heights[1], 3)
+		Assert.near(heights[1][1], 0, 1e-9)
+		Assert.near(heights[1][2], 1.3, 1e-9)
+		Assert.near(heights[1][3], 24, 1e-9)
+		Assert.near(heights[2][2], 4, 1e-9)
+		Assert.near(heights[2][3], 12.3, 1e-9)
+		-- Nothing about the points travels: a zone not yet open stays hidden.
+		local fields = {}
+		for key in view :: any do
+			table.insert(fields, key)
+		end
+		table.sort(fields)
+		Assert.equal(table.concat(fields, ","), "cols,half,heightCell,heights,rows,waterLevel")
+	end,
+
+	["a map view whose heights do not match its grid is rejected"] = function()
+		local view = Protocol.mapView(smallMap())
+		view.heights = buffer.create(10)
+		Assert.equal(Protocol.decodeHeights(view), nil)
+		local other = Protocol.mapView(smallMap())
+		other.rows = 3
+		Assert.equal(Protocol.decodeHeights(other), nil)
+		local missing = Protocol.mapView(smallMap());
+		(missing :: any).heights = "not a buffer"
+		Assert.equal(Protocol.decodeHeights(missing), nil)
+	end,
+
+	["the client's heights match the core's at nodes and midpoints"] = function()
+		local map = Map.generate(Config, Rng.new(7), 2)
+		local view = Protocol.mapView(map)
+		local heights = Protocol.decodeHeights(view)
+		assert(heights, "decoding failed")
+		local function check(x: number, z: number)
+			local drawn =
+				Protocol.heightAt(heights, view.heightCell, view.half, view.waterLevel, x, z)
+			-- Heights travel rounded to a tenth of a stud.
+			Assert.near(drawn, Map.heightAt(map, x, z), 0.051)
+		end
+		local cell = map.heightCell
+		for row = 1, #map.heights do
+			for col = 1, #map.heights[1] do
+				local x = -map.half + (col - 1) * cell
+				local z = -map.half + (row - 1) * cell
+				check(x, z)
+				check(x + cell / 2, z + cell / 2)
+				check(x + cell / 3, z)
+			end
+		end
 	end,
 
 	["private events name their player"] = function()

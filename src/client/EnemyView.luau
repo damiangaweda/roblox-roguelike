@@ -87,7 +87,8 @@ local interval = 1 / Config.net.snapshotHz
 local folder: Folder
 local free: { Part } = {}
 local parts: { [number]: Part } = {}
-local heights: { [number]: number } = {}
+-- Half of each part's height: its centre stands this far above the ground.
+local halfHeights: { [number]: number } = {}
 local stamps: { [number]: number } = {}
 -- The colour an enemy has apart from flashes, and what key it was built from.
 local baseColors: { [number]: Color3 } = {}
@@ -110,7 +111,8 @@ local function newPart(): Part
 	local part = Instance.new("Part")
 	part.Anchored = true
 	part.CanCollide = false
-	part.CanQuery = false
+	-- Queryable so the mouse aim lands on an enemy (Input).
+	part.CanQuery = true
 	part.CanTouch = false
 	part.CastShadow = false
 	part.Material = Enum.Material.SmoothPlastic
@@ -129,7 +131,7 @@ local function release(id: number, part: Part)
 	part.Parent = nil
 	table.insert(free, part)
 	parts[id] = nil
-	heights[id] = nil
+	halfHeights[id] = nil
 	stamps[id] = nil
 	baseColors[id] = nil
 	colorKeys[id] = nil
@@ -191,9 +193,12 @@ local function sync(snapshot: Net.Snapshot)
 			-- Appears where it is, not where a stale pooled part was.
 			fresh.Shape = look.shape
 			fresh.Size = look.size
-			fresh.CFrame = CFrame.new(enemy.x, look.size.Y / 2, enemy.z)
-				* CFrame.Angles(0, -enemy.facing - math.pi / 2, 0)
-			heights[id] = look.size.Y / 2
+			fresh.CFrame = CFrame.new(
+				enemy.x,
+				Net.heightAt(enemy.x, enemy.z) + look.size.Y / 2,
+				enemy.z
+			) * CFrame.Angles(0, -enemy.facing - math.pi / 2, 0)
+			halfHeights[id] = look.size.Y / 2
 			departed[id] = nil
 			departedAt[id] = nil
 			colorKeys[id] = nil
@@ -270,7 +275,7 @@ local function render()
 				moveFrames[count] = part.CFrame
 			else
 				-- The part's front is -Z; the facing is measured from +X toward +Z.
-				moveFrames[count] = CFrame.new(x, heights[id], z)
+				moveFrames[count] = CFrame.new(x, Net.heightAt(x, z) + halfHeights[id], z)
 					* CFrame.Angles(0, -facing - math.pi / 2, 0)
 			end
 

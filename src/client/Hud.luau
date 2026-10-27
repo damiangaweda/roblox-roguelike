@@ -1049,7 +1049,9 @@ function Hud.start()
 				if
 					otherRoot
 					and otherRoot:IsA("BasePart")
-					and (otherRoot.Position - here).Magnitude <= Config.player.reviveRadius
+					-- On the ground plane, as the server measures it: hills tilt the line.
+					and ((otherRoot.Position - here) * Vector3.new(1, 0, 1)).Magnitude
+						<= Config.player.reviveRadius
 				then
 					prompt = holdWord .. " to revive"
 				end

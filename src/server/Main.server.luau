@@ -1,5 +1,5 @@
 --!strict
--- The server adapter (ADR-0002): builds the world, owns the run lifecycle and
+-- The server adapter (ADR-0002): builds the map, owns the run lifecycle and
 -- drives the pure core in fixed steps. The only things it reads from the world
 -- are character positions and parsed intents (AGENTS.md rule 1).
 
@@ -9,25 +9,31 @@ local RunService = game:GetService("RunService")
 
 local Config = require(ReplicatedStorage.Shared.Config)
 local Life = require(ReplicatedStorage.Shared.Core.Life)
+local Map = require(ReplicatedStorage.Shared.Core.Map)
 local Progression = require(ReplicatedStorage.Shared.Core.Progression)
 local Protocol = require(ReplicatedStorage.Shared.Protocol)
 local Run = require(ReplicatedStorage.Shared.Core.Run)
 local Types = require(ReplicatedStorage.Shared.Core.Types)
 
 local Characters = require(script.Parent.Characters)
+local MapBuilder = require(script.Parent.MapBuilder)
 local Network = require(script.Parent.Network)
-local WorldBuilder = require(script.Parent.WorldBuilder)
 
 local STEP_SECONDS = 1 / Config.net.stepHz
 local SNAPSHOT_SECONDS = 1 / Config.net.snapshotHz
 -- A slow frame catches up with at most this many steps; the rest is dropped.
 local MAX_STEPS_PER_FRAME = 5
+-- The seed and the core's view of each player are Studio-only diagnostics:
+-- attributes replicate to every client, and the seed with the shared core
+-- would let a client replay the run's rolls.
+local IS_STUDIO = RunService:IsStudio()
 
 local archetypeNames = Protocol.archetypeNames(Config)
 local projectileKinds = Protocol.projectileKinds(Config)
 
 local run: Types.Run? = nil
--- True while a run is being set up, which can yield on respawning characters.
+-- True while a run is being set up, which yields on building the map and on
+-- respawning characters.
 local starting = false
 -- Real seconds left of the summary after the run ended.
 local summaryLeft = 0
@@ -55,12 +61,15 @@ local function deepCopy(value: any): any
 end
 
 -- Studio only: a heavy run for the performance check (plan, criterion 6): a
--- world full of patrols and an unkillable player.
+-- map full of patrols and an unkillable player.
 local function perfConfig(): Types.Config
 	local config = deepCopy(Config) :: Types.Config
 	config.enemies.patrols.groupsAtStart = 25
 	config.enemies.patrols.sizeAtStart = 8
 	config.player.maxHealth = 1e6
+	-- The map of a full server, whatever the player count (stage 2b criterion 6).
+	config.map.minHalf = config.map.maxHalf
+	config.map.minPoints = config.map.maxPoints
 	return config
 end
 
@@ -68,15 +77,32 @@ local function perfRequested(): boolean
 	return RunService:IsStudio() and workspace:GetAttribute("PerfTest") == true
 end
 
--- Adds a player to the run and moves their character to the start room.
+-- Moves the character onto the map's ground at (x, z).
+local function teleport(current: Types.Run, player: Player, x: number, z: number)
+	Characters.teleport(player, x, z, Map.heightAt(current.map, x, z))
+end
+
+-- Adds a player to the run and moves their character to its entry.
 local function joinRun(current: Types.Run, player: Player)
 	local core = Run.addPlayer(current, player.UserId)
 	members[player.UserId] = player
 	seen[player.UserId] = true
-	Characters.teleport(player, core.x, core.z)
+	teleport(current, player, core.x, core.z)
 end
 
--- Starts a run with everyone present, respawning them first if asked to.
+local function present(): { Player }
+	local players = {}
+	for _, player in Players:GetPlayers() do
+		if player.Parent == Players then
+			table.insert(players, player)
+		end
+	end
+	return players
+end
+
+-- Starts a run with everyone present: builds its map, which takes some
+-- frames, then respawns everyone if asked to and lets them in. Whoever joins
+-- during the build is let in with the rest.
 local function startRun(respawn: boolean)
 	if starting then
 		return
@@ -87,30 +113,41 @@ local function startRun(respawn: boolean)
 	seen = {}
 	pending = {}
 
-	if respawn then
-		for _, player in Players:GetPlayers() do
-			pcall(player.LoadCharacter, player)
+	local count = #present()
+	if count > 0 then
+		-- The old map goes away under the characters while the new one is built.
+		for _, player in present() do
+			Characters.freeze(player)
 		end
-	end
-
-	local present = {}
-	for _, player in Players:GetPlayers() do
-		if player.Parent == Players then
-			table.insert(present, player)
-		end
-	end
-	if #present > 0 then
 		perfRun = perfRequested()
 		local config = if perfRun then perfConfig() else Config
-		local fresh = Run.new(config, Random.new():NextInteger(1, 2 ^ 31 - 2), #present)
-		WorldBuilder.build(fresh.world, config)
-		for _, player in present do
+		local seed = Random.new():NextInteger(1, 2 ^ 31 - 2)
+		local fresh = Run.new(config, seed, count)
+		-- The seed regenerates this map offline (Map.generate) when a position needs a look.
+		if IS_STUDIO then
+			workspace:SetAttribute("MapSeed", seed)
+		end
+		local buildStart = os.clock()
+		MapBuilder.build(fresh.map, config)
+		-- How long the map took, for the lead to read in Studio (stage 2b criterion 6).
+		workspace:SetAttribute("MapBuildSeconds", os.clock() - buildStart)
+
+		if respawn then
+			for _, player in present() do
+				pcall(player.LoadCharacter, player)
+			end
+		end
+		local joined = present()
+		for _, player in joined do
 			joinRun(fresh, player)
 		end
-		stepAccumulator = 0
-		snapshotAccumulator = 0
-		summaryLeft = config.run.summarySeconds
-		run = fresh
+		if #joined > 0 then
+			Network.sendMapToAll(fresh)
+			stepAccumulator = 0
+			snapshotAccumulator = 0
+			summaryLeft = config.run.summarySeconds
+			run = fresh
+		end
 	end
 	starting = false
 end
@@ -120,12 +157,12 @@ local function onPlayerAdded(player: Player)
 	player.CharacterAdded:Connect(function()
 		local current = run
 		local core = if current then current.players[player.UserId] else nil
-		if core then
-			task.defer(Characters.teleport, player, core.x, core.z)
-		elseif current and #current.world.startRooms > 0 then
-			-- A spectator waits in a start room, out of the camps' way.
-			local room = current.world.rooms[current.world.startRooms[1]]
-			task.defer(Characters.teleport, player, room.x, room.z)
+		if current and core then
+			task.defer(teleport, current, player, core.x, core.z)
+		elseif current and #current.map.entries > 0 then
+			-- A spectator waits at an entry, out of the camps' way.
+			local entry = current.map.points[current.map.entries[1]]
+			task.defer(teleport, current, player, entry.x, entry.z)
 		end
 	end)
 
@@ -136,7 +173,11 @@ local function onPlayerAdded(player: Player)
 	local current = run
 	if current == nil then
 		startRun(false)
-	elseif
+		return
+	end
+	-- Everyone sees the map, spectators included.
+	Network.sendMap(player, current)
+	if
 		not current.ended
 		and not seen[player.UserId]
 		and current.time <= current.config.run.lateJoinSeconds
@@ -241,6 +282,19 @@ local function onHeartbeat(dt: number)
 		local current = run
 		workspace:SetAttribute("ServerHeartbeatHz", heartbeatFrames / heartbeatClock)
 		workspace:SetAttribute("EnemyCount", if current then #current.enemies else 0)
+		-- Where the core thinks each player stands, for the lead to compare with
+		-- the character in Studio.
+		if current and IS_STUDIO then
+			for id, core in current.players do
+				local player = Players:GetPlayerByUserId(id)
+				if player then
+					player:SetAttribute("CoreX", core.x)
+					player:SetAttribute("CoreZ", core.z)
+					player:SetAttribute("CoreWalkable", Map.walkable(current.map, core.x, core.z))
+					player:SetAttribute("CorePoint", core.pointId)
+				end
+			end
+		end
 		heartbeatFrames = 0
 		heartbeatClock = 0
 	end
@@ -274,7 +328,7 @@ local function onHeartbeat(dt: number)
 		local core = current.players[id]
 		if core then
 			Characters.apply(player, core.state, Run.walkSpeed(current, core))
-			Characters.hold(player, core.x, core.z)
+			Characters.hold(player, core.x, core.z, Map.heightAt(current.map, core.x, core.z))
 		end
 	end
 

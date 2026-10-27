@@ -3,10 +3,10 @@
 -- potions and pickups.
 
 local Geometry = require("./Geometry")
+local Map = require("./Map")
 local Perks = require("./Perks")
 local State = require("./State")
 local Types = require("./Types")
-local World = require("./World")
 
 local Life = {}
 
@@ -119,11 +119,12 @@ local function updateBodies(run: Types.Run, dt: number)
 		-- The last step of a knockback covers only what is left of it.
 		local knockLeft = math.clamp(player.knockUntil - (run.time - dt), 0, dt)
 		if knockLeft > 0 then
-			local x, z = World.clamp(
-				run.world,
-				player.x + player.knockX * knockLeft,
-				player.z + player.knockZ * knockLeft
-			)
+			-- Water or a prop on the way stops the push there.
+			local toX = player.x + player.knockX * knockLeft
+			local toZ = player.z + player.knockZ * knockLeft
+			local reach = Map.reach(run.map, player.x, player.z, toX, toZ)
+			local x, z = Geometry.stepToward(player.x, player.z, toX, toZ, reach)
+			x, z = Map.clamp(run.map, x, z)
 			-- The run carries the player; the character is pulled along by the
 			-- server if the client does not move it itself.
 			player.x, player.z = x, z

@@ -1,7 +1,7 @@
 --!strict
 -- The server end of every remote. Intents are rate limited and parsed by
 -- Protocol before the run sees them (AGENTS.md rule 1); the world and events
--- go out at the configured rate.
+-- go out at the configured rate, the map once a run and to each joiner.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -14,6 +14,7 @@ local Network = {}
 local intentRemote: RemoteEvent
 local worldRemote: RemoteEvent
 local eventsRemote: RemoteEvent
+local mapRemote: RemoteEvent
 
 -- A token bucket per player: `intentsPerSecond` tokens, refilled continuously.
 local buckets: { [Player]: { tokens: number, at: number } } = {}
@@ -31,6 +32,9 @@ function Network.init(config: Types.Config)
 	eventsRemote = Instance.new("RemoteEvent")
 	eventsRemote.Name = Protocol.remotes.events
 	eventsRemote.Parent = folder
+	mapRemote = Instance.new("RemoteEvent")
+	mapRemote.Name = Protocol.remotes.map
+	mapRemote.Parent = folder
 	folder.Parent = ReplicatedStorage
 
 	Players.PlayerRemoving:Connect(function(player)
@@ -75,6 +79,15 @@ function Network.sendWorld(run: Types.Run, archetypeNames: { string }, projectil
 		Protocol.encodeEnemies(run, archetypeNames),
 		Protocol.encodeProjectiles(run, projectileKinds)
 	)
+end
+
+-- Sends one player the run's map; a player who joins late needs it too.
+function Network.sendMap(player: Player, run: Types.Run)
+	mapRemote:FireClient(player, Protocol.mapView(run.map))
+end
+
+function Network.sendMapToAll(run: Types.Run)
+	mapRemote:FireAllClients(Protocol.mapView(run.map))
 end
 
 -- Sends each player the public events and its own private ones, with its

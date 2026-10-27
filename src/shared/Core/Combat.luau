@@ -4,12 +4,12 @@
 
 local Enemies = require("./Enemies")
 local Geometry = require("./Geometry")
+local Map = require("./Map")
 local Perks = require("./Perks")
 local Progression = require("./Progression")
 local Skills = require("./Skills")
 local State = require("./State")
 local Types = require("./Types")
-local World = require("./World")
 
 local Combat = {}
 
@@ -281,7 +281,7 @@ function Combat.burst(
 			local reach = projectile.radius + State.archetype(run, enemy).radius
 			if
 				Geometry.distance(x, z, enemy.x, enemy.z) <= reach
-				and World.clearPath(run.world, x, z, enemy.x, enemy.z)
+				and Map.clearShot(run.map, x, z, enemy.x, enemy.z)
 			then
 				table.insert(victims, enemy)
 			end
@@ -306,7 +306,7 @@ function Combat.burst(
 	end
 end
 
--- Arcane Bolt: a burst along the ray, as far as the first wall.
+-- Arcane Bolt: a burst along the ray, as far as the first prop.
 local function fireLine(
 	run: Types.Run,
 	player: Types.Player,
@@ -314,8 +314,8 @@ local function fireLine(
 	aim: number
 )
 	local dx, dz = math.cos(aim), math.sin(aim)
-	local range = World.reach(
-		run.world,
+	local range = Map.shotReach(
+		run.map,
 		player.x,
 		player.z,
 		player.x + dx * skill.range,
@@ -412,7 +412,7 @@ local function fireRing(run: Types.Run, player: Types.Player, skill: Types.Effec
 		local reach = skill.radius + State.archetype(run, enemy).radius
 		if
 			Geometry.distance(player.x, player.z, enemy.x, enemy.z) <= reach
-			and World.clearPath(run.world, player.x, player.z, enemy.x, enemy.z)
+			and Map.clearShot(run.map, player.x, player.z, enemy.x, enemy.z)
 		then
 			table.insert(victims, enemy)
 		end
@@ -445,7 +445,7 @@ local function fireChain(
 	local cone = skill.coneDegrees
 	local target = nearest(run, player.x, player.z, skill.range, function(enemy)
 		return Geometry.inArc(player.x, player.z, aim, cone, enemy.x, enemy.z)
-			and World.clearPath(run.world, player.x, player.z, enemy.x, enemy.z)
+			and Map.clearShot(run.map, player.x, player.z, enemy.x, enemy.z)
 	end)
 	if target == nil then
 		return false
@@ -474,7 +474,7 @@ local function fireChain(
 		)
 		fromX, fromZ = x, z
 		target = nearest(run, x, z, skill.jumpRange, function(enemy)
-			return not struck[enemy.id] and World.clearPath(run.world, x, z, enemy.x, enemy.z)
+			return not struck[enemy.id] and Map.clearShot(run.map, x, z, enemy.x, enemy.z)
 		end)
 	end
 	return true

@@ -2,6 +2,7 @@
 local Assert = require("./Assert")
 local Combat = require("../src/shared/Core/Combat")
 local Fixtures = require("./Fixtures")
+local Map = require("../src/shared/Core/Map")
 local Types = require("../src/shared/Core/Types")
 
 local function count(events: { Types.Event }, kind: string): number
@@ -14,16 +15,16 @@ local function count(events: { Types.Event }, kind: string): number
 	return n
 end
 
--- A run with one player inside their start room, ten studs left of its
--- centre, facing +x. Rooms are at least 28 studs wide, so offsets up to 18 along
--- x and 12 along z stay inside.
-local function setup(): (Types.Run, Types.Player, Types.Room)
+-- A run with one player on the first entry, ten studs left of its centre,
+-- facing +x. An entry has no props and lies at least 30 studs from the map's
+-- edge, so shots to 20 studs right of the centre fly clear.
+local function setup(): (Types.Run, Types.Player, Types.MapPoint)
 	local run = Fixtures.run()
 	local player = run.players[1]
-	local room = Fixtures.roomOf(run, player)
-	Fixtures.place(run, player, room.x - 10, room.z)
+	local point = Fixtures.entryOf(run)
+	Fixtures.place(run, player, point.x - 10, point.z)
 	player.facing = 0
-	return run, player, room
+	return run, player, point
 end
 
 -- An enemy `distance` studs from the player at `degrees` off the +x axis.
@@ -52,21 +53,23 @@ return {
 	["a hit provokes an idle enemy and its camp"] = function()
 		local run = Fixtures.run(1)
 		local player = run.players[1]
-		local room = Fixtures.roomOf(run, player)
-		Fixtures.place(run, player, room.x - 12, room.z)
+		local point = Fixtures.entryOf(run)
+		Fixtures.place(run, player, point.x - 12, point.z)
 		player.facing = 0
-		local first = Fixtures.enemy(run, "grunt", room.x + 10, room.z)
-		local second = Fixtures.enemy(run, "grunt", room.x + 10, room.z + 10)
+		local first = Fixtures.enemy(run, "grunt", point.x + 10, point.z)
+		local second = Fixtures.enemy(run, "grunt", point.x + 10, point.z + 10)
 		local camp: Types.Camp = {
 			id = 1,
-			roomId = room.id,
-			x = room.x + 10,
-			z = room.z,
+			pointId = point.id,
+			x = point.x + 10,
+			z = point.z,
 			level = 1,
 			members = { first.id, second.id },
 			alerted = false,
 			scaledFor = 0,
 			leaderId = nil,
+			returns = true,
+			strength = 1,
 		}
 		table.insert(run.camps, camp)
 		first.campId, second.campId = 1, 1
@@ -81,41 +84,61 @@ return {
 	["a blocked hit still provokes the shieldbearer"] = function()
 		local run = Fixtures.run(1)
 		local player = run.players[1]
-		local room = Fixtures.roomOf(run, player)
-		Fixtures.place(run, player, room.x - 10, room.z)
-		local bearer = Fixtures.enemy(run, "shieldbearer", room.x, room.z)
+		local point = Fixtures.entryOf(run)
+		Fixtures.place(run, player, point.x - 10, point.z)
+		local bearer = Fixtures.enemy(run, "shieldbearer", point.x, point.z)
 		bearer.facing = math.pi
 		Combat.damageEnemy(run, bearer, 1, 10, {}, "arcaneBolt", player.x, player.z)
 		Assert.equal(bearer.health, bearer.maxHealth)
 		Assert.equal(bearer.state, "chase")
 	end,
 
-	["a wall stops Arcane Bolt"] = function()
+	["a prop stops Arcane Bolt"] = function()
 		local run = Fixtures.run(1)
 		local player = run.players[1]
-		local room = Fixtures.roomOf(run, player)
-		-- Beside the north wall, off any corridor's line, firing north.
-		Fixtures.place(run, player, room.x + 3, room.z - room.halfDepth + 2)
+		local point = Fixtures.entryOf(run)
+		-- A wall north of the centre, the player south of it firing north.
+		local wall = Fixtures.prop(point, point.x, point.z - 4, 6, 1)
+		Fixtures.place(run, player, point.x + 3, wall.z + wall.halfDepth + 2)
 		player.facing = -math.pi / 2
 		player.firing = true
-		-- Behind the wall; an enemy may not stand there, but a bolt that ignored
-		-- walls would hit it.
-		local behind = Fixtures.enemy(run, "grunt", room.x + 3, room.z - room.halfDepth - 4)
+		-- Behind the wall: a bolt that ignored props would hit it.
+		local behind = Fixtures.enemy(run, "grunt", point.x + 3, wall.z - wall.halfDepth - 4)
 		Combat.fireBasic(run, player)
 		Assert.equal(behind.health, behind.maxHealth)
 		Assert.equal(Assert.findEvent(run.events, "hit"), nil)
 	end,
 
-	["a wall keeps Frost Nova out"] = function()
+	["Arcane Bolt flies over water"] = function()
 		local run = Fixtures.run(1)
 		local player = run.players[1]
-		local room = Fixtures.roomOf(run, player)
-		Fixtures.place(run, player, room.x + 3, room.z - room.halfDepth + 1)
-		local behind = Fixtures.enemy(run, "grunt", room.x + 3, room.z - room.halfDepth - 3)
-		local inside = Fixtures.enemy(run, "grunt", room.x + 3, room.z - room.halfDepth + 6)
+		local point = Fixtures.entryOf(run)
+		Fixtures.place(run, player, point.x - 10, point.z)
+		Fixtures.water(run, point.x, point.z, 12)
+		player.facing = 0
+		player.firing = true
+		local across = Fixtures.enemy(run, "grunt", point.x + 10, point.z)
+		Assert.falsy(Map.walkable(run.map, point.x, point.z), "no water between")
+		Combat.fireBasic(run, player)
+		Assert.truthy(across.health < across.maxHealth)
+	end,
+
+	["a prop keeps Frost Nova out, water does not"] = function()
+		local run = Fixtures.run(1)
+		local player = run.players[1]
+		local point = Fixtures.entryOf(run)
+		local wall = Fixtures.prop(point, point.x, point.z - 4, 6, 1)
+		Fixtures.place(run, player, point.x + 3, wall.z + wall.halfDepth + 1)
+		local behind = Fixtures.enemy(run, "grunt", point.x + 3, wall.z - wall.halfDepth - 2)
+		local inside = Fixtures.enemy(run, "grunt", point.x + 3, wall.z + wall.halfDepth + 6)
+		-- Across water east of the player.
+		Fixtures.water(run, point.x + 8, player.z, 12)
+		local across = Fixtures.enemy(run, "grunt", point.x + 12, player.z)
+		Assert.falsy(Map.walkable(run.map, point.x + 8, player.z), "no water between")
 		Assert.truthy(Combat.useActive(run, 1, 2))
 		Assert.equal(behind.health, behind.maxHealth)
 		Assert.truthy(inside.health < inside.maxHealth)
+		Assert.truthy(across.health < across.maxHealth)
 	end,
 	-- Arcane Bolt and the basic attack
 
@@ -726,19 +749,21 @@ return {
 	-- Kills
 
 	["a kill removes the enemy, leaves its camp and credits kills and xp"] = function()
-		local run, player, room = setup()
+		local run, player, point = setup()
 		local enemy = enemyAt(run, "grunt", player, 10)
 		local other = enemyAt(run, "grunt", player, 12)
 		table.insert(run.camps, {
 			id = 1,
-			roomId = room.id,
-			x = room.x,
-			z = room.z,
+			pointId = point.id,
+			x = point.x,
+			z = point.z,
 			level = 1,
 			members = { enemy.id, other.id },
 			alerted = false,
 			scaledFor = 1,
 			leaderId = nil,
+			returns = true,
+			strength = 1,
 		})
 		enemy.campId = 1
 		other.campId = 1
@@ -747,6 +772,7 @@ return {
 		Assert.equal(run.enemies[1], other)
 		Assert.equal(#run.camps[1].members, 1)
 		Assert.equal(run.camps[1].members[1], other.id)
+		Assert.equal(run.camps[1].clearedAt, nil)
 		Assert.equal(player.kills, 1)
 		Assert.equal(player.xp, run.config.enemies.archetypes.grunt.xp)
 		local kill = Assert.findEvent(run.events, "kill")
@@ -754,6 +780,11 @@ return {
 		Assert.equal(kill.source, 1)
 		Assert.equal(kill.archetype, "grunt")
 		Assert.equal(count(run.events, "hit"), 1)
+		-- The last member's death clears the camp.
+		run.time = 12
+		Combat.damageEnemy(run, other, 1, 100, {}, "x")
+		Assert.equal(#run.camps[1].members, 0)
+		Assert.equal(run.camps[1].clearedAt, 12)
 	end,
 
 	["Scholar multiplies the experience of a kill"] = function()
