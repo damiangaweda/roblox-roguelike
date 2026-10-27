@@ -373,7 +373,9 @@ local MAX_RIMS = 24
 -- AURA_SHARE, pulsing between two transparencies, with a red light.
 local BOSS_AURA_COLOR = Color3.fromRGB(255, 40, 40)
 local BOSS_AURA_SHARE = 1.6
-local BOSS_AURA_THICKNESS = 0.25
+local BOSS_AURA_THICKNESS = 0.35
+-- The ring floats this far above the ground, clear of the terrain's grass.
+local BOSS_AURA_RISE = 0.9
 local BOSS_AURA_HZ = 0.8
 local BOSS_AURA_MIN = 0.45
 local BOSS_AURA_MAX = 0.7
@@ -834,7 +836,7 @@ local function spawnRig(id: number, enemy: Protocol.EnemyView): Rig
 	if boss then
 		local height = heightOf(look) * size
 		-- A flat ring of light at the boss's feet, so its silhouette stays readable.
-		rig.auraRise = BOSS_AURA_THICKNESS
+		rig.auraRise = BOSS_AURA_RISE
 		rig.auraDiameter = height * BOSS_AURA_SHARE
 		setAura(rig, true)
 	end
@@ -869,6 +871,9 @@ local function setRim(rig: Rig, on: boolean)
 end
 
 -- The status colour an enemy shows, strongest first, and how far it pulls.
+-- How much of a status tint a boss takes, as a share of a grunt's.
+local BOSS_STATUS_SHARE = 0.35
+
 local function statusTint(enemy: Protocol.EnemyView, weakened: boolean): (Color3?, number)
 	if enemy.slowed then
 		return SLOWED_COLOR, STATUS_BLEND
@@ -896,6 +901,11 @@ local function baseColor(own: Color3, enemy: Protocol.EnemyView, weakened: boole
 	local color = own
 	local status, blend = statusTint(enemy, weakened)
 	if status then
+		-- A boss keeps most of its own colour, or a chilled boss would be a pale slab.
+		local kind = Config.enemies[enemy.kind]
+		if kind and (kind.role == "boss" or kind.role == "finalBoss") then
+			blend *= BOSS_STATUS_SHARE
+		end
 		color = color:Lerp(status, blend)
 	end
 	local health = math.round(math.clamp(enemy.health, 0, 1) * HEALTH_STEPS) / HEALTH_STEPS

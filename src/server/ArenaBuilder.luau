@@ -11,8 +11,12 @@ local ArenaBuilder = {}
 -- Presentation constants, not gameplay numbers.
 local GROUND_THICKNESS = 4
 local GROUND_OVERHANG = 80
-local PATCH_MATERIALS =
-	{ Enum.Material.LeafyGrass, Enum.Material.Ground, Enum.Material.LeafyGrass, Enum.Material.Mud }
+local PATCH_MATERIALS = {
+	Enum.Material.LeafyGrass,
+	Enum.Material.Ground,
+	Enum.Material.LeafyGrass,
+	Enum.Material.Grass,
+}
 local PATCH_COUNT = 120
 local PATCH_RADIUS_MIN, PATCH_RADIUS_MAX = 6, 18
 local FLOWER_COUNT = 50
@@ -22,6 +26,10 @@ local FLOWER_COLORS = {
 	Color3.fromRGB(220, 230, 240),
 }
 local WALL_SEGMENTS = 48
+local TREE_LINE_RINGS = 2
+local TREE_LINE_OFFSET = 8
+local TREE_LINE_SPACING = 11
+local TREE_LINE_RADIUS = 5
 local WALL_HEIGHT = 40
 local WALL_THICKNESS = 4
 local BUILD_BATCH = 40
@@ -339,19 +347,6 @@ local function buildGround(arena: Types.Arena, parent: Instance, random: Random)
 			task.wait()
 		end
 	end
-	-- A dark ring of mud marks the edge of the map.
-	terrain:FillCylinder(
-		CFrame.new(0, -GROUND_THICKNESS / 2 - 0.5, 0),
-		GROUND_THICKNESS,
-		outer,
-		Enum.Material.Mud
-	)
-	terrain:FillCylinder(
-		CFrame.new(0, -GROUND_THICKNESS / 2, 0),
-		GROUND_THICKNESS,
-		arena.radius - 2,
-		Enum.Material.Grass
-	)
 
 	local ground = Instance.new("Model")
 	ground.Name = "Ground"
@@ -383,6 +378,37 @@ local function buildGround(arena: Types.Arena, parent: Instance, random: Random)
 		)
 	end
 	ground.Parent = parent
+end
+
+-- A dense line of trees just outside the edge: the forest closes the map,
+-- so the invisible wall reads as something. Dressing only; the wall stops
+-- the characters.
+local function buildTreeLine(arena: Types.Arena, parent: Instance, random: Random)
+	local line = Instance.new("Model")
+	line.Name = "TreeLine"
+	local count = 0
+	for ring = 1, TREE_LINE_RINGS do
+		local radius = arena.radius + TREE_LINE_OFFSET + (ring - 1) * TREE_LINE_SPACING
+		local trees = math.floor(2 * math.pi * radius / TREE_LINE_SPACING)
+		for index = 1, trees do
+			local angle = (index + ring * 0.5) * 2 * math.pi / trees
+			local wobble = random:NextNumber(-TREE_LINE_SPACING * 0.3, TREE_LINE_SPACING * 0.3)
+			local obstacle: Types.Obstacle = {
+				id = 0,
+				kind = "bigTree",
+				x = math.cos(angle) * (radius + wobble),
+				z = math.sin(angle) * (radius + wobble),
+				radius = TREE_LINE_RADIUS * random:NextNumber(0.85, 1.2),
+				rotation = angle,
+			}
+			buildTree(obstacle, ring == 1, line, random)
+			count += 1
+			if count % BUILD_BATCH == 0 then
+				task.wait()
+			end
+		end
+	end
+	line.Parent = parent
 end
 
 -- Segments of invisible wall just outside the edge, so nothing leaves the map.
@@ -488,6 +514,7 @@ function ArenaBuilder.build(arena: Types.Arena)
 	local random = Random.new(arena.chestX * 1000 + arena.chestZ)
 	buildGround(arena, root, random)
 	buildWall(arena, root)
+	buildTreeLine(arena, root, random)
 	buildChest(arena, root)
 	root.Parent = workspace
 
