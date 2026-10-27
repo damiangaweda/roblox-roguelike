@@ -65,7 +65,7 @@ A point's difficulty, which grows with its distance along the paths from the nea
 _Avoid_: Tier (reserved for map tiers), depth, difficulty, room level
 
 **Clue**:
-A thing at a point that, once read, narrows for every player where a camp leader is; a leader's last clue marks its point.
+A thing at a point that, once read, narrows for every player where a camp leader is; a leader's last clue marks its point. A clue is found, and so shown to everyone, once any player has come near it.
 _Avoid_: Hint, marker, objective
 
 **Map screen**:

@@ -169,7 +169,7 @@ Simplifications are allowed only when listed here, with the stage that removes t
 | Simplification | Removed by |
 |---|---|
 | Greybox environment: point templates from plain shapes | Stage 2c for lighting, materials and effects; the rest after stage 5, before the release |
-| Zones fixed at far points and open the whole run, the flood all at once at minute 15 | Stage 2d |
+| Zones fixed at far points and open the whole run, the flood all at once at minute 15 | Stage 2d (PR #7 removes it) |
 | Enemies from one store pack, players on default R15 rigs | The art stage, with generated creatures (ADR-0010) |
 | Until the store pack is republished under the owner's account: enemies drawn by the client as pooled parts with a silhouette per archetype, no animations | ADR-0010's pack, when the user republishes it |
 | The engine adapter is verified in Studio (by an agent through the Studio MCP, or by hand), not by automated tests in the gate | When `make test-cloud` lands (open question) |
