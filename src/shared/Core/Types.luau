@@ -495,6 +495,8 @@ export type PropConfig = {
 	textureId: string,
 	scale: number,
 	yOffset: number,
+	-- An enemy kind with a skinned template and clips (ADR-0024).
+	rigged: boolean?,
 }
 
 export type ShrineKind = "boon" | "pact" | "trial" | "spring"
