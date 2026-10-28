@@ -17,7 +17,7 @@ function State.newRun(config: Types.Config, seed: number): Types.Run
 		rng = rng,
 		seed = seed,
 		time = 0,
-		arena = Arena.generate(map, rng, config.shrines),
+		arena = Arena.generate(map, rng, config.shrines, config.lairs),
 		nextId = 1,
 		enemies = {},
 		projectiles = {},
@@ -26,15 +26,17 @@ function State.newRun(config: Types.Config, seed: number): Types.Run
 		crystals = {},
 		foods = {},
 		players = {},
-		nextSpawnAt = 0,
-		bossesSpawned = 0,
-		ringsSpawned = 0,
 		finalBossId = nil,
-		finalBossDeadline = nil,
 		chestOpened = false,
 		compassOn = false,
 		portal = nil,
 		shrines = {},
+		lairs = {},
+		finalRiseAt = nil,
+		finalRiseX = 0,
+		finalRiseZ = 0,
+		doom = false,
+		nextWraithAt = 0,
 		paused = false,
 		ended = false,
 		events = {},
@@ -42,7 +44,56 @@ function State.newRun(config: Types.Config, seed: number): Types.Run
 	for _, spot in run.arena.shrineSpots do
 		table.insert(run.shrines, State.newShrine(run, spot))
 	end
+	for _, spot in run.arena.lairSpots do
+		table.insert(run.lairs, State.newLair(run, spot))
+	end
 	return run
+end
+
+-- The lair kind of `id`; an unknown id is a configuration error.
+local function lairKindById(config: Types.Config, id: string): Types.LairKindConfig
+	for _, kind in config.lairs.kinds do
+		if kind.id == id then
+			return kind
+		end
+	end
+	error("unknown lair kind " .. id)
+end
+
+-- A lair at its spot, asleep, its first release delayed by its own offset
+-- (drawn here, so the same seed staggers the lairs the same way); the boss
+-- and the guard are spawned by the Lairs module.
+function State.newLair(run: Types.Run, spot: Types.LairSpot): Types.Lair
+	local lairs = run.config.lairs
+	local kind = lairKindById(run.config, spot.kind)
+	return {
+		id = State.nextId(run),
+		kind = spot.kind,
+		x = spot.x,
+		z = spot.z,
+		radius = kind.radius,
+		rotation = spot.rotation,
+		bossId = nil,
+		guardIds = {},
+		asleep = true,
+		silenced = false,
+		nextBatchAt = run.rng:next() * kind.intervalSeconds * lairs.offsetShare,
+		owed = 0,
+		stirredAt = 0,
+	}
+end
+
+function State.lairById(run: Types.Run, id: number): Types.Lair?
+	for _, lair in run.lairs do
+		if lair.id == id then
+			return lair
+		end
+	end
+	return nil
+end
+
+function State.lairKind(run: Types.Run, lair: Types.Lair): Types.LairKindConfig
+	return lairKindById(run.config, lair.kind)
 end
 
 -- A shrine at its spot; its boon or pact is drawn now, so the same
@@ -220,6 +271,8 @@ function State.newEnemy(
 		chargeEndX = x,
 		chargeEndZ = z,
 		bornAt = run.time,
+		lairId = nil,
+		asleep = false,
 	}
 	table.insert(run.enemies, enemy)
 	return enemy

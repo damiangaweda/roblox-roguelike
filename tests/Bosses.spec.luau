@@ -5,7 +5,7 @@
 local Assert = require("./Assert")
 local Enemies = require("../src/shared/Core/Enemies")
 local Fixtures = require("./Fixtures")
-local Horde = require("../src/shared/Core/Horde")
+local Lairs = require("../src/shared/Core/Lairs")
 local State = require("../src/shared/Core/State")
 local Types = require("../src/shared/Core/Types")
 
@@ -103,7 +103,7 @@ local function checkAttack(kindId: string, index: number)
 	end
 
 	local enemiesBefore = #run.enemies
-	local aliveBefore = Horde.aliveCount(run)
+	local aliveBefore = Lairs.aliveCount(run)
 	run.time = boss.stateUntil
 	Enemies.step(run, 0)
 	local attacked = Assert.findEvent(run.events, "enemyAttack")

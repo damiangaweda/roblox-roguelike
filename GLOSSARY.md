@@ -71,7 +71,7 @@ A hostile creature of the run; data on the server, drawn by the client.
 _Avoid_: Mob, monster, creature, NPC
 
 **Horde**:
-The mass of grunts that spawns around the players and grows with run time.
+The mass of grunts the lairs release, which walks at the players and grows with run time.
 _Avoid_: Wave, mobs, swarm
 
 **Roster**:
@@ -87,11 +87,31 @@ A rare, stronger enemy of one of the archetypes other than the grunt, appearing 
 _Avoid_: Champion, miniboss, rare
 
 **Boss**:
-A strong enemy that arrives on the run's clock, with telegraphed attacks of its own.
+A strong enemy with telegraphed attacks of its own that sleeps in its lair, fights only there and grows with run time.
 _Avoid_: Camp leader, world boss, miniboss
 
+**Lair**:
+A place on the map, one per boss, that releases batches of its own grunts at a fixed interval until its boss dies.
+_Avoid_: Camp, spawner, nest (a lair kind), den
+
+**Guard**:
+The elites tied to a lair that wake and fight with its boss and never leave it.
+_Avoid_: Bodyguards, minions, escort
+
+**Silenced**:
+The state of a lair whose boss is dead: no emission, safe ground, its landmark out.
+_Avoid_: Cleared, destroyed, captured
+
+**Doom**:
+The run's end time onward, when wraiths overrun the map and only the portal is a way out.
+_Avoid_: Overtime, sudden death, timeout
+
+**Wraith**:
+An enemy of doom: fast, nearly unkillable, worth no experience.
+_Avoid_: Reaper, ghost, super monster
+
 **Final boss**:
-A map's own boss that ends a run: killing it extracts everyone still alive, and if it lives too long the map closes and everyone left dies.
+A map's own boss that rises when the last lair is silenced: killing it extracts everyone still alive; doom, not the boss, ends a run that takes too long.
 _Avoid_: Last boss, raid boss
 
 **Telegraph**:

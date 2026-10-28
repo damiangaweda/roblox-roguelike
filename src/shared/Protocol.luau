@@ -184,6 +184,8 @@ export type EnemyView = {
 	buffed: boolean,
 	-- A boss's phase; 1 for everything else.
 	phase: number,
+	-- Asleep in its lair (a boss or a guard).
+	asleep: boolean,
 }
 
 -- One enemy on the wire, after a u16 count:
@@ -191,6 +193,8 @@ export type EnemyView = {
 --   10 u8 state (chase 0, telegraph 1, charge 2, recover 3), 11 u8 health
 --   share, 12 u8 flags, 13 u8 phase.
 local ENEMY_BYTES = 14
+-- The top bit of the phase byte: the enemy sleeps in its lair.
+local ASLEEP_BIT = 128
 local FLAG_SLOWED = 1
 local FLAG_ROOTED = 2
 local FLAG_STUNNED = 4
@@ -248,7 +252,12 @@ function Protocol.encodeEnemies(run: Types.Run, kinds: { string }): buffer
 		local health = if enemy.maxHealth > 0 then enemy.health / enemy.maxHealth else 0
 		buffer.writeu8(out, offset + 11, math.clamp(math.ceil(health * 255), 0, 255))
 		buffer.writeu8(out, offset + 12, enemyFlags(run, enemy))
-		buffer.writeu8(out, offset + 13, math.clamp(enemy.phase, 0, 255))
+		-- The phase in the low bits, the sleep flag (ADR-0021) in the top one.
+		buffer.writeu8(
+			out,
+			offset + 13,
+			math.clamp(enemy.phase, 0, 127) + (if enemy.asleep then ASLEEP_BIT else 0)
+		)
 	end
 	return out
 end
@@ -284,7 +293,8 @@ function Protocol.decodeEnemies(data: any, kinds: { string }): { EnemyView }?
 			bleeding = hasFlag(flags, FLAG_BLEEDING),
 			poisoned = hasFlag(flags, FLAG_POISONED),
 			buffed = hasFlag(flags, FLAG_BUFFED),
-			phase = buffer.readu8(data, offset + 13),
+			phase = buffer.readu8(data, offset + 13) % ASLEEP_BIT,
+			asleep = buffer.readu8(data, offset + 13) >= ASLEEP_BIT,
 		}
 	end
 	return enemies
@@ -465,11 +475,27 @@ export type WorldView = {
 	chest: ChestView,
 	compassOn: boolean,
 	portal: PortalView?,
-	-- Seconds the party has left to kill the final boss, once it has come.
-	finalBossLeft: number?,
 	-- The bosses alive, drawn with their health bars.
 	bossIds: { number },
 	shrines: { ShrineView },
+	lairs: { LairView },
+	-- Doom (ADR-0021): whether it has begun, and seconds until the run's end time.
+	doom: boolean,
+	doomIn: number,
+	-- Seconds until the final boss has risen, while it rises.
+	finalRiseLeft: number?,
+}
+
+-- A lair as every client sees it.
+export type LairView = {
+	id: number,
+	kind: string,
+	x: number,
+	z: number,
+	radius: number,
+	asleep: boolean,
+	silenced: boolean,
+	bossId: number?,
 }
 
 local function secondsLeft(run: Types.Run, until_: number): number
@@ -536,8 +562,20 @@ function Protocol.worldView(run: Types.Run): WorldView
 			trial = shrine.trialEnemies ~= nil,
 		})
 	end
+	local lairs = table.create(#run.lairs)
+	for _, lair in run.lairs do
+		table.insert(lairs, {
+			id = lair.id,
+			kind = lair.kind,
+			x = lair.x,
+			z = lair.z,
+			radius = lair.radius,
+			asleep = lair.asleep,
+			silenced = lair.silenced,
+			bossId = lair.bossId,
+		})
+	end
 	local portal = run.portal
-	local deadline = run.finalBossDeadline
 	local bossIds = {}
 	for _, enemy in run.enemies do
 		if State.isBoss(State.kind(run, enemy)) then
@@ -557,9 +595,12 @@ function Protocol.worldView(run: Types.Run): WorldView
 		portal = if portal
 			then { x = portal.x, z = portal.z, secondsLeft = secondsLeft(run, portal.until_) }
 			else nil,
-		finalBossLeft = if deadline then secondsLeft(run, deadline) else nil,
 		bossIds = bossIds,
 		shrines = shrines,
+		lairs = lairs,
+		doom = run.doom,
+		doomIn = secondsLeft(run, run.config.run.durationSeconds),
+		finalRiseLeft = if run.finalRiseAt then secondsLeft(run, run.finalRiseAt) else nil,
 	}
 end
 

@@ -2,7 +2,9 @@
 -- Draws the enemies. The server owns them as data (ADR-0004); this keeps one
 -- pooled model of a few anchored parts per enemy id and glides it between
 -- snapshots, every part moved by one bulk move per frame. Enemies out of the
--- local character's range are parked and cost nothing per frame.
+-- local character's range are parked and cost nothing per frame. A lair's
+-- sleeping boss and guard (ADR-0021) lie dimmed in a faint glow of the lair's
+-- colour; the wire carries no sleep flag, so the lair view decides it.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
@@ -257,6 +259,65 @@ local LOOKS: { [string]: Look } = {
 		-- On the head: the head hides the body's top.
 		chevrons = { on = 2, at = Vector3.new(0, 0.7, 0.5), scale = 1 },
 	},
+	-- Doom's wraith: a tall translucent shape hovering over the ground, two
+	-- violet eyes, and two fainter copies trailing behind it as it rushes.
+	wraith = {
+		pieces = {
+			{
+				role = "body",
+				shape = BLOCK,
+				size = Vector3.new(1.8, 4.6, 1.3),
+				color = Color3.fromRGB(43, 27, 61),
+				offset = pose(0, 3.4, 0, 0.15),
+				transparency = 0.35,
+				bob = 0.3,
+			},
+			-- The hood, riding the body's bob.
+			{
+				role = "detail",
+				shape = BALL,
+				size = Vector3.new(1.9, 1.9, 1.9),
+				color = Color3.fromRGB(43, 27, 61),
+				on = 1,
+				offset = pose(0, 2.9, -0.2),
+				transparency = 0.35,
+			},
+			{
+				role = "glow",
+				shape = BALL,
+				size = Vector3.new(0.38, 0.38, 0.38),
+				color = Color3.fromRGB(200, 120, 255),
+				on = 2,
+				offset = pose(-0.42, 0.1, -0.85),
+			},
+			{
+				role = "glow",
+				shape = BALL,
+				size = Vector3.new(0.38, 0.38, 0.38),
+				color = Color3.fromRGB(200, 120, 255),
+				on = 2,
+				offset = pose(0.42, 0.1, -0.85),
+			},
+			-- The afterimage: the body again, behind and fading.
+			{
+				role = "detail",
+				shape = BLOCK,
+				size = Vector3.new(1.6, 4.2, 1.2),
+				color = Color3.fromRGB(43, 27, 61),
+				offset = pose(0, 3.2, 1.8, 0.25),
+				transparency = 0.65,
+			},
+			{
+				role = "detail",
+				shape = BLOCK,
+				size = Vector3.new(1.4, 3.8, 1.1),
+				color = Color3.fromRGB(43, 27, 61),
+				offset = pose(0, 3, 3.5, 0.35),
+				transparency = 0.82,
+			},
+		},
+		chevrons = { on = 1, at = Vector3.new(0, 2.4, 0.7), scale = 1 },
+	},
 	shaman = {
 		pieces = {
 			-- A slim body.
@@ -381,12 +442,27 @@ local BOSS_AURA_MIN = 0.45
 local BOSS_AURA_MAX = 0.7
 local BOSS_LIGHT_BRIGHTNESS = 2
 local BOSS_LIGHT_RANGE = 18
+-- A sleeping boss or guard: darker, lying on its side and sunk a little,
+-- in a faint glow of its lair's colour.
+local SLEEP_DIM = 0.55
+local SLEEP_TILT = math.rad(70)
+local SLEEP_SINK = 0.4
+local SLEEP_GLOW_MIN = 0.72
+local SLEEP_GLOW_MAX = 0.88
+local SLEEP_GLOW_HZ = 0.35
+local SLEEP_LIGHT_BRIGHTNESS = 0.6
 -- A telegraph's length before the event that names it arrives.
 local DEFAULT_TELEGRAPH = 0.5
 
 -- Enemies are drawn one snapshot interval behind the newest data, so there is
 -- always a next position to glide to.
 local interval = 1 / Config.net.snapshotHz
+
+-- The lair kinds by id, for a sleeping enemy's glow.
+local lairKinds: { [string]: Types.LairKindConfig } = {}
+for _, lairKind in Config.lairs.kinds do
+	lairKinds[lairKind.id] = lairKind
+end
 
 type Rig = {
 	look: Look,
@@ -449,6 +525,9 @@ type Rig = {
 	parked: boolean,
 	-- Squared distance to the local character at the latest snapshot, for the rims.
 	distance: number,
+	-- Asleep in its lair, in the lair's colour; the pose it lies in (identity awake).
+	sleepColor: Color3?,
+	pose: CFrame,
 }
 
 type Dying = { rig: Rig, at: number, locals: { CFrame } }
@@ -650,7 +729,7 @@ local function layout(rig: Rig, now: number, pulse: number, dt: number)
 			offset = offset.Rotation + offset.Position * rig.size
 		end
 
-		rig.frames[index] = (if on then rig.frames[on] else rig.root) * offset
+		rig.frames[index] = (if on then rig.frames[on] else rig.root * rig.pose) * offset
 	end
 
 	local chevrons = rig.look.chevrons
@@ -744,7 +823,8 @@ local function lookOf(kind: Types.EnemyKindConfig?): (Look, number)
 	if look == nil or look == GRUNT then
 		return GRUNT, GRUNT_BLEND
 	end
-	return look, ELITE_BLEND
+	-- A wraith is its kind's colour through and through.
+	return look, if kind.role == "wraith" then 1 else ELITE_BLEND
 end
 
 local function isBoss(kind: Types.EnemyKindConfig?): boolean
@@ -804,6 +884,8 @@ local function spawnRig(id: number, enemy: Protocol.EnemyView): Rig
 		culled = false,
 		parked = false,
 		distance = 0,
+		sleepColor = nil,
+		pose = CFrame.identity,
 	}
 	for index, piece in look.pieces do
 		local part = take(piece.role)
@@ -833,11 +915,11 @@ local function spawnRig(id: number, enemy: Protocol.EnemyView): Rig
 		part.CFrame = rig.frames[index]
 	end
 	setChevrons(rig, chevronsFor(enemy.phase))
+	-- A flat ring of light at the boss's feet, so its silhouette stays readable;
+	-- a sleeping guard lies in one too.
+	rig.auraRise = BOSS_AURA_RISE
+	rig.auraDiameter = heightOf(look) * size * BOSS_AURA_SHARE
 	if boss then
-		local height = heightOf(look) * size
-		-- A flat ring of light at the boss's feet, so its silhouette stays readable.
-		rig.auraRise = BOSS_AURA_RISE
-		rig.auraDiameter = height * BOSS_AURA_SHARE
 		setAura(rig, true)
 	end
 	model.Parent = folder
@@ -912,7 +994,7 @@ local function baseColor(own: Color3, enemy: Protocol.EnemyView, weakened: boole
 	return shade(color, HEALTH_FLOOR + (1 - HEALTH_FLOOR) * health)
 end
 
-local function colorKey(enemy: Protocol.EnemyView, weakened: boolean): number
+local function colorKey(enemy: Protocol.EnemyView, weakened: boolean, asleep: boolean): number
 	local flags = (if enemy.slowed then 1 else 0)
 		+ (if enemy.burning then 2 else 0)
 		+ (if enemy.poisoned then 4 else 0)
@@ -921,6 +1003,7 @@ local function colorKey(enemy: Protocol.EnemyView, weakened: boolean): number
 		+ (if enemy.rooted then 32 else 0)
 		+ (if weakened then 64 else 0)
 		+ (if enemy.buffed then 128 else 0)
+		+ (if asleep then 256 else 0)
 	local health = math.round(math.clamp(enemy.health, 0, 1) * HEALTH_STEPS)
 	return flags * 64 + health
 end
@@ -1049,6 +1132,26 @@ local function setState(rig: Rig, state: Types.EnemyState, now: number)
 	end
 end
 
+-- The colour of the lair enemy `enemy` sleeps in, or nil when it is awake: a
+-- lair's boss while the lair sleeps, or an elite standing still inside a
+-- sleeping lair (its guard).
+local function sleepingIn(enemy: Protocol.EnemyView, lairs: { Protocol.LairView }): Color3?
+	if not enemy.asleep then
+		return nil
+	end
+	-- The glow takes the colour of the nearest lair.
+	local best: Protocol.LairView? = nil
+	local bestDistance = math.huge
+	for _, lair in lairs do
+		local distance = (enemy.x - lair.x) ^ 2 + (enemy.z - lair.z) ^ 2
+		if distance < bestDistance then
+			best, bestDistance = lair, distance
+		end
+	end
+	local lairKind = if best then lairKinds[best.kind] else nil
+	return if lairKind then fromHex(lairKind.colour) else WHITE
+end
+
 -- Runs once per snapshot: pairs models with enemies and sets how they look.
 local function sync(snapshot: Net.Snapshot)
 	generation += 1
@@ -1083,24 +1186,36 @@ local function sync(snapshot: Net.Snapshot)
 
 		setState(rig, enemy.state, now)
 
+		local sleepColor = sleepingIn(enemy, snapshot.world.lairs or {})
+		if (sleepColor ~= nil) ~= (rig.sleepColor ~= nil) then
+			rig.pose = if sleepColor
+				then CFrame.new(0, -SLEEP_SINK * rig.size, 0) * CFrame.Angles(0, 0, SLEEP_TILT)
+				else CFrame.identity
+			setAura(rig, rig.boss or sleepColor ~= nil)
+		end
+		rig.sleepColor = sleepColor
+
 		local chevrons = chevronsFor(enemy.phase)
 		if chevrons ~= rig.chevronCount then
 			setChevrons(rig, chevrons)
 		end
 		local weakened = rig.weakenedUntil > now
-		local key = colorKey(enemy, weakened)
+		local asleep = sleepColor ~= nil
+		local key = colorKey(enemy, weakened, asleep)
 		if rig.colorKey ~= key then
 			rig.colorKey = key
 			local pieces = rig.look.pieces
 			for index in rig.parts do
 				local piece = pieces[index]
+				local color
 				if piece == nil then
-					rig.base[index] = CHEVRON_COLOR
+					color = CHEVRON_COLOR
 				elseif piece.role == "glow" then
-					rig.base[index] = piece.color
+					color = piece.color
 				else
-					rig.base[index] = baseColor(rig.own[index], enemy, weakened)
+					color = baseColor(rig.own[index], enemy, weakened)
 				end
+				rig.base[index] = if asleep then shade(color, SLEEP_DIM) else color
 			end
 		end
 		for index, piece in rig.look.pieces do
@@ -1264,9 +1379,24 @@ local function render(dt: number)
 					moveParts[count] = aura
 					moveFrames[count] = (rig.root + Vector3.new(0, rig.auraRise, 0))
 						* CFrame.Angles(0, 0, math.pi / 2)
-					local wave = 0.5
-						+ 0.5 * math.sin((now * BOSS_AURA_HZ + rig.phase) * 2 * math.pi)
-					aura.Transparency = BOSS_AURA_MIN + (BOSS_AURA_MAX - BOSS_AURA_MIN) * wave
+					-- Red and pulsing awake; faint and slow in the lair's colour asleep.
+					local sleepColor = rig.sleepColor
+					local glowColor = sleepColor or BOSS_AURA_COLOR
+					if aura.Color ~= glowColor then
+						aura.Color = glowColor
+						local light = aura:FindFirstChildOfClass("PointLight")
+						if light then
+							light.Color = glowColor
+							light.Brightness = if sleepColor
+								then SLEEP_LIGHT_BRIGHTNESS
+								else BOSS_LIGHT_BRIGHTNESS
+						end
+					end
+					local hz = if sleepColor then SLEEP_GLOW_HZ else BOSS_AURA_HZ
+					local low = if sleepColor then SLEEP_GLOW_MIN else BOSS_AURA_MIN
+					local high = if sleepColor then SLEEP_GLOW_MAX else BOSS_AURA_MAX
+					local wave = 0.5 + 0.5 * math.sin((now * hz + rig.phase) * 2 * math.pi)
+					aura.Transparency = low + (high - low) * wave
 				end
 				paint(rig, enemy, now, pulse)
 			end

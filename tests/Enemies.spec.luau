@@ -4,7 +4,7 @@ local Enemies = require("../src/shared/Core/Enemies")
 local Fixtures = require("./Fixtures")
 local Geometry = require("../src/shared/Core/Geometry")
 local Arena = require("../src/shared/Core/Arena")
-local Horde = require("../src/shared/Core/Horde")
+local Lairs = require("../src/shared/Core/Lairs")
 local State = require("../src/shared/Core/State")
 local Types = require("../src/shared/Core/Types")
 
@@ -390,6 +390,56 @@ return {
 		Assert.equal(boss.attack, 2)
 	end,
 
+	["an asleep boss or guard neither moves, telegraphs nor hits"] = function()
+		local run, player = open()
+		Fixtures.clearLairs(run)
+		local lair = Fixtures.lair(run, "brambleNest", 5, 0)
+		-- The lair is populated with the hero away, so it sleeps.
+		Fixtures.place(run, 1, 300, 0)
+		Lairs.update(run, 0)
+		local boss = State.enemyById(run, lair.bossId :: number) :: Types.Enemy
+		local guard = State.enemyById(run, lair.guardIds[1]) :: Types.Enemy
+		-- The hero stands among them, but no lair update has woken them.
+		Fixtures.place(run, 1, guard.x + 1, guard.z)
+		boss.attackReadyAt = 0
+		guard.attackReadyAt = 0
+		local bx, bz, gx, gz = boss.x, boss.z, guard.x, guard.z
+		for _ = 1, 30 do
+			tick(run)
+		end
+		Assert.equal(boss.x, bx)
+		Assert.equal(boss.z, bz)
+		Assert.equal(guard.x, gx)
+		Assert.equal(guard.z, gz)
+		Assert.equal(#events(run, "telegraph"), 0)
+		Assert.equal(#events(run, "playerHurt"), 0)
+		Assert.equal(player.health, maxHealth(run, player))
+		Assert.truthy(boss.asleep and guard.asleep)
+	end,
+
+	["a leashed boss's charge ends inside its lair"] = function()
+		local run = open()
+		Fixtures.clearLairs(run)
+		local lair = Fixtures.lair(run, "brambleNest", 0, 0)
+		Lairs.update(run, 0)
+		local boss = State.enemyById(run, lair.bossId :: number) :: Types.Enemy
+		Fixtures.wake(run, lair)
+		boss.attack = 1
+		boss.attackReadyAt = 0
+		-- Inside the reach, outside the radius: the rush is cut at the lair's edge.
+		Fixtures.place(run, 1, lair.radius + 10, 0)
+		boss.x, boss.z = lair.radius - 20, 0
+		Enemies.step(run, 0)
+		local event = Assert.findEvent(run.events, "telegraph")
+		Assert.equal(event.attackKind, "charge")
+		Assert.near(event.endX :: number, lair.radius, 1e-6)
+		run.time = boss.stateUntil
+		for _ = 1, 30 do
+			tick(run)
+		end
+		Assert.truthy(Geometry.distance(boss.x, boss.z, 0, 0) <= lair.radius + 1e-6)
+	end,
+
 	["a charge stops against an obstacle"] = function()
 		local run, player = open()
 		Fixtures.place(run, 1, 30, 0)
@@ -460,7 +510,7 @@ return {
 		local attack = run.config.enemies.hollowShade.attacks[2]
 		windUp(run, boss, attacked(run))
 		Assert.equal(#run.enemies, 1 + attack.summonCount :: number)
-		local kindId = Horde.windowKinds(run)[1]
+		local kindId = Lairs.gruntKinds(run, boss.x, boss.z)[1]
 		for _, enemy in run.enemies do
 			if enemy ~= boss then
 				Assert.equal(enemy.kind, kindId)

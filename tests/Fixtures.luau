@@ -4,6 +4,7 @@
 -- from the seed; a spec that wants open ground calls Fixtures.clearObstacles.
 
 local Config = require("../src/shared/Config")
+local Lairs = require("../src/shared/Core/Lairs")
 local State = require("../src/shared/Core/State")
 local Types = require("../src/shared/Core/Types")
 
@@ -56,6 +57,33 @@ function Fixtures.shrine(run: Types.Run, kind: Types.ShrineKind, x: number, z: n
 	local shrine = State.newShrine(run, { kind = kind, x = x, z = z })
 	table.insert(run.shrines, shrine)
 	return shrine
+end
+
+-- A lair of `kind` at (x, z), asleep, its first batch due at `nextBatchAt`
+-- (never by default); its boss and guard come at the next Lairs.update. The
+-- run's generated lairs stay; a spec that wants only its own calls
+-- Fixtures.clearLairs first.
+function Fixtures.lair(
+	run: Types.Run,
+	kind: string,
+	x: number,
+	z: number,
+	nextBatchAt: number?
+): Types.Lair
+	local lair = State.newLair(run, { kind = kind, x = x, z = z, rotation = 0 })
+	lair.nextBatchAt = nextBatchAt or math.huge
+	table.insert(run.lairs, lair)
+	return lair
+end
+
+-- No lairs: nothing is released and no boss sleeps on the map.
+function Fixtures.clearLairs(run: Types.Run)
+	run.lairs = {}
+end
+
+-- Wakes the lair as a hero entering it would.
+function Fixtures.wake(run: Types.Run, lair: Types.Lair)
+	Lairs.wake(run, lair)
 end
 
 function Fixtures.place(run: Types.Run, id: number, x: number, z: number)

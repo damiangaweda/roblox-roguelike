@@ -6,7 +6,7 @@
 local Cards = require("./Cards")
 local Geometry = require("./Geometry")
 local Hero = require("./Hero")
-local Horde = require("./Horde")
+local Lairs = require("./Lairs")
 local State = require("./State")
 local Types = require("./Types")
 
@@ -27,8 +27,12 @@ local SCALED: { [Types.Stat]: boolean } = {
 
 -- Whether the shrine can be activated now: unused and, for a spring, back;
 -- a trial being fought cannot.
+-- A trial does not start while the final boss rises: nothing spawns then.
 local function usable(run: Types.Run, shrine: Types.Shrine): boolean
-	return not shrine.used and shrine.readyAt <= run.time and shrine.trialEnemies == nil
+	return not shrine.used
+		and shrine.readyAt <= run.time
+		and shrine.trialEnemies == nil
+		and not (shrine.kind == "trial" and run.finalRiseAt ~= nil)
 end
 
 -- The shrine within the config's reach of the player, if any; the chest wins
@@ -125,18 +129,18 @@ local function finishTrial(run: Types.Run, shrine: Types.Shrine)
 	end
 end
 
--- The trial's ring around the shrine: the window's grunts in turn with the
--- elites spread evenly among them, all on one ring. Not held to the alive
--- target, though they count toward it while they live; held to the cap
--- (ADR-0019): the elites take the room first and grunts fill what is left.
+-- The trial's ring around the shrine: the nearest living lair's grunts
+-- (Lairs.gruntKinds) in turn with the elites spread evenly among them, all on
+-- one ring. They count toward the alive cap while they live and are held to
+-- it (ADR-0019): the elites take the room first and grunts fill what is left.
 -- A ring with no room at all is cleared at once and deals its offer now.
 local function startTrial(run: Types.Run, player: Types.Player, shrine: Types.Shrine)
 	local config = run.config.shrines
-	local window = Horde.windowKinds(run)
+	local grunts = Lairs.gruntKinds(run, shrine.x, shrine.z)
 	local elites = run.map.elites
-	local room = math.max(run.config.horde.maxAlive - Horde.aliveCount(run), 0)
+	local room = math.max(run.config.horde.maxAlive - Lairs.aliveCount(run), 0)
 	local eliteCount = math.min(if #elites > 0 then config.trialEliteCount else 0, room)
-	local gruntCount = math.min(if #window > 0 then config.trialRingCount else 0, room - eliteCount)
+	local gruntCount = math.min(if #grunts > 0 then config.trialRingCount else 0, room - eliteCount)
 	local total = gruntCount + eliteCount
 	local phase = run.rng:next() * 2 * math.pi
 	local ids = table.create(total)
@@ -150,10 +154,10 @@ local function startTrial(run: Types.Run, player: Types.Player, shrine: Types.Sh
 			kindId = elites[run.rng:integer(1, #elites)]
 		else
 			grunt += 1
-			kindId = window[(grunt - 1) % #window + 1]
+			kindId = grunts[(grunt - 1) % #grunts + 1]
 		end
 		local angle = phase + (index - 1) * 2 * math.pi / total
-		local enemy = Horde.spawnKind(
+		local enemy = Lairs.spawnKind(
 			run,
 			kindId,
 			shrine.x + math.cos(angle) * config.trialRingRadius,
