@@ -143,7 +143,9 @@ return {
 	["places are dealt every kind before a repeat and keep their distances"] = function()
 		for seed = 1, 8 do
 			local arena, map = arenaOf(seed)
-			Assert.equal(#arena.places, map.placeCount, "seed " .. seed)
+			-- A site shadowed by a plateau may be skipped, never added.
+			Assert.truthy(#arena.places <= map.placeCount, "seed " .. seed .. ": too many")
+			Assert.truthy(#arena.places >= map.placeCount - 3, "seed " .. seed .. ": too few")
 			local seen: { [string]: boolean } = {}
 			for index = 1, #map.placeKinds do
 				local kind = arena.places[index].kind

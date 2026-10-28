@@ -1100,13 +1100,13 @@ local Config: Types.Config = {
 			obstacleSpacing = 10,
 			startClearRadius = 40,
 			chestClearRadius = 20,
-			placementAttempts = 30,
+			placementAttempts = 120,
 			chestMinDistance = 200,
 			edgeMargin = 30,
 			-- The composition (stage 3b): places with their kits as offsets from
 			-- the centre (the radius is the clearing), groves dense at the core,
 			-- paths from the start to every place, sparse leftovers.
-			placeCount = 9,
+			placeCount = 11,
 			placeKinds = {
 				{
 					id = "chapelYard",
