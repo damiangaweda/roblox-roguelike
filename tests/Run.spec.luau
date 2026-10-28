@@ -29,7 +29,7 @@ end
 -- so the horde arrives within a spec's few seconds.
 local function nearLair(run)
 	Fixtures.clearLairs(run)
-	Fixtures.lair(run, "brambleNest", 100, 0, 0)
+	Fixtures.lair(run, "brambleNest", 60, 0, 0)
 end
 
 local function eventKinds(events): { string }
@@ -66,9 +66,18 @@ return {
 		nearLair(run)
 		run.config.classes.mage.maxHealth = 1e6
 		run.players[1].health = 1e6
-		autoPick(run, 30)
+		autoPick(run, 60)
+		-- The hero stood still; stepping beside the dropped crystals draws them in.
+		for _, crystal in table.clone(run.crystals) do
+			Fixtures.place(run, 1, crystal.x + 1, crystal.z)
+			Run.step(run, DT, {})
+			if run.paused then
+				Run.chooseCard(run, 1, 1)
+			end
+		end
 		local events = Run.drainEvents(run)
-		Assert.truthy(Fixtures.count(events, "cast") > 10, "skills cast themselves")
+		local casts = Fixtures.count(events, "cast")
+		Assert.truthy(casts > 10, "skills cast themselves: " .. casts)
 		Assert.truthy(Fixtures.count(events, "kill") > 0, "kills")
 		Assert.truthy(Fixtures.count(events, "crystalCollected") > 0, "crystals collected")
 		Assert.truthy(run.players[1].level > 1, "levelled up")

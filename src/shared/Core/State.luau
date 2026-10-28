@@ -75,6 +75,7 @@ function State.newLair(run: Types.Run, spot: Types.LairSpot): Types.Lair
 		silenced = false,
 		nextBatchAt = run.rng:next() * interval * lairs.offsetShare,
 		owed = 0,
+		stirredAt = 0,
 	}
 end
 

@@ -68,8 +68,8 @@ local function isWraith(run: Types.Run, enemy: Types.Enemy): boolean
 end
 
 -- Takes `amount` off the enemy, announces it and credits the player; a kill
--- follows at zero health. An asleep lair wakes (and grows) before the damage
--- is taken.
+-- follows at zero health. A lair's boss or guard hurt keeps its lair awake;
+-- an asleep lair wakes (and grows) before the damage is taken.
 local function deal(
 	run: Types.Run,
 	enemy: Types.Enemy,
@@ -79,8 +79,8 @@ local function deal(
 	crit: boolean,
 	synergy: string?
 )
-	if enemy.asleep and amount > 0 then
-		Lairs.wakeFor(run, enemy)
+	if enemy.lairId and amount > 0 then
+		Lairs.hurt(run, enemy)
 	end
 	enemy.health -= amount
 	table.insert(run.events, {

@@ -36,7 +36,12 @@ end
 
 -- The nearest alive hero; for a leashed enemy, only among those within its
 -- lair's reach.
-local function nearestPlayer(enemy: Types.Enemy, context: Context, lair: Types.Lair?): Types.Player?
+local function nearestPlayer(
+	run: Types.Run,
+	enemy: Types.Enemy,
+	context: Context,
+	lair: Types.Lair?
+): Types.Player?
 	local best: Types.Player? = nil
 	local bestDistance = math.huge
 	for _, player in context.players do
@@ -44,7 +49,8 @@ local function nearestPlayer(enemy: Types.Enemy, context: Context, lair: Types.L
 			player.state == "alive"
 			and (
 				lair == nil
-				or Geometry.distance(player.x, player.z, lair.x, lair.z) <= Lairs.reach(lair)
+				or Geometry.distance(player.x, player.z, lair.x, lair.z)
+					<= Lairs.reach(run, lair)
 			)
 		then
 			local distance = Geometry.distance(enemy.x, enemy.z, player.x, player.z)
@@ -676,7 +682,7 @@ local function stepEnemy(run: Types.Run, enemy: Types.Enemy, dt: number, context
 		recover(run, enemy, attack)
 	end
 
-	local target = nearestPlayer(enemy, context, Lairs.leashOf(run, enemy))
+	local target = nearestPlayer(run, enemy, context, Lairs.leashOf(run, enemy))
 	enemy.target = if target then target.id else nil
 
 	if stunned then

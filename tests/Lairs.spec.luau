@@ -175,7 +175,11 @@ spec["each lair's boss sleeps at its centre with its guard on a ring"] = functio
 		Assert.equal(enemy.kind, kind.guards[(index - 1) % #kind.guards + 1], "in turn")
 		Assert.truthy(enemy.asleep)
 		Assert.equal(enemy.lairId, lair.id)
-		Assert.near(Geometry.distance(enemy.x, enemy.z, 200, 0), lair.radius * 0.5, 1e-6)
+		Assert.near(
+			Geometry.distance(enemy.x, enemy.z, 200, 0),
+			lair.radius * run.config.lairs.guardRingShare,
+			1e-6
+		)
 	end
 	Assert.truthy(lair.asleep)
 	Assert.equal(Lairs.aliveCount(run), 0, "bosses and guards do not count")
@@ -193,11 +197,13 @@ spec["a lair releases its batch at its interval, its kinds in turn, one batch a 
 	Lairs.update(run, 0)
 	local batch = released(run, lair)
 	Assert.equal(#batch, lairs.batchStart)
-	local first = table.find(kind.grunts, batch[1].kind) :: number
-	for index, grunt in batch do
-		Assert.equal(grunt.kind, kind.grunts[(first + index - 2) % #kind.grunts + 1], "in turn")
+	for _, grunt in batch do
+		Assert.equal(grunt.kind, kind.grunts[1], "only the weakest kind at the start")
 		local distance = Geometry.distance(grunt.x, grunt.z, lair.x, lair.z)
-		Assert.truthy(distance >= lair.radius * 0.6 - 1e-6 and distance <= lair.radius * 0.9 + 1e-6)
+		Assert.truthy(
+			distance >= lair.radius * lairs.releaseRingMin - 1e-6
+				and distance <= lair.radius * lairs.releaseRingMax + 1e-6
+		)
 		Assert.falsy(grunt.asleep)
 	end
 	Assert.equal(lair.nextBatchAt, kind.intervalSeconds)
@@ -210,6 +216,55 @@ spec["a lair releases its batch at its interval, its kinds in turn, one batch a 
 	Lairs.update(run, 0)
 	Assert.equal(#released(run, lair), 3 * lairs.batchStart)
 	Assert.near(lair.nextBatchAt, run.time + kind.intervalSeconds)
+end
+
+spec["every lair kind lists its grunts weakest first"] = function()
+	local config = Fixtures.config()
+	local roster = config.maps[config.map].roster
+	for _, kind in config.lairs.kinds do
+		for index = 2, #kind.grunts do
+			local before = table.find(roster, kind.grunts[index - 1]) :: number
+			local after = table.find(roster, kind.grunts[index]) :: number
+			Assert.truthy(before < after, kind.id .. ": " .. kind.grunts[index] .. " out of order")
+		end
+	end
+end
+
+spec["a lair's grunt kinds unlock with the run's progress, drawn in turn"] = function()
+	local duration = Fixtures.config().run.durationSeconds
+	for _, case in
+		{
+			{ share = 0, unlocked = 1 },
+			{ share = 0.5, unlocked = 2 },
+			{ share = 0.99, unlocked = 2 },
+		}
+	do
+		local run = open()
+		local lair = Fixtures.lair(run, "brambleNest", 200, 0, 0)
+		local kind = State.lairKind(run, lair)
+		run.time = duration * case.share
+		lair.nextBatchAt = run.time
+		Assert.equal(Lairs.unlockedGrunts(run, kind), case.unlocked)
+		Lairs.update(run, 0)
+		local batch = released(run, lair)
+		Assert.truthy(#batch >= case.unlocked)
+		local first = table.find(kind.grunts, batch[1].kind) :: number
+		Assert.truthy(first <= case.unlocked)
+		for index, grunt in batch do
+			Assert.equal(
+				grunt.kind,
+				kind.grunts[(first + index - 2) % case.unlocked + 1],
+				"in turn"
+			)
+		end
+	end
+	-- Every kind is unlocked at the end time.
+	local run = open()
+	run.time = duration
+	Assert.equal(
+		Lairs.unlockedGrunts(run, run.config.lairs.kinds[1]),
+		#run.config.lairs.kinds[1].grunts
+	)
 end
 
 spec["the batch and its grunts grow with run time"] = function()
@@ -368,8 +423,10 @@ spec["the lair sleeps when every hero has left, the boss regaining its share"] =
 	Assert.falsy(lair.asleep)
 	local sleeper = boss(run, lair)
 	sleeper.health = sleeper.maxHealth * 0.4
-	Fixtures.place(run, 1, 200 - Lairs.reach(lair) - 1, 0)
-	Lairs.update(run, 0)
+	Fixtures.place(run, 1, 200 - Lairs.reach(run, lair) - 1, 0)
+	advance(run, lairs.sleepGraceSeconds - 0.05, 0.05)
+	Assert.falsy(lair.asleep, "within the grace")
+	advance(run, lairs.sleepGraceSeconds, 0.05)
 	Assert.truthy(lair.asleep)
 	Assert.equal(#events(run, "lairSlept"), 1)
 	Assert.truthy(sleeper.asleep)
@@ -377,6 +434,38 @@ spec["the lair sleeps when every hero has left, the boss regaining its share"] =
 		Assert.truthy(guard.asleep)
 	end
 	Assert.near(sleeper.health, sleeper.maxHealth * (0.4 + 0.6 * lairs.sleepRecoverShare), 1e-6)
+end
+
+spec["a shot every two seconds from outside keeps the lair awake"] = function()
+	local run = open()
+	local lairs = run.config.lairs
+	Assert.truthy(lairs.sleepGraceSeconds > 2)
+	local lair = Fixtures.lair(run, "brambleNest", 200, 0)
+	Lairs.update(run, 0)
+	-- Far outside the reach the whole time.
+	Fixtures.place(run, 1, 0, 0)
+	local sleeper = boss(run, lair)
+	Damage.hit(run, sleeper, hitBy(1, 0, 0))
+	Assert.falsy(lair.asleep)
+	local nextShot = 2
+	advance(run, 0, 0.05)
+	while run.time < 12 - 1e-9 do
+		advance(run, math.min(nextShot, 12), 0.05)
+		if run.time >= nextShot - 1e-9 then
+			Damage.hit(run, sleeper, hitBy(1, 0, 0))
+			nextShot += 2
+		end
+		Assert.falsy(lair.asleep, "awake at " .. run.time)
+	end
+	Assert.equal(#events(run, "lairWoke"), 1)
+	Assert.equal(#events(run, "lairSlept"), 0)
+	-- The shooting stops: the lair sleeps once the grace has passed.
+	local last = run.time
+	advance(run, last + lairs.sleepGraceSeconds - 0.05, 0.05)
+	Assert.falsy(lair.asleep)
+	advance(run, last + lairs.sleepGraceSeconds, 0.05)
+	Assert.truthy(lair.asleep)
+	Assert.equal(#events(run, "lairSlept"), 1)
 end
 
 spec["the boss's death silences the lair with a great offer and food"] = function()

@@ -5,7 +5,9 @@
 -- walk at the nearest hero across the map, and a stray far from every hero
 -- despawns and is owed to its lair's next batch. A lair's boss and guard sleep
 -- in it until a hero enters or something damages one of them, fight only
--- inside it and fall back asleep when every hero has left. The boss's death
+-- inside it and fall back asleep sleepGraceSeconds after every hero has left
+-- its reach and nothing has hurt them. Its grunt kinds unlock, weakest first,
+-- with the run's progress. The boss's death
 -- silences the lair; the last lair's fall raises the final boss there. From
 -- the run's end time doom sends wraiths at every hero.
 --
@@ -28,15 +30,6 @@ local Lairs = {}
 
 -- Draws a spawn spends looking for free ground next to an obstacle.
 local FREE_SPOT_TRIES = 8
--- The lair's shape, not a gameplay number: grunts are released between these
--- shares of its radius from its centre, the guard stands on a ring at
--- GUARD_RING of it.
-local RELEASE_MIN, RELEASE_MAX = 0.6, 0.9
-local GUARD_RING = 0.5
--- A woken boss and guard keep fighting a hero up to this many lair radii from
--- the lair's centre; with none that close the lair falls asleep. They never
--- leave the lair's radius themselves.
-local REACH_RADII = 2
 
 -- How far the run is through its duration: 0 at the start, 1 from the end on.
 function Lairs.progress(run: Types.Run): number
@@ -96,8 +89,8 @@ function Lairs.leashOf(run: Types.Run, enemy: Types.Enemy): Types.Lair?
 end
 
 -- How far from the lair's centre its woken boss and guard still fight a hero.
-function Lairs.reach(lair: Types.Lair): number
-	return lair.radius * REACH_RADII
+function Lairs.reach(run: Types.Run, lair: Types.Lair): number
+	return lair.radius * run.config.lairs.reachFactor
 end
 
 -- (x, z) pulled inside the lair's radius.
@@ -159,7 +152,7 @@ local function populate(run: Types.Run, lair: Types.Lair)
 	end
 	for index = 1, kind.guardCount do
 		local angle = lair.rotation + (index - 1) * 2 * math.pi / kind.guardCount
-		local ring = lair.radius * GUARD_RING
+		local ring = lair.radius * run.config.lairs.guardRingShare
 		local guard = Lairs.spawnKind(
 			run,
 			kind.guards[(index - 1) % #kind.guards + 1],
@@ -187,6 +180,7 @@ function Lairs.wake(run: Types.Run, lair: Types.Lair)
 		return
 	end
 	lair.asleep = false
+	lair.stirredAt = run.time
 	local horde = run.config.horde
 	local p = Lairs.progress(run)
 	local boss = Lairs.bossGrowth(run)
@@ -204,16 +198,21 @@ function Lairs.wake(run: Types.Run, lair: Types.Lair)
 	table.insert(run.events, { kind = "lairWoke", lairId = lair.id })
 end
 
--- Wakes the lair of an asleep enemy that took damage.
-function Lairs.wakeFor(run: Types.Run, enemy: Types.Enemy)
-	local lairId = enemy.lairId
-	if not enemy.asleep or lairId == nil then
+-- A lair's boss or guard took damage: its lair wakes, or stays awake for
+-- another sleepGraceSeconds.
+function Lairs.hurt(run: Types.Run, enemy: Types.Enemy)
+	local lair = Lairs.leashOf(run, enemy)
+	if lair == nil or lair.silenced then
 		return
 	end
-	local lair = State.lairById(run, lairId)
-	if lair then
-		Lairs.wake(run, lair)
-	end
+	lair.stirredAt = run.time
+	Lairs.wake(run, lair)
+end
+
+-- How many of the kind's grunts, weakest first, a batch draws from now: the
+-- first at the start, one more each equal share of the run, all at its end.
+function Lairs.unlockedGrunts(run: Types.Run, kind: Types.LairKindConfig): number
+	return 1 + math.floor(Lairs.progress(run) * (#kind.grunts - 1))
 end
 
 -- Puts the lair back to sleep: the boss and guard stop where they stand, their
@@ -271,7 +270,8 @@ end
 
 -- The batch the lair releases now: batchStart growing to batchEnd over the
 -- run's duration, plus what its strays are owed, held to the alive cap; its
--- grunts drawn in turn from a random first kind, around its centre.
+-- grunts drawn in turn from a random first kind among those unlocked, around
+-- its centre.
 local function release(run: Types.Run, lair: Types.Lair)
 	local lairs = run.config.lairs
 	local kind = State.lairKind(run, lair)
@@ -283,11 +283,16 @@ local function release(run: Types.Run, lair: Types.Lair)
 	if count <= 0 or #kind.grunts == 0 then
 		return
 	end
-	local first = run.rng:integer(1, #kind.grunts)
+	local unlocked = Lairs.unlockedGrunts(run, kind)
+	local first = run.rng:integer(1, unlocked)
 	for index = 1, count do
-		local kindId = kind.grunts[(first + index - 2) % #kind.grunts + 1]
+		local kindId = kind.grunts[(first + index - 2) % unlocked + 1]
 		local angle = run.rng:next() * 2 * math.pi
-		local distance = lair.radius * (RELEASE_MIN + (RELEASE_MAX - RELEASE_MIN) * run.rng:next())
+		local distance = lair.radius
+			* (
+				lairs.releaseRingMin
+				+ (lairs.releaseRingMax - lairs.releaseRingMin) * run.rng:next()
+			)
 		local grunt = Lairs.spawnKind(
 			run,
 			kindId,
@@ -404,7 +409,9 @@ function Lairs.update(run: Types.Run, _dt: number)
 			if anyWithin(players, lair.x, lair.z, lair.radius) then
 				Lairs.wake(run, lair)
 			end
-		elseif not anyWithin(players, lair.x, lair.z, Lairs.reach(lair)) then
+		elseif anyWithin(players, lair.x, lair.z, Lairs.reach(run, lair)) then
+			lair.stirredAt = run.time
+		elseif run.time - lair.stirredAt >= config.lairs.sleepGraceSeconds then
 			sleep(run, lair)
 		end
 		if not run.doom and run.finalRiseAt == nil and run.time >= lair.nextBatchAt then

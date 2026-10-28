@@ -561,7 +561,7 @@ export type Shrine = {
 export type ShrineSpot = { kind: ShrineKind, x: number, z: number }
 
 -- A lair kind (ADR-0021, GLOSSARY: lair): one per boss, with the grunts it
--- releases, the elites of its guard, its own release interval, its radius
+-- releases (weakest first: they unlock in order with the run's progress), the elites of its guard, its own release interval, its radius
 -- (the boss's and the guard's leash, and what wakes them) and the kit of
 -- props drawn around it.
 export type LairKindConfig = {
@@ -606,6 +606,17 @@ export type LairsConfig = {
 	bossGrowthPerMinute: number,
 	-- The share of its missing health a boss regains when it falls asleep.
 	sleepRecoverShare: number,
+	-- A woken lair falls asleep only after this long with no hero within its
+	-- reach and none of its boss and guard hurt.
+	sleepGraceSeconds: number,
+	-- A woken boss and guard fight heroes up to reachFactor lair radii from the
+	-- lair's centre (they never leave its radius themselves).
+	reachFactor: number,
+	-- Grunts are released between these shares of the lair's radius from its
+	-- centre; the guard stands on a ring at guardRingShare of it.
+	releaseRingMin: number,
+	releaseRingMax: number,
+	guardRingShare: number,
 	-- Seconds the final boss takes to rise, nothing spawning meanwhile.
 	finalRiseSeconds: number,
 	-- Seconds before the run's end time the doom countdown shows.
@@ -614,7 +625,8 @@ export type LairsConfig = {
 }
 
 -- A lair of the run: its boss and guard sleep until woken; silenced once the
--- boss dies. `owed` is the strays returned to its next batch.
+-- boss dies. `owed` is the strays returned to its next batch; `stirredAt` is
+-- when a hero was last within its reach or its boss or guard last hurt.
 export type Lair = {
 	id: number,
 	kind: string,
@@ -628,6 +640,7 @@ export type Lair = {
 	silenced: boolean,
 	nextBatchAt: number,
 	owed: number,
+	stirredAt: number,
 }
 
 -- Where a lair goes, decided with the places for the seed.
