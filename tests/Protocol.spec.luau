@@ -76,6 +76,15 @@ return {
 		Assert.equal(Protocol.parseIntent(config, "dash", 0, 0), nil, "dash zero")
 		Assert.equal(Protocol.parseIntent(config, "dash", 0 / 0, 1), nil, "dash nan")
 		Assert.equal(Protocol.parseIntent(config, "dash", 1, math.huge), nil, "dash inf")
+		local max = config.player.dashInputMax
+		Assert.equal(Protocol.parseIntent(config, "dash", max + 1, 0), nil, "dash dx too large")
+		Assert.equal(Protocol.parseIntent(config, "dash", 0, -max - 1), nil, "dash dz too large")
+		Assert.equal(Protocol.parseIntent(config, "dash", 1e300, 1e300), nil, "dash absurd")
+		Assert.equal(
+			(Protocol.parseIntent(config, "dash", max, -max) :: any).dx,
+			max,
+			"dash at the bound"
+		)
 		Assert.equal(Protocol.parseIntent(config, "damage", 100), nil)
 		Assert.equal(Protocol.parseIntent(config, nil), nil)
 		Assert.equal(Protocol.parseIntent(config, {}), nil)
@@ -324,11 +333,11 @@ return {
 		Assert.equal(seen.id, boon.id)
 		Assert.equal(seen.kind, "boon")
 		Assert.equal(seen.x, 50)
-		Assert.equal(seen.gift, boon.boon)
+		Assert.equal(seen.given, boon.boon)
 		Assert.equal(seen.used, false)
 		Assert.equal(seen.trial, false)
 		Assert.near(view.shrines[2].readyIn, 15)
-		Assert.equal(view.shrines[2].gift, nil)
+		Assert.equal(view.shrines[2].given, nil)
 		Assert.equal(view.shrines[3].trial, true)
 		Assert.near(view.players[1].shrineProgress, 0.75)
 		Assert.equal(view.players[1].dashing, true)
@@ -336,7 +345,7 @@ return {
 		Assert.equal(Protocol.worldView(run).players[1].dashing, false)
 	end,
 
-	["the self view carries the dash charges and the gifts"] = function()
+	["the self view carries the dash charges and the boons and pacts taken"] = function()
 		local run = Fixtures.run(1)
 		local player = run.players[1]
 		local config = run.config.player
@@ -346,15 +355,15 @@ return {
 		Assert.equal(view.dashReadyIn, 0, "every charge held")
 		player.dashCharges = config.dashCharges - 1
 		player.dashReadyAt = 5.5
-		player.gifts = { "might", "blood" }
+		player.shrinesTaken = { "might", "blood" }
 		view = Protocol.selfView(run, player)
 		Assert.equal(view.dashCharges, config.dashCharges - 1)
 		Assert.near(view.dashReadyIn, 1.5)
-		Assert.equal(#view.bonuses, 2)
-		Assert.equal(view.bonuses[1], "might")
-		Assert.equal(view.bonuses[2], "blood")
-		table.insert(player.gifts, "wind")
-		Assert.equal(#view.bonuses, 2, "a copy")
+		Assert.equal(#view.shrinesTaken, 2)
+		Assert.equal(view.shrinesTaken[1], "might")
+		Assert.equal(view.shrinesTaken[2], "blood")
+		table.insert(player.shrinesTaken, "wind")
+		Assert.equal(#view.shrinesTaken, 2, "a copy")
 	end,
 
 	["the self view carries skills with ranks and readyIn"] = function()
@@ -383,6 +392,9 @@ return {
 		Assert.equal(view.hasSpell, true)
 		Assert.equal(view.offer, nil)
 		Assert.truthy(view.stats.maxHealth > 0)
+		local cards: { Types.Card } = { { kind = "heal" } }
+		player.offers = { { cards = cards, ranks = 2 } }
+		Assert.equal(Protocol.selfView(run, player).offer, cards, "the oldest offer's cards")
 		player.skills[1].readyAt = 1
 		Assert.equal(Protocol.selfView(run, player).skills[1].readyIn, 0)
 	end,

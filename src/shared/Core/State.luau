@@ -45,7 +45,7 @@ function State.newRun(config: Types.Config, seed: number): Types.Run
 	return run
 end
 
--- A shrine at its spot; a boon's or pact's gift is drawn now, so the same
+-- A shrine at its spot; its boon or pact is drawn now, so the same
 -- seed deals the same shrines.
 function State.newShrine(run: Types.Run, spot: Types.ShrineSpot): Types.Shrine
 	local shrines = run.config.shrines
@@ -124,8 +124,8 @@ function State.newPlayer(run: Types.Run, id: number, class: string): Types.Playe
 		openProgress = 0,
 		shrineId = nil,
 		shrineProgress = 0,
-		bonuses = {},
-		gifts = {},
+		shrineShares = {},
+		shrinesTaken = {},
 		dashCharges = run.config.player.dashCharges,
 		dashReadyAt = 0,
 		dashUntil = 0,

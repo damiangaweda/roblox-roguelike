@@ -24,7 +24,7 @@ function Hero.stats(run: Types.Run, player: Types.Player): Types.HeroStats
 	end
 	-- Boons and pacts add to the same shares (GLOSSARY: boon, pact).
 	local function sum(stat: Types.Stat): number
-		return (sums[stat] or 0) + (player.bonuses[stat] or 0)
+		return (sums[stat] or 0) + (player.shrineShares[stat] or 0)
 	end
 
 	return {
@@ -57,13 +57,18 @@ end
 
 -- Dashes in direction (dx, dz): config.player.dashDistance over dashSeconds,
 -- carried like a knockback and stopped by obstacles and the wall, untouchable
--- for the dash. Returns false with no charge, while dead, or with no direction.
+-- for the dash. Returns false with no charge, while dead, or with no direction
+-- (one too short, or too long, to normalise).
 function Hero.dash(run: Types.Run, player: Types.Player, dx: number, dz: number): boolean
 	local config = run.config.player
-	if player.state ~= "alive" or player.dashCharges < 1 or (dx == 0 and dz == 0) then
+	if player.state ~= "alive" or player.dashCharges < 1 then
 		return false
 	end
-	local nx, nz = Geometry.normalize(dx, dz)
+	local length = math.sqrt(dx * dx + dz * dz)
+	if not (length >= 1e-9 and length < math.huge) then
+		return false
+	end
+	local nx, nz = dx / length, dz / length
 	if player.dashCharges == config.dashCharges then
 		player.dashReadyAt = run.time + config.dashCooldownSeconds
 	end

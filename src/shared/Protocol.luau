@@ -48,7 +48,14 @@ end
 -- reach) is the run's to check.
 function Protocol.parseIntent(config: Types.Config, kind: any, a: any, b: any): Intent?
 	if kind == "dash" then
-		if isFiniteNumber(a) and isFiniteNumber(b) and (a ~= 0 or b ~= 0) then
+		local max = config.player.dashInputMax
+		if
+			isFiniteNumber(a)
+			and isFiniteNumber(b)
+			and (a ~= 0 or b ~= 0)
+			and math.abs(a) <= max
+			and math.abs(b) <= max
+		then
 			return { kind = "dash", dx = a, dz = b }
 		end
 		return nil
@@ -431,7 +438,8 @@ export type ChestView = { x: number, z: number, opened: boolean }
 
 export type PortalView = { x: number, z: number, secondsLeft: number }
 
--- A shrine as every client sees it: its kind from afar, its gift's id up close
+-- A shrine as every client sees it: its kind from afar, the id of the boon or
+-- pact it gives up close
 -- (nil for a trial or a spring), whether it is spent and, for a spring, when
 -- it is back. `trial` is true while its ring is being fought.
 export type ShrineView = {
@@ -439,7 +447,7 @@ export type ShrineView = {
 	kind: Types.ShrineKind,
 	x: number,
 	z: number,
-	gift: string?,
+	given: string?,
 	used: boolean,
 	readyIn: number,
 	trial: boolean,
@@ -522,7 +530,7 @@ function Protocol.worldView(run: Types.Run): WorldView
 			kind = shrine.kind,
 			x = shrine.x,
 			z = shrine.z,
-			gift = shrine.boon or shrine.pact,
+			given = shrine.boon or shrine.pact,
 			used = shrine.used,
 			readyIn = secondsLeft(run, shrine.readyAt),
 			trial = shrine.trialEnemies ~= nil,
@@ -588,7 +596,7 @@ export type SelfView = {
 	-- Seconds until the next dash charge is back; 0 with every charge held.
 	dashReadyIn: number,
 	-- The boons and pacts taken, by id, in the order taken.
-	bonuses: { string },
+	shrinesTaken: { string },
 }
 
 function Protocol.selfView(run: Types.Run, player: Types.Player): SelfView
@@ -610,12 +618,13 @@ function Protocol.selfView(run: Types.Run, player: Types.Player): SelfView
 			cooldown = utility.cooldownSeconds,
 		})
 	end
+	local oldest = player.offers[1]
 	return {
 		level = player.level,
 		xp = player.xp,
 		xpToNext = Progression.xpToNext(config, player.level),
 		kills = player.kills,
-		offer = player.offers[1],
+		offer = if oldest then oldest.cards else nil,
 		skills = skills,
 		passives = table.clone(player.passives),
 		utilities = utilities,
@@ -625,7 +634,7 @@ function Protocol.selfView(run: Types.Run, player: Types.Player): SelfView
 		dashReadyIn = if player.dashCharges < config.player.dashCharges
 			then secondsLeft(run, player.dashReadyAt)
 			else 0,
-		bonuses = table.clone(player.gifts),
+		shrinesTaken = table.clone(player.shrinesTaken),
 	}
 end
 

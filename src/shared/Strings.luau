@@ -53,7 +53,7 @@ local Strings = {
 		trialStarted = "Trial!",
 		trialCompleted = "Trial complete",
 		-- The boon's or pact's name.
-		gift = "%s",
+		given = "%s",
 		springUsed = "Fully restored",
 	},
 	-- Under the clock: the time left as m:ss, and whole seconds.

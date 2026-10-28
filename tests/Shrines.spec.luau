@@ -4,6 +4,7 @@ local Fixtures = require("./Fixtures")
 local Geometry = require("../src/shared/Core/Geometry")
 local Hero = require("../src/shared/Core/Hero")
 local Horde = require("../src/shared/Core/Horde")
+local Progression = require("../src/shared/Core/Progression")
 local Run = require("../src/shared/Core/Run")
 local Shrines = require("../src/shared/Core/Shrines")
 local State = require("../src/shared/Core/State")
@@ -27,11 +28,31 @@ local function openRun(playerCount: number?, seed: number?): Types.Run
 	return run
 end
 
--- Holds the interact button at the shrine until it activates.
+-- Holds the interact button at the shrine until it activates, then lets go.
 local function activate(run: Types.Run, id: number, shrine: Types.Shrine)
 	Fixtures.place(run, id, shrine.x + 2, shrine.z)
 	Run.setInteracting(run, id, true)
 	advance(run, run.config.shrines.holdSeconds)
+	Run.setInteracting(run, id, false)
+end
+
+-- Checks that every card of `cards` is worth `ranks` ranks, held to the maximum.
+local function assertWorth(
+	run: Types.Run,
+	player: Types.Player,
+	cards: { Types.Card },
+	ranks: number
+)
+	local maxRank = run.config.ranks.maxRank
+	for _, card in cards do
+		if card.kind == "newSkill" then
+			Assert.equal(card.rank, ranks)
+		elseif card.kind == "skillRank" then
+			Assert.equal(card.rank, math.min(player.skills[1].rank + ranks, maxRank))
+		elseif card.kind == "newPassive" then
+			Assert.equal(card.rank, math.min(ranks, run.config.passives[card.passive].maxRank))
+		end
+	end
 end
 
 return {
@@ -94,6 +115,7 @@ return {
 		local run = openRun()
 		local player = run.players[1]
 		local shrine = Fixtures.shrine(run, "boon", 60, 0)
+		local hold = run.config.shrines.holdSeconds
 		Fixtures.place(run, 1, 62, 0)
 		Run.setInteracting(run, 1, true)
 		advance(run, 0.5)
@@ -102,14 +124,32 @@ return {
 		Assert.equal(player.shrineId, nil)
 		Assert.equal(player.shrineProgress, 0)
 		Fixtures.place(run, 1, 62, 0)
-		advance(run, 2)
-		Assert.falsy(shrine.used, "the button is pressed again")
-		Run.setInteracting(run, 1, true)
+		advance(run, DT)
+		Assert.equal(player.shrineId, shrine.id, "still held: back in reach, the hold starts again")
+		Assert.near(player.shrineProgress, DT, 1e-9, "from zero")
 		advance(run, 0.5)
 		Run.setInteracting(run, 1, false)
 		Assert.equal(player.shrineId, nil)
-		advance(run, 2)
-		Assert.falsy(shrine.used)
+		Assert.equal(player.shrineProgress, 0)
+		advance(run, hold + 1)
+		Assert.falsy(shrine.used, "let go")
+	end,
+
+	["a press out of reach starts the hold on walking into reach"] = function()
+		local run = openRun()
+		local player = run.players[1]
+		local shrine = Fixtures.shrine(run, "boon", 60, 0)
+		local hold = run.config.shrines.holdSeconds
+		Fixtures.place(run, 1, 80, 0)
+		Run.setInteracting(run, 1, true)
+		Assert.equal(player.shrineId, nil, "nothing in reach at the press")
+		advance(run, 0.5)
+		Assert.equal(player.shrineId, nil)
+		Fixtures.place(run, 1, 62, 0)
+		advance(run, DT)
+		Assert.equal(player.shrineId, shrine.id)
+		advance(run, hold - DT)
+		Assert.truthy(shrine.used, "activated after the full hold")
 	end,
 
 	["a boon raises its stat once"] = function()
@@ -120,17 +160,17 @@ return {
 		local before = Hero.stats(run, player).damage
 		activate(run, 1, shrine)
 		Assert.near(Hero.stats(run, player).damage, before + 0.15, 1e-9)
-		Assert.equal(player.gifts[1], "might")
+		Assert.equal(player.shrinesTaken[1], "might")
 		Assert.truthy(shrine.used)
 		local event = Assert.findEvent(Run.drainEvents(run), "shrineActivated")
-		Assert.equal(event.gift, "might")
+		Assert.equal(event.given, "might")
 		Assert.equal(event.shrineKind, "boon")
 		Assert.equal(event.player, 1)
 		Assert.equal(event.shrineId, shrine.id)
 		-- Used: holding again gives nothing more.
 		activate(run, 1, shrine)
 		Assert.near(Hero.stats(run, player).damage, before + 0.15, 1e-9)
-		Assert.equal(#player.gifts, 1)
+		Assert.equal(#player.shrinesTaken, 1)
 	end,
 
 	["a pact raises one stat and lowers another"] = function()
@@ -144,9 +184,9 @@ return {
 		Assert.near(after.damage, before.damage + 0.3, 1e-9)
 		Assert.near(after.maxHealth, before.maxHealth * 0.85, 1e-9)
 		Assert.truthy(player.health <= after.maxHealth, "health held to the new maximum")
-		Assert.equal(player.gifts[1], "blood")
+		Assert.equal(player.shrinesTaken[1], "blood")
 		Assert.truthy(shrine.used)
-		Assert.equal(Assert.findEvent(Run.drainEvents(run), "shrineActivated").gift, "blood")
+		Assert.equal(Assert.findEvent(Run.drainEvents(run), "shrineActivated").given, "blood")
 	end,
 
 	["a pact never takes a scaled stat below a tenth"] = function()
@@ -157,7 +197,12 @@ return {
 		local shrine = Fixtures.shrine(run, "pact", 60, 0)
 		shrine.pact = run.config.shrines.pacts[1].id
 		activate(run, 1, shrine)
-		Assert.near(Hero.stats(run, player).maxHealth, base * 0.1, 1e-9)
+		Assert.near(
+			Hero.stats(run, player).maxHealth,
+			base * (1 + run.config.shrines.pactMinShare),
+			1e-9
+		)
+		Assert.near(player.shrineShares.maxHealth :: number, run.config.shrines.pactMinShare, 1e-9)
 	end,
 
 	["a trial spawns its ring of the window's grunts and an elite"] = function()
@@ -187,8 +232,52 @@ return {
 		Assert.equal(elites, config.trialEliteCount)
 		local events = Run.drainEvents(run)
 		Assert.equal(Assert.findEvent(events, "trialStarted").count, total)
-		Assert.equal(Assert.findEvent(events, "shrineActivated").gift, nil)
+		Assert.equal(Assert.findEvent(events, "shrineActivated").given, nil)
 		Assert.equal(Shrines.inReach(run, run.players[1]), nil, "no hold while it is fought")
+	end,
+
+	["a trial's ring is held to the cap, the elites first"] = function()
+		local run = openRun()
+		local config = run.config.shrines
+		local maxAlive = run.config.horde.maxAlive
+		local window = Horde.windowKinds(run)
+		local room = config.trialEliteCount + 3
+		for index = 1, maxAlive - room do
+			Fixtures.enemy(run, window[1], -100 - index, 100)
+		end
+		local shrine = Fixtures.shrine(run, "trial", 60, 0)
+		activate(run, 1, shrine)
+		Assert.equal(Horde.aliveCount(run), maxAlive)
+		Assert.equal(#(shrine.trialEnemies :: { number }), room)
+		local elites = 0
+		for _, id in shrine.trialEnemies :: { number } do
+			local enemy = State.enemyById(run, id) :: Types.Enemy
+			if table.find(run.map.elites, enemy.kind) then
+				elites += 1
+			end
+		end
+		Assert.equal(elites, config.trialEliteCount)
+		Assert.equal(Assert.findEvent(Run.drainEvents(run), "trialStarted").count, room)
+	end,
+
+	["a trial with no room under the cap completes at once"] = function()
+		local run = openRun()
+		local player = run.players[1]
+		local maxAlive = run.config.horde.maxAlive
+		local window = Horde.windowKinds(run)
+		for index = 1, maxAlive do
+			Fixtures.enemy(run, window[1], -100 - index, 100)
+		end
+		local shrine = Fixtures.shrine(run, "trial", 60, 0)
+		activate(run, 1, shrine)
+		Assert.equal(#run.enemies, maxAlive, "nothing spawned")
+		Assert.truthy(shrine.used)
+		Assert.equal(shrine.trialEnemies, nil)
+		local events = Run.drainEvents(run)
+		Assert.equal(Assert.findEvent(events, "trialStarted").count, 0)
+		Assert.equal(Assert.findEvent(events, "trialCompleted").player, 1)
+		Assert.equal(#player.offers, 1)
+		Assert.equal(player.offers[1].ranks, run.config.shrines.greatOfferRanks)
 	end,
 
 	["a cleared trial deals a great offer"] = function()
@@ -214,17 +303,31 @@ return {
 		Assert.equal(Assert.findEvent(events, "trialCompleted").player, 1)
 		Assert.truthy(Assert.findEvent(events, "offer") ~= nil)
 		Assert.truthy(run.paused, "the solo run waits for the choice")
+		assertWorth(run, player, player.offers[1].cards, run.config.shrines.greatOfferRanks)
+	end,
+
+	["a level-up and a trial's last kill in one step leave a great offer queued"] = function()
+		local run = openRun()
+		local player = run.players[1]
 		local ranks = run.config.shrines.greatOfferRanks
-		local maxRank = run.config.ranks.maxRank
-		for _, card in player.offers[1] do
-			if card.kind == "newSkill" then
-				Assert.equal(card.rank, ranks)
-			elseif card.kind == "skillRank" then
-				Assert.equal(card.rank, math.min(player.skills[1].rank + ranks, maxRank))
-			elseif card.kind == "newPassive" then
-				Assert.equal(card.rank, math.min(ranks, run.config.passives[card.passive].maxRank))
-			end
+		local shrine = Fixtures.shrine(run, "trial", 60, 0)
+		activate(run, 1, shrine)
+		for _, enemy in table.clone(run.enemies) do
+			State.removeEnemy(run, enemy)
 		end
+		Progression.grantXp(run, player, Progression.xpToNext(run.config, player.level))
+		advance(run, DT)
+		Assert.equal(#player.offers, 2)
+		Assert.equal(player.offers[1].ranks, 1, "the level-up's offer first")
+		Assert.equal(player.offers[2].ranks, ranks)
+		Run.drainEvents(run)
+		Assert.truthy(Run.chooseCard(run, 1, 1))
+		Assert.equal(#player.offers, 1)
+		Assert.equal(player.offers[1].ranks, ranks, "still a great offer once redrawn")
+		assertWorth(run, player, player.offers[1].cards, ranks)
+		local announced = Assert.findEvent(Run.drainEvents(run), "offer")
+		assertWorth(run, player, announced.cards, ranks)
+		Assert.truthy(run.paused, "the great offer still waits")
 	end,
 
 	["a trial's offer goes to a living hero when its starter is dead"] = function()
@@ -300,7 +403,7 @@ return {
 				State.removeEnemy(run, enemy)
 			end
 			advance(run, DT)
-			for _, card in run.players[1].offers[1] do
+			for _, card in run.players[1].offers[1].cards do
 				table.insert(parts, card.kind .. ":" .. tostring((card :: any).rank))
 			end
 			return table.concat(parts, ";")
@@ -309,7 +412,7 @@ return {
 		Assert.truthy(play(4) ~= play(5), "another seed, another ring")
 	end,
 
-	["gifts are listed in the order taken"] = function()
+	["boons and pacts are listed in the order taken"] = function()
 		local run = openRun()
 		local boon = Fixtures.shrine(run, "boon", 60, 0)
 		local pact = Fixtures.shrine(run, "pact", -60, 0)
@@ -317,9 +420,9 @@ return {
 		pact.pact = "haste"
 		activate(run, 1, boon)
 		activate(run, 1, pact)
-		local gifts = run.players[1].gifts
-		Assert.equal(#gifts, 2)
-		Assert.equal(gifts[1], "wind")
-		Assert.equal(gifts[2], "haste")
+		local taken = run.players[1].shrinesTaken
+		Assert.equal(#taken, 2)
+		Assert.equal(taken[1], "wind")
+		Assert.equal(taken[2], "haste")
 	end,
 }

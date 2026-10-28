@@ -864,6 +864,7 @@ local Config: Types.Config = {
 		dashSeconds = 0.25,
 		dashCharges = 2,
 		dashCooldownSeconds = 3,
+		dashInputMax = 1000,
 	},
 	projectiles = {
 		touchMargin = 0.5,
@@ -1202,6 +1203,7 @@ local Config: Types.Config = {
 		trialRingRadius = 40,
 		greatOfferRanks = 2,
 		springRechargeSeconds = 180,
+		pactMinShare = -0.9,
 	},
 	-- The forest's meshes, generated with the Studio MCP and published under
 	-- the owner's account (stage 3b): obstacle kind -> variants, and the

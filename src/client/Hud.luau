@@ -413,7 +413,7 @@ local function iconOf(id: string?): string?
 end
 
 -- A boon's or pact's name by id, from Config.shrines.
-local function giftName(id: string): string
+local function boonOrPactName(id: string): string
 	for _, boon in Config.shrines.boons do
 		if boon.id == id then
 			return boon.name
@@ -1351,9 +1351,9 @@ function Hud.start()
 			elseif event.kind == "castInterrupted" and event.player == userId then
 				pushNotice(Strings.notices.interrupted)
 			elseif event.kind == "shrineActivated" and event.player == userId then
-				local gift = event.gift
-				if type(gift) == "string" then
-					pushNotice(string.format(Strings.notices.gift, giftName(gift)))
+				local given = event.given
+				if type(given) == "string" then
+					pushNotice(string.format(Strings.notices.given, boonOrPactName(given)))
 				elseif event.shrineKind == "spring" then
 					pushNotice(Strings.notices.springUsed)
 				end
@@ -1641,13 +1641,13 @@ function Hud.start()
 				)
 			end
 			table.sort(entries)
-			local bonuses = selfView.bonuses
-			if type(bonuses) == "table" and #bonuses > 0 then
+			local shrinesTaken = selfView.shrinesTaken
+			if type(shrinesTaken) == "table" and #shrinesTaken > 0 then
 				if #entries > 0 then
 					table.insert(entries, "")
 				end
-				for _, id in bonuses do
-					table.insert(entries, giftName(id))
+				for _, id in shrinesTaken do
+					table.insert(entries, boonOrPactName(id))
 				end
 			end
 		end
@@ -1898,14 +1898,14 @@ function Hud.start()
 			local named = shrine or (if target == nil then Input.shrineNear(here) else nil)
 			if named then
 				shrineColor = SHRINE_COLORS[named.kind] or EXTRACT_COLOR
-				local gift = named.gift
+				local given = named.given
 				if named.kind == "spring" and named.readyIn > 0 then
 					shrineText = string.format(
 						Strings.shrines.springBack,
 						math.max(1, math.ceil(named.readyIn - sinceSnapshot))
 					)
-				elseif type(gift) == "string" then
-					shrineText = giftName(gift)
+				elseif type(given) == "string" then
+					shrineText = boonOrPactName(given)
 				else
 					shrineText = SHRINE_TEXT[named.kind] or named.kind
 				end

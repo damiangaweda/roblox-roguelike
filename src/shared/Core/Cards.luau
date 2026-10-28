@@ -125,18 +125,19 @@ local function countPlayers(run: Types.Run): number
 	return count
 end
 
-local function announce(run: Types.Run, player: Types.Player, offer: { Types.Card })
-	table.insert(run.events, { kind = "offer", player = player.id, cards = table.clone(offer) })
+local function announce(run: Types.Run, player: Types.Player, cards: { Types.Card })
+	table.insert(run.events, { kind = "offer", player = player.id, cards = table.clone(cards) })
 end
 
 -- Queues a fresh draw for the player; only the oldest offer is announced. A
 -- solo run stands still until the player chooses. A great offer passes the
--- ranks its cards are worth.
+-- ranks its cards are worth, which the offer keeps while it waits.
 function Cards.offer(run: Types.Run, player: Types.Player, ranks: number?)
-	local offer = Cards.draw(run, player, ranks)
+	local worth = ranks or 1
+	local offer = { cards = Cards.draw(run, player, worth), ranks = worth }
 	table.insert(player.offers, offer)
 	if #player.offers == 1 then
-		announce(run, player, offer)
+		announce(run, player, offer.cards)
 	end
 	if countPlayers(run) == 1 then
 		run.paused = true
@@ -170,26 +171,27 @@ local function apply(run: Types.Run, player: Types.Player, card: Types.Card)
 end
 
 -- Takes card `index` of the player's oldest offer. The next queued offer is
--- drawn again, since this choice may have changed what can be offered; the
--- run resumes once no player has an offer left. Returns false when there is
--- no such card or the player cannot choose now.
+-- drawn again at its own ranks, since this choice may have changed what can
+-- be offered; the run resumes once no player has an offer left. Returns false
+-- when there is no such card or the player cannot choose now.
 function Cards.choose(run: Types.Run, playerId: number, index: number): boolean
 	local player = run.players[playerId]
 	if player == nil or player.state ~= "alive" then
 		return false
 	end
 	local offer = player.offers[1]
-	if offer == nil or index % 1 ~= 0 or index < 1 or index > #offer then
+	if offer == nil or index % 1 ~= 0 or index < 1 or index > #offer.cards then
 		return false
 	end
 
-	local card = offer[index]
+	local card = offer.cards[index]
 	apply(run, player, card)
 	table.insert(run.events, { kind = "cardTaken", player = player.id, card = card })
 	table.remove(player.offers, 1)
-	if #player.offers > 0 then
-		player.offers[1] = Cards.draw(run, player)
-		announce(run, player, player.offers[1])
+	local nextOffer = player.offers[1]
+	if nextOffer then
+		nextOffer.cards = Cards.draw(run, player, nextOffer.ranks)
+		announce(run, player, nextOffer.cards)
 	end
 
 	local waiting = false

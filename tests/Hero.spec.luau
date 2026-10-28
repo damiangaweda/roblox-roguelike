@@ -291,6 +291,10 @@ return {
 		Assert.falsy(Hero.dash(run, player, 1, 0), "no charge left")
 		Assert.falsy(Hero.dash(run, player, 0, 0), "no direction")
 		player.dashCharges = 1
+		Assert.falsy(Hero.dash(run, player, 1e-12, 0), "too short to normalise")
+		Assert.falsy(Hero.dash(run, player, 1e300, 1e300), "too long to normalise")
+		Assert.falsy(Hero.dash(run, player, 0 / 0, 1), "not a number")
+		Assert.equal(player.dashCharges, 1, "a refused dash spends nothing")
 		player.state = "dead"
 		Assert.falsy(Hero.dash(run, player, 1, 0), "dead")
 	end,

@@ -434,6 +434,19 @@ local function applyDebug(current: Types.Run)
 		end
 		workspace:SetAttribute("DebugGoToChest", nil)
 	end
+	-- DebugGoToShrine (a shrine's id) puts every member beside that shrine.
+	local shrineId = workspace:GetAttribute("DebugGoToShrine")
+	if type(shrineId) == "number" then
+		for _, shrine in current.shrines do
+			if shrine.id == shrineId then
+				for _, core in current.players do
+					core.x = shrine.x + 4
+					core.z = shrine.z
+				end
+			end
+		end
+		workspace:SetAttribute("DebugGoToShrine", nil)
+	end
 	-- DebugNoHorde (perf runs only, whose config is a private copy) stops the
 	-- horde and removes its grunts and elites, so a boss can be watched alone.
 	if workspace:GetAttribute("DebugNoHorde") == true and perfRun then

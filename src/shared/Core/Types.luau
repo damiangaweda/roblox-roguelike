@@ -530,6 +530,9 @@ export type ShrinesConfig = {
 	-- Ranks each card of the great offer is worth.
 	greatOfferRanks: number,
 	springRechargeSeconds: number,
+	-- A pact never lowers a stat that multiplies a base below this share, so
+	-- the stat stays at least (1 + pactMinShare) of its base.
+	pactMinShare: number,
 }
 
 -- A shrine of the run (GLOSSARY: shrine): where it stands, what it holds and
@@ -576,6 +579,8 @@ export type Config = {
 		dashSeconds: number,
 		dashCharges: number,
 		dashCooldownSeconds: number,
+		-- The largest |dx| or |dz| a dash intent may carry.
+		dashInputMax: number,
 	},
 	projectiles: {
 		touchMargin: number,
@@ -776,8 +781,9 @@ export type Player = {
 	skills: { OwnedSkill },
 	-- Passive id to its rank.
 	passives: { [string]: number },
-	-- Offers waiting for a choice, oldest first.
-	offers: { { Card } },
+	-- Offers waiting for a choice, oldest first, each with the ranks its
+	-- cards are worth (one at a level-up, more in a great offer).
+	offers: { { cards: { Card }, ranks: number } },
 	-- Utility cooldowns, by button index.
 	utilityReadyAt: { number },
 	sprintUntil: number,
@@ -798,10 +804,10 @@ export type Player = {
 	openProgress: number,
 	shrineId: number?,
 	shrineProgress: number,
-	-- Stat bonuses from boons and pacts, summed per stat as a share, and the
-	-- boons' and pacts' ids in the order taken.
-	bonuses: { [Stat]: number },
-	gifts: { string },
+	-- The shares boons and pacts add, summed per stat, and the boons' and
+	-- pacts' ids in the order taken.
+	shrineShares: { [Stat]: number },
+	shrinesTaken: { string },
 	-- The dash: charges held, when the next one is back, until when the hero
 	-- is dashing (and untouchable).
 	dashCharges: number,
@@ -913,7 +919,7 @@ export type Event =
 		shrineId: number,
 		shrineKind: ShrineKind,
 		-- The boon's or pact's id.
-		gift: string?,
+		given: string?,
 	}
 	| { kind: "trialStarted", shrineId: number, count: number }
 	| { kind: "trialCompleted", shrineId: number, player: number }

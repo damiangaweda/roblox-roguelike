@@ -144,7 +144,7 @@ return {
 		Assert.truthy(run.paused)
 		local event = Assert.findEvent(run.events, "offer")
 		Assert.equal(event.player, 1)
-		Assert.equal(keys(event.cards), keys(run.players[1].offers[1]))
+		Assert.equal(keys(event.cards), keys(run.players[1].offers[1].cards))
 
 		local party = Fixtures.run(2)
 		Cards.offer(party, party.players[1])
@@ -155,7 +155,8 @@ return {
 		local run = Fixtures.run()
 		local player = run.players[1]
 		run.time = 10
-		player.offers = { { { kind = "newSkill", skill = "emberOrb", rank = 1 } } }
+		player.offers =
+			{ { cards = { { kind = "newSkill", skill = "emberOrb", rank = 1 } }, ranks = 1 } }
 		run.paused = true
 		Assert.truthy(Cards.choose(run, 1, 1))
 		local owned = player.skills[#player.skills]
@@ -172,14 +173,16 @@ return {
 		local player = run.players[1]
 		local skillId = player.skills[1].id
 		player.offers = {
-			{ { kind = "skillRank", skill = skillId, rank = 2 } },
+			{ cards = { { kind = "skillRank", skill = skillId, rank = 2 } }, ranks = 1 },
 		}
 		Assert.truthy(Cards.choose(run, 1, 1))
 		Assert.equal(player.skills[1].rank, 2)
-		player.offers = { { { kind = "newPassive", passive = "hide", rank = 1 } } }
+		player.offers =
+			{ { cards = { { kind = "newPassive", passive = "hide", rank = 1 } }, ranks = 1 } }
 		Assert.truthy(Cards.choose(run, 1, 1))
 		Assert.equal(player.passives.hide, 1)
-		player.offers = { { { kind = "passiveRank", passive = "hide", rank = 2 } } }
+		player.offers =
+			{ { cards = { { kind = "passiveRank", passive = "hide", rank = 2 } }, ranks = 1 } }
 		Assert.truthy(Cards.choose(run, 1, 1))
 		Assert.equal(player.passives.hide, 2)
 	end,
@@ -188,7 +191,7 @@ return {
 		local run = Fixtures.run()
 		local player = run.players[1]
 		player.health = 1
-		player.offers = { { { kind = "heal" } } }
+		player.offers = { { cards = { { kind = "heal" } }, ranks = 1 } }
 		Assert.truthy(Cards.choose(run, 1, 1))
 		Assert.equal(
 			player.health,
@@ -205,7 +208,7 @@ return {
 		Assert.falsy(Cards.choose(run, 1, 1), "no offer")
 		Cards.offer(run, player)
 		Assert.falsy(Cards.choose(run, 1, 0))
-		Assert.falsy(Cards.choose(run, 1, #player.offers[1] + 1))
+		Assert.falsy(Cards.choose(run, 1, #player.offers[1].cards + 1))
 		Assert.falsy(Cards.choose(run, 1, 1.5))
 		Assert.falsy(Cards.choose(run, 9, 1))
 		Assert.equal(#player.offers, 1)
@@ -226,7 +229,7 @@ return {
 		Assert.equal(#player.offers, 1)
 		Assert.truthy(run.paused, "the second offer still waits")
 		local next = Assert.findEvent(run.events, "offer")
-		Assert.equal(keys(next.cards), keys(player.offers[1]))
+		Assert.equal(keys(next.cards), keys(player.offers[1].cards))
 
 		Assert.truthy(Cards.choose(run, 1, 1))
 		Assert.equal(#player.offers, 0)
@@ -239,9 +242,9 @@ return {
 		maxOut(run, player)
 		player.passives.vigor = run.config.passives.vigor.maxRank - 1
 		local card: Types.Card = { kind = "passiveRank", passive = "vigor", rank = 5 }
-		player.offers = { { card }, { card } }
+		player.offers = { { cards = { card }, ranks = 1 }, { cards = { card }, ranks = 1 } }
 		Assert.truthy(Cards.choose(run, 1, 1))
-		Assert.equal(keys(player.offers[1]), "heal")
+		Assert.equal(keys(player.offers[1].cards), "heal")
 	end,
 
 	["ranks never pass their limits over many draws"] = function()
@@ -250,7 +253,7 @@ return {
 			local player = run.players[1]
 			for _ = 1, 80 do
 				Cards.offer(run, player)
-				Assert.truthy(Cards.choose(run, 1, run.rng:integer(1, #player.offers[1])))
+				Assert.truthy(Cards.choose(run, 1, run.rng:integer(1, #player.offers[1].cards)))
 			end
 			Assert.truthy(#player.skills <= run.config.cards.maxSkills, "skills")
 			local held = 0
@@ -296,11 +299,13 @@ return {
 		local run = Fixtures.run()
 		local player = run.players[1]
 		run.time = 10
-		player.offers = { { { kind = "newSkill", skill = "emberOrb", rank = 2 } } }
+		player.offers =
+			{ { cards = { { kind = "newSkill", skill = "emberOrb", rank = 2 } }, ranks = 2 } }
 		run.paused = true
 		Assert.truthy(Cards.choose(run, 1, 1))
 		Assert.equal(player.skills[#player.skills].rank, 2)
-		player.offers = { { { kind = "skillRank", skill = "emberOrb", rank = 4 } } }
+		player.offers =
+			{ { cards = { { kind = "skillRank", skill = "emberOrb", rank = 4 } }, ranks = 2 } }
 		Assert.truthy(Cards.choose(run, 1, 1))
 		Assert.equal(player.skills[#player.skills].rank, 4)
 	end,

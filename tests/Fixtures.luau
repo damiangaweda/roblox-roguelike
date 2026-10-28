@@ -50,7 +50,7 @@ function Fixtures.enemy(run: Types.Run, kind: string, x: number, z: number): Typ
 	return State.newEnemy(run, kind, x, z, 1, 1)
 end
 
--- A shrine of `kind` at (x, z), its gift drawn as at generation. The run's
+-- A shrine of `kind` at (x, z), its boon or pact drawn as at generation. The run's
 -- generated shrines stay; a spec that wants only its own clears run.shrines.
 function Fixtures.shrine(run: Types.Run, kind: Types.ShrineKind, x: number, z: number): Types.Shrine
 	local shrine = State.newShrine(run, { kind = kind, x = x, z = z })
