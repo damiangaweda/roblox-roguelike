@@ -131,5 +131,7 @@ Ideas outside the current stage.
 - Seasonal events.
 - Flying enemies that ignore obstacles.
 - Hand-made maps with a fixed layout, if scattered obstacles disappoint.
+- A utility skill that draws crystals in from farther away (the user's idea once the pickup range shrank to 4 studs on 2026-10-28).
+- Terrain with gentle hills, streams with fords and water the fight can use (high ground, chokepoints): proposed by the user on 2026-10-28 as the next step after stage 3b; needs grilling and an ADR, since ADR-0014 makes the map flat and the rules are XZ-only.
 - Enemies and bosses as meshes generated with the Studio MCP (the user's intent after stage 3b's props; it supersedes ADR-0010 and needs an ADR of its own).
 - A PvP mode, as a separate mode, if co-op proves itself.

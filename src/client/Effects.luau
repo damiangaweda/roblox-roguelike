@@ -444,7 +444,7 @@ OBJECT.TOTEM_TURN = 0.8
 
 -- Crystals: small floating neon state.gems, spinning and bobbing; state.collected ones
 -- fly to the hero, then sparkle.
-OBJECT.GEM_SIZE = Vector3.new(0.7, 0.7, 0.7)
+OBJECT.GEM_SIZE = Vector3.new(1.2, 1.2, 1.2)
 OBJECT.GEM_BIG = 1.3
 OBJECT.GEM_RISE = 1.1
 OBJECT.GEM_BOB = 0.25

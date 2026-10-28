@@ -859,7 +859,7 @@ local Config: Types.Config = {
 		knockbackSeconds = 0.25,
 		baseCritChance = 0.05,
 		minDamage = 1,
-		pickupRange = 10,
+		pickupRange = 4,
 		dashDistance = 14,
 		dashSeconds = 0.25,
 		dashCharges = 2,
@@ -1082,7 +1082,7 @@ local Config: Types.Config = {
 			-- The composition (stage 3b): places with their kits as offsets from
 			-- the centre (the radius is the clearing), groves dense at the core,
 			-- paths from the start to every place, sparse leftovers.
-			placeCount = 7,
+			placeCount = 9,
 			placeKinds = {
 				{
 					id = "chapelYard",
@@ -1159,16 +1159,16 @@ local Config: Types.Config = {
 					},
 				},
 			},
-			placeSpacing = 120,
+			placeSpacing = 105,
 			placeStartDistance = 90,
-			groveCount = 10,
-			groveRadiusMin = 30,
-			groveRadiusMax = 50,
-			groveTreesMin = 9,
-			groveTreesMax = 15,
-			groveSpacing = 25,
+			groveCount = 18,
+			groveRadiusMin = 34,
+			groveRadiusMax = 58,
+			groveTreesMin = 14,
+			groveTreesMax = 24,
+			groveSpacing = 18,
 			groveCore = 0.5,
-			scatterCount = 45,
+			scatterCount = 110,
 			scatterKinds = {
 				{ id = "stump", weight = 3 },
 				{ id = "rock", weight = 4 },
