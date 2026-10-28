@@ -98,11 +98,21 @@ Aimed combat with the Elementalist ([ADR-0009](adr/0009-aimed-combat.md)), seven
 4. In a Studio playtest through the Studio MCP: each lair kind is seen with its landmark, a lair is silenced and its landmark goes out, the final boss rises at the last lair with its spectacle, doom kills a hero without the spell and a hero with it extracts; the server holds 50 Hz at the cap with grunts walking across the map.
 5. The user plays a run and judges whether it is fun and looks intended; the stage is done only when they say so.
 
-### Stage 3d: terrain and enemy meshes
+### Stage 3d: enemy meshes and terrain
 
-**Status:** proposed on 2026-10-28; to be grilled after stage 3c.
+**Status:** proposed on 2026-10-28 by the lead while the user was away, with the lead's recommended answers; to be grilled and accepted by the user before it is done (the enemy meshes were started on `feat/enemy-meshes` as the part least likely to change).
 
-Gentle hills, streams with fords and water the fight can use (high ground, chokepoints), with the rules still on the XZ plane and the ground's height read by the adapter; enemies and bosses as meshes generated with the Studio MCP in place of the part silhouettes (supersedes ADR-0010).
+**Goal:** enemies that look made, and a map whose shape matters in the fight.
+
+**Scope:**
+- **Enemy meshes** ([ADR-0022](adr/0022-enemies-are-generated-meshes.md)): every enemy kind (twelve grunts, five elites, six bosses, the final boss, the wraith) is a low-poly mesh generated with the Studio MCP and published under the owner's account, its asset ids in configuration, drawn by the client in place of the part silhouettes at the kind's scale; no skeleton or animation: motion is a bob and a lean toward the walk, an attack is a lunge, a telegraph a rising glow, a death a fall and a fade. Statuses and the boss aura keep their rings and lights at the feet; a tint for burning, chilled and the like is a translucent shell around the mesh rather than a colour on it (a textured mesh ignores its colour). Parts remain only as a fallback while a mesh fails to load.
+- **Terrain** (to grill: [open questions](#open-questions)): gentle hills from a noise field seeded per run (proposal: up to 8 studs high, slopes under 20 degrees), flattened under places, lairs, paths, the start and the chest; one stream winding across the map with two or three fords, the stream itself a chain of obstacle circles in the rules and the fords gaps in it, so the fight funnels through the fords; the ponds as water; the rules stay on the XZ plane and the adapter reads the ground's height for every enemy, crystal, prop and effect. High ground in the fight is an open question: a range or damage bonus from height would put a height into the rules.
+
+**Acceptance criteria (proposed):**
+1. Core tests cover the stream as obstacles with fords (seed repeatability, fords passable, the stream not), the flattening pads as data the builder reads.
+2. Every number is configuration; the meshes and the terrain's shape parameters are data.
+3. In a Studio playtest: every enemy kind drawn as its mesh at a readable size, statuses and telegraphs still readable, the horde at its cap holding 50 Hz on the server and 50 FPS on the client; hills and the stream seen, a ford crossed, the stream blocking elsewhere, enemies and crystals on the ground everywhere.
+4. The user plays a run and judges whether it is fun and looks intended.
 
 ### Stage 4: co-op
 
@@ -128,6 +138,7 @@ Each item below is grilled into a stage when its turn comes: trading of items an
 
 ## Open questions
 
+- Stage 3d's terrain: whether height enters the rules (a range or damage bonus on high ground) or stays a look with the stream and fords as the only shape the fight uses; the hills' height and slope; whether the stream slows a hero at a ford. To grill with the user.
 - How a party chooses cards when the run cannot pause for one player: stage 4.
 - How many enemies the server holds at 50 Hz with four clients, and so the horde's cap per party: measured in stage 3, decided in stage 4.
 - Library or own code for saving the profile (ProfileStore or a wrapper over DataStores): stage 5.
