@@ -11,7 +11,7 @@ local Damage = require("./Damage")
 local Enemies = require("./Enemies")
 local Extraction = require("./Extraction")
 local Hero = require("./Hero")
-local Horde = require("./Horde")
+local Lairs = require("./Lairs")
 local Progression = require("./Progression")
 local Projectiles = require("./Projectiles")
 local Shrines = require("./Shrines")
@@ -150,10 +150,7 @@ local function move(run: Types.Run, player: Types.Player, input: Types.PlayerInp
 	player.moveBudget -= distance
 end
 
-local function endRun(
-	run: Types.Run,
-	reason: "allDead" | "extracted" | "finalBossKilled" | "mapClosed"
-)
+local function endRun(run: Types.Run, reason: "allDead" | "extracted" | "finalBossKilled")
 	if run.ended then
 		return
 	end
@@ -162,9 +159,9 @@ local function endRun(
 	table.insert(run.events, { kind = "ended", reason = reason })
 end
 
--- The run ends when nobody is alive, when every living player has left, when
--- the final boss falls (everyone alive extracts), or when the final boss
--- outlives its time (the map closes: everyone left dies).
+-- The run ends when nobody is alive, when every living player has left, or
+-- when the final boss falls (everyone alive extracts). Doom (Lairs) ends it
+-- through the first two.
 local function checkEnded(run: Types.Run)
 	local finalId = run.finalBossId
 	if finalId ~= nil and State.enemyById(run, finalId) == nil then
@@ -175,18 +172,6 @@ local function checkEnded(run: Types.Run)
 			end
 		end
 		endRun(run, "finalBossKilled")
-		return
-	end
-	local deadline = run.finalBossDeadline
-	if deadline ~= nil and run.time >= deadline then
-		for _, player in State.sortedPlayers(run) do
-			if player.state == "alive" then
-				player.state = "dead"
-				player.health = 0
-				table.insert(run.events, { kind = "died", player = player.id })
-			end
-		end
-		endRun(run, "mapClosed")
 		return
 	end
 
@@ -221,7 +206,7 @@ function Run.step(run: Types.Run, dt: number, inputs: { [number]: Types.PlayerIn
 
 	Casting.update(run, dt)
 	Projectiles.step(run, dt)
-	Horde.update(run, dt)
+	Lairs.update(run, dt)
 	Enemies.step(run, dt)
 	Damage.update(run, dt)
 	Hero.update(run, dt)

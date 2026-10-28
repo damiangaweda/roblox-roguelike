@@ -465,8 +465,6 @@ export type WorldView = {
 	chest: ChestView,
 	compassOn: boolean,
 	portal: PortalView?,
-	-- Seconds the party has left to kill the final boss, once it has come.
-	finalBossLeft: number?,
 	-- The bosses alive, drawn with their health bars.
 	bossIds: { number },
 	shrines: { ShrineView },
@@ -568,7 +566,6 @@ function Protocol.worldView(run: Types.Run): WorldView
 		})
 	end
 	local portal = run.portal
-	local deadline = run.finalBossDeadline
 	local bossIds = {}
 	for _, enemy in run.enemies do
 		if State.isBoss(State.kind(run, enemy)) then
@@ -588,7 +585,6 @@ function Protocol.worldView(run: Types.Run): WorldView
 		portal = if portal
 			then { x = portal.x, z = portal.z, secondsLeft = secondsLeft(run, portal.until_) }
 			else nil,
-		finalBossLeft = if deadline then secondsLeft(run, deadline) else nil,
 		bossIds = bossIds,
 		shrines = shrines,
 		lairs = lairs,

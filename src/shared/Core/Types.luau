@@ -348,8 +348,6 @@ export type EnemyKindConfig = {
 	phaseSpeedFactor: number?,
 }
 
-export type BossScheduleEntry = { kind: string, atSeconds: number }
-
 -- A prop of a place's kit: an obstacle kind at an offset from the place's
 -- centre, turned with the place, and its own extra rotation.
 export type PlaceProp = { kind: string, dx: number, dz: number, rotation: number? }
@@ -358,7 +356,7 @@ export type PlaceProp = { kind: string, dx: number, dz: number, rotation: number
 -- free of every other prop.
 export type PlaceKind = { id: string, radius: number, weight: number, props: { PlaceProp } }
 
--- One map: its ground, obstacles, roster and bosses (ADR-0014, ADR-0015).
+-- One map: its ground, obstacles, roster and final boss (ADR-0014, ADR-0021).
 export type MapConfig = {
 	id: string,
 	name: string,
@@ -413,45 +411,18 @@ export type MapConfig = {
 	leanDegrees: number,
 	-- Grunt kinds from weakest to strongest.
 	roster: { string },
-	-- Elite kinds the horde may spawn.
+	-- Elite kinds the trials spawn.
 	elites: { string },
-	bosses: { BossScheduleEntry },
 	finalBoss: string,
 }
 
 export type HordeConfig = {
-	-- Alive grunts and elites wanted: from aliveAtStart rising by aliveGrowth
-	-- over the run's duration, capped at maxAlive.
-	aliveAtStart: number,
-	aliveGrowth: number,
+	-- The alive cap the lairs, trials and summons share (ADR-0019): grunts
+	-- and the trials' elites; never bosses, guards or wraiths.
 	maxAlive: number,
-	spawnIntervalSeconds: number,
-	-- At most this many per spawn; the shortfall is divided by spawnShare.
-	spawnBatchMax: number,
-	spawnShare: number,
-	-- The ring around the hero spawns land on.
-	ringMin: number,
-	ringMax: number,
-	-- The window of adjacent kinds slides up the roster: `windowSize` kinds,
-	-- stepping every windowStepSeconds of run time after the first.
-	windowSize: number,
-	windowStepSeconds: number,
-	-- The window reaches the top of the roster after this many steps.
-	windowSteps: number,
-	-- Health and damage multipliers reach these at the run's duration.
+	-- Health and damage multipliers are 1 + these at the run's duration.
 	healthGrowth: number,
 	damageGrowth: number,
-	-- The share of spawns that are elites, at the start and at the end.
-	eliteShareStart: number,
-	eliteShareEnd: number,
-	-- A closing ring halfway between bosses: count rising with time on a circle.
-	ringCountStart: number,
-	ringCountGrowth: number,
-	ringRadius: number,
-	-- Enemies farther than strayDistance are moved to strayReturnDistance
-	-- beyond the hero on the far side.
-	strayDistance: number,
-	strayReturnDistance: number,
 	-- Grunts hit on contact: first after contactFirstSeconds, then every
 	-- contactSeconds.
 	contactFirstSeconds: number,
@@ -461,10 +432,6 @@ export type HordeConfig = {
 	approachFactor: number,
 	buffSpeedFactor: number,
 	buffDamageFactor: number,
-	-- How far a boss spawns from the hero.
-	bossDistance: number,
-	-- The final boss's phase and time limit.
-	finalBossSeconds: number,
 	-- Bosses: the slow floor, the control duration share, fear immunity.
 	bossSlowFloor: number,
 	bossControlShare: number,
@@ -559,7 +526,8 @@ export type ShrinesConfig = {
 	holdSeconds: number,
 	boons: { BoonConfig },
 	pacts: { PactConfig },
-	-- The trial's ring: grunts of the window plus elites, on a ring of this radius.
+	-- The trial's ring: the nearest living lair's grunts plus elites, on a ring
+	-- of this radius.
 	trialRingCount: number,
 	trialEliteCount: number,
 	trialRingRadius: number,
@@ -980,7 +948,7 @@ export type Event =
 	| { kind: "cardTaken", player: number, card: Card }
 	| { kind: "died", player: number }
 	| { kind: "extracted", player: number }
-	| { kind: "ended", reason: "allDead" | "extracted" | "finalBossKilled" | "mapClosed" }
+	| { kind: "ended", reason: "allDead" | "extracted" | "finalBossKilled" }
 	-- A skill fired: where from and what it aimed at, for the client's effect.
 	| {
 		kind: "cast",
@@ -1035,7 +1003,6 @@ export type Event =
 	| { kind: "enemyHealed", enemyId: number, by: number, amount: number }
 	| { kind: "bossSpawned", enemyId: number, enemyKind: string, final: boolean }
 	| { kind: "bossPhase", enemyId: number, phase: number }
-	| { kind: "closingRing", count: number }
 	| { kind: "crystalDropped", id: number, x: number, z: number, xp: number }
 	| { kind: "crystalCollected", id: number, player: number, xp: number }
 	| { kind: "foodDropped", id: number, x: number, z: number }
@@ -1046,7 +1013,6 @@ export type Event =
 	| { kind: "castInterrupted", player: number }
 	| { kind: "portalOpened", x: number, z: number, seconds: number }
 	| { kind: "portalClosed" }
-	| { kind: "finalBossTimer", seconds: number }
 	| { kind: "dash", player: number, dx: number, dz: number }
 	| {
 		kind: "shrineActivated",
@@ -1096,13 +1062,8 @@ export type Run = {
 	finalRiseZ: number,
 	doom: boolean,
 	nextWraithAt: number,
-	-- The horde's bookkeeping: when it next spawns, which bosses and closing
-	-- rings have come, whether the final boss is up and when it must be dead.
-	nextSpawnAt: number,
-	bossesSpawned: number,
-	ringsSpawned: number,
+	-- The final boss, once it has risen.
 	finalBossId: number?,
-	finalBossDeadline: number?,
 	-- The extraction chest and the portal (ADR-0015).
 	chestOpened: boolean,
 	compassOn: boolean,

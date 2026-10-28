@@ -1,10 +1,14 @@
 --!strict
 -- Hits on enemies and what they leave: crits, statuses, damage-over-time
 -- stacks, the class synergies, the shieldbearer's block, and kills with their
--- crystal and food (stage 3; ADR-0013). Every number comes from run.config.
+-- crystal and food (stage 3; ADR-0013). Damage to an asleep boss or guard
+-- wakes its lair, and a lair's boss's death silences it (ADR-0021). A wraith
+-- takes no status and no knockback and leaves nothing. Every number comes
+-- from run.config.
 
 local Geometry = require("./Geometry")
 local Hero = require("./Hero")
+local Lairs = require("./Lairs")
 local Progression = require("./Progression")
 local State = require("./State")
 local Targeting = require("./Targeting")
@@ -59,8 +63,13 @@ function Damage.hasStatus(run: Types.Run, enemy: Types.Enemy, status: Types.Stat
 	return false
 end
 
+local function isWraith(run: Types.Run, enemy: Types.Enemy): boolean
+	return State.kind(run, enemy).role == "wraith"
+end
+
 -- Takes `amount` off the enemy, announces it and credits the player; a kill
--- follows at zero health.
+-- follows at zero health. An asleep lair wakes (and grows) before the damage
+-- is taken.
 local function deal(
 	run: Types.Run,
 	enemy: Types.Enemy,
@@ -70,6 +79,9 @@ local function deal(
 	crit: boolean,
 	synergy: string?
 )
+	if enemy.asleep and amount > 0 then
+		Lairs.wakeFor(run, enemy)
+	end
 	enemy.health -= amount
 	table.insert(run.events, {
 		kind = "hit",
@@ -97,6 +109,9 @@ local function addDot(
 	source: number,
 	tags: { Types.Tag }
 )
+	if isWraith(run, enemy) then
+		return
+	end
 	table.insert(enemy.dots, {
 		dps = dps,
 		until_ = run.time + seconds,
@@ -130,6 +145,9 @@ function Damage.applyStatus(
 	local horde = run.config.horde
 	local boss = State.isBoss(State.kind(run, enemy))
 	local time = run.time
+	if isWraith(run, enemy) then
+		return
+	end
 	if status == "slowed" or status == "chilled" then
 		local slow = factor or 1
 		if boss then
@@ -194,7 +212,8 @@ function Damage.applyEffect(
 end
 
 -- The enemy dies: its crystal drops, maybe food (a boss always drops a full
--- heal), and the player credited counts the kill.
+-- heal), and the player credited counts the kill; a wraith leaves nothing. A
+-- lair's boss silences its lair, its killer getting the great offer.
 function Damage.kill(run: Types.Run, enemy: Types.Enemy, source: number)
 	local kind = State.kind(run, enemy)
 	local horde = run.config.horde
@@ -211,12 +230,22 @@ function Damage.kill(run: Types.Run, enemy: Types.Enemy, source: number)
 		player.kills += 1
 	end
 	State.removeEnemy(run, enemy)
+	if kind.role == "wraith" then
+		return
+	end
 	Progression.dropCrystal(run, enemy.x, enemy.z, kind.xp)
 	if State.isBoss(kind) then
 		-- Hero.heal caps it at the eater's max health.
 		Progression.dropFood(run, enemy.x, enemy.z, math.huge)
 	elseif run.rng:next() < horde.foodChance then
 		Progression.dropFood(run, enemy.x, enemy.z, horde.foodHeal)
+	end
+	local lairId = enemy.lairId
+	if lairId and kind.role == "boss" then
+		local lair = State.lairById(run, lairId)
+		if lair and lair.bossId == enemy.id then
+			Lairs.silence(run, lair, source)
+		end
 	end
 end
 
@@ -302,6 +331,7 @@ function Damage.hit(run: Types.Run, enemy: Types.Enemy, hit: Hit): number
 		effect
 		and effect.kind == "execute"
 		and not State.isBoss(kind)
+		and kind.role ~= "wraith"
 		and enemy.health - amount <= (effect.factor or 0) * enemy.maxHealth
 	then
 		amount = math.max(amount, enemy.health)
@@ -326,8 +356,8 @@ function Damage.hit(run: Types.Run, enemy: Types.Enemy, hit: Hit): number
 		local statuses = config.statuses
 		Damage.applyStatus(run, enemy, "chilled", statuses.chillSeconds, statuses.chillFactor)
 	end
-	-- Bosses stand their ground.
-	if hit.knockback > 0 and not State.isBoss(kind) then
+	-- Bosses and wraiths stand their ground.
+	if hit.knockback > 0 and not State.isBoss(kind) and kind.role ~= "wraith" then
 		local seconds = config.player.knockbackSeconds
 		local dx, dz = Geometry.normalize(enemy.x - hit.fromX, enemy.z - hit.fromZ)
 		enemy.knockX = dx * hit.knockback / seconds

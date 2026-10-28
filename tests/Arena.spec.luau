@@ -33,6 +33,13 @@ local function spots(seed: number): { Types.ShrineSpot }
 	return Arena.generate(map, Rng.new(seed), config.shrines).shrineSpots
 end
 
+-- An arena with the lairs, as the run generates it.
+local function lairArenaOf(seed: number): (Types.Arena, Types.MapConfig, Types.LairsConfig)
+	local config = Fixtures.config()
+	local map = config.maps[config.map]
+	return Arena.generate(map, Rng.new(seed), config.shrines, config.lairs), map, config.lairs
+end
+
 local function arenaOf(seed: number): (Types.Arena, Types.MapConfig)
 	local config = Fixtures.config()
 	local map = config.maps[config.map]
@@ -183,6 +190,85 @@ return {
 					end
 				end
 				Assert.truthy(found, place.kind .. ": " .. prop.kind .. " missing")
+			end
+		end
+	end,
+
+	["a lair is a place: its clearing, its path, its kit and the places' spacing"] = function()
+		for seed = 1, 5 do
+			local arena, map, lairs = lairArenaOf(seed)
+			Assert.equal(#arena.lairSpots, lairs.count, "seed " .. seed)
+			Assert.equal(#arena.paths, #arena.places)
+			local byGroup = groups(arena)
+			for _, spot in arena.lairSpots do
+				local kind: Types.LairKindConfig? = nil
+				for _, candidate in lairs.kinds do
+					if candidate.id == spot.kind then
+						kind = candidate
+					end
+				end
+				local lairKind = kind :: Types.LairKindConfig
+				local place: Types.Place? = nil
+				for _, candidate in arena.places do
+					if candidate.x == spot.x and candidate.z == spot.z then
+						place = candidate
+					end
+				end
+				assert(place, "the lair is a place")
+				Assert.equal(place.kind, spot.kind)
+				Assert.equal(place.radius, lairKind.clearRadius)
+				Assert.equal(place.rotation, spot.rotation)
+				for _, other in arena.places do
+					if other ~= place then
+						local gap = Geometry.distance(other.x, other.z, place.x, place.z)
+						Assert.truthy(gap >= math.min(map.placeSpacing, lairs.spacing), "spacing")
+					end
+				end
+				-- Only its kit stands in its clearing; every prop at its turned offset.
+				local kitKinds = {}
+				for _, prop in lairKind.props do
+					kitKinds[prop.kind] = true
+					local dx, dz = turn(prop.dx, prop.dz, spot.rotation)
+					local rotation = spot.rotation + (prop.rotation or 0)
+					local propKind = kindOf(map, prop.kind)
+					local found = false
+					for _, circles in byGroup do
+						local anchor = circles[1]
+						if
+							anchor.kind == prop.kind
+							and math.abs(anchor.rotation - rotation) < 1e-9
+						then
+							local fx, fz = 0, 0
+							if propKind.footprint then
+								fx, fz = turn(
+									propKind.footprint[1].dx,
+									propKind.footprint[1].dz,
+									rotation
+								)
+							end
+							if
+								Geometry.distance(
+									anchor.x - fx,
+									anchor.z - fz,
+									spot.x + dx,
+									spot.z + dz
+								) < 1e-6
+							then
+								found = true
+								break
+							end
+						end
+					end
+					Assert.truthy(found, spot.kind .. ": " .. prop.kind .. " missing")
+				end
+				for _, obstacle in arena.obstacles do
+					if placeOf(arena, obstacle) == place then
+						Assert.truthy(
+							kitKinds[obstacle.kind],
+							obstacle.kind .. " in a lair's clearing"
+						)
+					end
+				end
 			end
 		end
 	end,

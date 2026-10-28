@@ -1,14 +1,16 @@
 --!strict
 -- What every enemy does in one step (ADR-0004, ADR-0014): walk at the nearest
--- hero around the obstacles, hit on contact (grunts) or wind up an attack the
--- players can read, land it and recover (elites and bosses), then push apart
--- from the crowd. Enemies are plain data; nothing here moves a Humanoid.
+-- hero around the obstacles, hit on contact (grunts and wraiths) or wind up an
+-- attack the players can read, land it and recover (elites and bosses), then
+-- push apart from the crowd. A lair's boss and guard (ADR-0021) do nothing
+-- while asleep, and awake they target only heroes within the lair's reach and
+-- never leave its radius. Enemies are plain data; nothing here moves a Humanoid.
 
 local Arena = require("./Arena")
 local Damage = require("./Damage")
 local Geometry = require("./Geometry")
 local Hero = require("./Hero")
-local Horde = require("./Horde")
+local Lairs = require("./Lairs")
 local State = require("./State")
 local Types = require("./Types")
 
@@ -32,11 +34,19 @@ local function face(enemy: Types.Enemy, x: number, z: number)
 	end
 end
 
-local function nearestPlayer(enemy: Types.Enemy, context: Context): Types.Player?
+-- The nearest alive hero; for a leashed enemy, only among those within its
+-- lair's reach.
+local function nearestPlayer(enemy: Types.Enemy, context: Context, lair: Types.Lair?): Types.Player?
 	local best: Types.Player? = nil
 	local bestDistance = math.huge
 	for _, player in context.players do
-		if player.state == "alive" then
+		if
+			player.state == "alive"
+			and (
+				lair == nil
+				or Geometry.distance(player.x, player.z, lair.x, lair.z) <= Lairs.reach(lair)
+			)
+		then
 			local distance = Geometry.distance(enemy.x, enemy.z, player.x, player.z)
 			if distance < bestDistance then
 				best, bestDistance = player, distance
@@ -194,7 +204,7 @@ local function canStart(
 	if attack.kind == "heal" then
 		return hurtNeighbour(run, enemy, attack.radius)
 	elseif attack.kind == "summon" then
-		return Horde.aliveCount(run) < run.config.horde.maxAlive
+		return Lairs.aliveCount(run) < run.config.horde.maxAlive
 	end
 	return distance <= attack.range
 end
@@ -223,6 +233,11 @@ local function beginTelegraph(
 		local overshoot = attack.chargeOvershoot or 0
 		enemy.chargeEndX = enemy.aimX + nx * overshoot
 		enemy.chargeEndZ = enemy.aimZ + nz * overshoot
+		local lair = Lairs.leashOf(run, enemy)
+		if lair then
+			enemy.chargeEndX, enemy.chargeEndZ =
+				Lairs.clamp(lair, enemy.chargeEndX, enemy.chargeEndZ)
+		end
 		endX, endZ = enemy.chargeEndX, enemy.chargeEndZ
 	end
 	table.insert(run.events, {
@@ -296,13 +311,17 @@ local function shoot(run: Types.Run, enemy: Types.Enemy, attack: Types.AttackCon
 end
 
 local function summon(run: Types.Run, enemy: Types.Enemy, attack: Types.AttackConfig)
-	-- A summon fills the horde at most up to its cap.
+	-- A summon fills the horde at most up to its cap, with the nearest living
+	-- lair's first grunt kind.
 	local count =
-		math.min(attack.summonCount or 0, run.config.horde.maxAlive - Horde.aliveCount(run))
-	local kindId = Horde.windowKinds(run)[1]
+		math.min(attack.summonCount or 0, run.config.horde.maxAlive - Lairs.aliveCount(run))
+	local kindId = Lairs.gruntKinds(run, enemy.x, enemy.z)[1]
+	if kindId == nil then
+		return
+	end
 	for index = 1, count do
 		local angle = enemy.facing + (index - 1) * 2 * math.pi / count
-		Horde.spawnKind(
+		Lairs.spawnKind(
 			run,
 			kindId,
 			enemy.x + math.cos(angle) * attack.radius,
@@ -657,7 +676,7 @@ local function stepEnemy(run: Types.Run, enemy: Types.Enemy, dt: number, context
 		recover(run, enemy, attack)
 	end
 
-	local target = nearestPlayer(enemy, context)
+	local target = nearestPlayer(enemy, context, Lairs.leashOf(run, enemy))
 	enemy.target = if target then target.id else nil
 
 	if stunned then
@@ -753,8 +772,12 @@ local function separate(run: Types.Run)
 		end
 	end
 
-	-- A crowd must not fling one enemy far: cap each push at the radius.
+	-- A crowd must not fling one enemy far: cap each push at the radius. An
+	-- asleep boss or guard holds its ground.
 	for index, enemy in enemies do
+		if enemy.asleep then
+			continue
+		end
 		local px, pz = pushX[index], pushZ[index]
 		local length = math.sqrt(px * px + pz * pz)
 		if length > radius then
@@ -765,10 +788,15 @@ local function separate(run: Types.Run)
 	end
 end
 
--- Keeps an enemy inside the edge and out of the obstacles: one pushed into
--- an obstacle leaves it along the obstacle's normal.
+-- Keeps an enemy inside the edge, inside its lair's radius when leashed, and
+-- out of the obstacles: one pushed into an obstacle leaves it along the
+-- obstacle's normal.
 local function settle(run: Types.Run, enemy: Types.Enemy)
 	local radius = State.kind(run, enemy).radius
+	local lair = Lairs.leashOf(run, enemy)
+	if lair then
+		enemy.x, enemy.z = Lairs.clamp(lair, enemy.x, enemy.z)
+	end
 	enemy.x, enemy.z = Arena.clamp(run.arena, enemy.x, enemy.z, radius)
 	local blocker = Arena.blocking(run.arena, enemy.x, enemy.z, radius)
 	if blocker then
@@ -786,7 +814,7 @@ function Enemies.step(run: Types.Run, dt: number)
 	-- An exploder or an attacker killed by thorns leaves run.enemies mid-pass,
 	-- only ever itself; a summon adds to it.
 	for _, enemy in table.clone(run.enemies) do
-		if enemy.health > 0 then
+		if enemy.health > 0 and not enemy.asleep then
 			stepEnemy(run, enemy, dt, context)
 		end
 	end

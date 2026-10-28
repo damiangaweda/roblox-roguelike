@@ -69,10 +69,14 @@ local function deepCopy(value: any): any
 end
 
 -- Studio only: a heavy run for the performance check (plan, stage 3
--- criterion 5): the horde at its cap from the start and an unkillable hero.
+-- criterion 5): every lair releasing full batches at once from the start,
+-- so the horde reaches its cap quickly, and an unkillable hero.
 local function perfConfig(): Types.Config
 	local config = deepCopy(Config) :: Types.Config
-	config.horde.aliveAtStart = config.horde.maxAlive
+	config.lairs.batchStart = config.lairs.batchEnd
+	for _, kind in config.lairs.kinds do
+		kind.intervalSeconds = 1
+	end
 	for _, class in config.classes do
 		class.maxHealth = 1e6
 	end
@@ -148,6 +152,7 @@ local function startRun()
 	end
 	ArenaBuilder.build(fresh.arena)
 	ArenaBuilder.buildShrines(fresh.shrines)
+	ArenaBuilder.buildLairs(fresh.lairs)
 
 	while true do
 		local player, class = next(waiting)
@@ -311,6 +316,10 @@ local function sendSnapshot(current: Types.Run)
 	for _, shrine in current.shrines do
 		ArenaBuilder.setShrineState(shrine.id, shrine.used, shrine.readyAt <= current.time)
 	end
+	-- And a lair's column only when it woke, slept or was silenced.
+	for _, lair in current.lairs do
+		ArenaBuilder.setLairState(lair.id, lair.asleep, lair.silenced)
+	end
 	Network.sendWorld(current, enemyKinds, projectileKinds)
 	Network.sendEvents(pending, selfViews(current))
 	pending = {}
@@ -366,8 +375,13 @@ local function drain(current: Types.Run)
 			ArenaBuilder.setPortal(event.x, event.z)
 		elseif event.kind == "portalClosed" then
 			ArenaBuilder.clearPortal()
+		elseif event.kind == "finalRising" then
+			ArenaBuilder.setFinalRise(event.x, event.z)
+		elseif event.kind == "bossSpawned" and event.final then
+			ArenaBuilder.clearFinalRise()
 		elseif event.kind == "ended" then
 			endReason = event.reason
+			ArenaBuilder.clearFinalRise()
 		end
 		table.insert(pending, event)
 	end
@@ -406,8 +420,9 @@ end
 -- Studio only: the lead's shortcuts for the playtest (plan, criterion 4).
 -- Setting the workspace attribute DebugSkipTo moves the run's clock there;
 -- DebugSpell gives every member the extraction spell; DebugAutoCards picks
--- cards for them. Attributes never reach
--- a live server's rules: the guard is RunService:IsStudio().
+-- cards for them; DebugGoToChest, DebugGoToShrine and DebugGoToLair move
+-- them. Attributes never reach a live server's rules: the guard is
+-- RunService:IsStudio().
 local function applyDebug(current: Types.Run)
 	if not IS_STUDIO then
 		return
@@ -447,12 +462,24 @@ local function applyDebug(current: Types.Run)
 		end
 		workspace:SetAttribute("DebugGoToShrine", nil)
 	end
+	-- DebugGoToLair (a lair's id) puts every member 30 studs from that lair's
+	-- centre, outside the radius that wakes it, so the hero can walk in.
+	local lairId = workspace:GetAttribute("DebugGoToLair")
+	if type(lairId) == "number" then
+		for _, lair in current.lairs do
+			if lair.id == lairId then
+				for _, core in current.players do
+					core.x = lair.x + 30
+					core.z = lair.z
+				end
+			end
+		end
+		workspace:SetAttribute("DebugGoToLair", nil)
+	end
 	-- DebugNoHorde (perf runs only, whose config is a private copy) stops the
 	-- horde and removes its grunts and elites, so a boss can be watched alone.
 	if workspace:GetAttribute("DebugNoHorde") == true and perfRun then
 		current.config.horde.maxAlive = 0
-		current.config.horde.ringCountStart = 0
-		current.config.horde.ringCountGrowth = 0
 		for index = #current.enemies, 1, -1 do
 			local kind = current.config.enemies[current.enemies[index].kind]
 			if kind.role ~= "boss" and kind.role ~= "finalBoss" then

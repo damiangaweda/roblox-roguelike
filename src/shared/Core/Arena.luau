@@ -235,6 +235,31 @@ local function placeFits(layout: Layout, x: number, z: number, radius: number): 
 	return true
 end
 
+-- A kit of props around (x, z), every offset and rotation turned by `rotation`.
+local function addKit(
+	layout: Layout,
+	rng: Types.Rng,
+	props: { Types.PlaceProp },
+	x: number,
+	z: number,
+	rotation: number
+)
+	for _, prop in props do
+		local propKind = layout.kinds[prop.kind]
+		if propKind then
+			local dx, dz = turn(prop.dx, prop.dz, rotation)
+			local propRotation = rotation + (prop.rotation or 0)
+			addProp(
+				layout,
+				rng,
+				propKind,
+				circlesOf(propKind, x + dx, z + dz, propRotation),
+				propRotation
+			)
+		end
+	end
+end
+
 -- Places: each kind's centre found within placementAttempts draws (else the
 -- place is skipped), its rotation random, its kit of props turned with it.
 local function composePlaces(layout: Layout, rng: Types.Rng)
@@ -252,24 +277,78 @@ local function composePlaces(layout: Layout, rng: Types.Rng)
 					radius = kind.radius,
 					rotation = rotation,
 				})
-				for _, prop in kind.props do
-					local propKind = layout.kinds[prop.kind]
-					if propKind then
-						local dx, dz = turn(prop.dx, prop.dz, rotation)
-						local propRotation = rotation + (prop.rotation or 0)
-						addProp(
-							layout,
-							rng,
-							propKind,
-							circlesOf(propKind, x + dx, z + dz, propRotation),
-							propRotation
-						)
-					end
-				end
+				addKit(layout, rng, kind.props, x, z, rotation)
 				break
 			end
 		end
 	end
+end
+
+-- Whether a lair's clearing of `radius` at (x, z) keeps the lairs' distances
+-- (ADR-0021): from the start, the chest and the other lairs, inside the edge,
+-- with its path from the start clear of their clearings and theirs of its own.
+local function lairFits(
+	layout: Layout,
+	lairs: Types.LairsConfig,
+	x: number,
+	z: number,
+	radius: number
+): boolean
+	local map = layout.map
+	local reach = map.pathWidth + map.pathSway
+	if
+		Geometry.distance(x, z, 0, 0) < lairs.startMinDistance
+		or Geometry.distance(x, z, 0, 0) + radius > layout.inner
+		or Geometry.distance(x, z, layout.chestX, layout.chestZ) < lairs.chestMinDistance
+	then
+		return false
+	end
+	for _, other in layout.places do
+		if
+			Geometry.distance(x, z, other.x, other.z) < lairs.spacing
+			or segmentDistance(other.x, other.z, 0, 0, x, z) < other.radius + reach
+			or segmentDistance(x, z, 0, 0, other.x, other.z) < radius + reach
+		then
+			return false
+		end
+	end
+	return true
+end
+
+-- The lairs (ADR-0021): config.lairs.count kinds drawn without replacement,
+-- each placed within placementAttempts draws (else skipped) and turned at
+-- random. A lair is also a place, its clearing the kind's clearRadius, so
+-- the paths lead to it, the groves keep off it and the ordinary places keep
+-- placeSpacing from it; its kit becomes obstacle groups like a place's.
+local function composeLairs(
+	layout: Layout,
+	rng: Types.Rng,
+	lairs: Types.LairsConfig
+): { Types.LairSpot }
+	local map = layout.map
+	local pool = table.clone(lairs.kinds)
+	local spots: { Types.LairSpot } = {}
+	for _ = 1, math.min(lairs.count, #pool) do
+		local kind = table.remove(pool, rng:integer(1, #pool)) :: Types.LairKindConfig
+		for _ = 1, map.placementAttempts do
+			local x, z = randomInDisc(rng, layout.inner - kind.clearRadius)
+			if lairFits(layout, lairs, x, z, kind.clearRadius) then
+				local rotation = rng:next() * 2 * math.pi
+				table.insert(layout.places, {
+					id = #layout.places + 1,
+					kind = kind.id,
+					x = x,
+					z = z,
+					radius = kind.clearRadius,
+					rotation = rotation,
+				})
+				table.insert(spots, { kind = kind.id, x = x, z = z, rotation = rotation })
+				addKit(layout, rng, kind.props, x, z, rotation)
+				break
+			end
+		end
+	end
+	return spots
 end
 
 -- A path from the start to a place's clearing: a point every PATH_STEP
@@ -465,16 +544,18 @@ local function scatterShrines(
 	return spots
 end
 
--- Composes the map for a seed: places the chest, then the places with their
--- kits, a path to each, the groves and the leftovers, and, given the shrines'
--- config, the shrines' spots; the start is the centre. A prop takes one circle
+-- Composes the map for a seed: places the chest, then, given the lairs'
+-- config, the lairs with their kits, the places with theirs, a path to each,
+-- the groves and the leftovers, and, given the shrines' config, the shrines'
+-- spots; the start is the centre. A prop takes one circle
 -- per footprint entry, all of one `group`, the first the anchor the builder
 -- draws the prop at. Repeatable for a seed: the rng is the run's, consumed in
 -- a fixed order.
 function Arena.generate(
 	map: Types.MapConfig,
 	rng: Types.Rng,
-	shrines: Types.ShrinesConfig?
+	shrines: Types.ShrinesConfig?,
+	lairs: Types.LairsConfig?
 ): Types.Arena
 	local inner = map.radius - map.edgeMargin
 	local chestX, chestZ = 0, 0
@@ -507,6 +588,7 @@ function Arena.generate(
 		kinds = kinds,
 		groups = 0,
 	}
+	local lairSpots = if lairs then composeLairs(layout, rng, lairs) else {}
 	composePlaces(layout, rng)
 	for _, place in layout.places do
 		table.insert(layout.paths, pathTo(map, rng, place))
@@ -524,7 +606,7 @@ function Arena.generate(
 		shrineSpots = if shrines
 			then scatterShrines(map, shrines, rng, layout.obstacles, chestX, chestZ)
 			else {},
-		lairSpots = {},
+		lairSpots = lairSpots,
 		places = layout.places,
 		paths = layout.paths,
 	}

@@ -73,7 +73,7 @@ while not run.ended and run.time < 900 and steps < 900 * 30 * 2 do
 		-- Prefer a new skill, then a skill rank, then anything.
 		local offer = run.players[1].offers[1]
 		local pick = 1
-		for index, card in offer do
+		for index, card in offer.cards do
 			if card.kind == "newSkill" then
 				pick = index
 				break

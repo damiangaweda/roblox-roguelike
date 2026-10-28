@@ -1,5 +1,6 @@
 --!strict
 local Assert = require("./Assert")
+local Damage = require("../src/shared/Core/Damage")
 local Fixtures = require("./Fixtures")
 local Run = require("../src/shared/Core/Run")
 local State = require("../src/shared/Core/State")
@@ -24,6 +25,13 @@ local function autoPick(run, seconds: number)
 	end
 end
 
+-- One lair just outside reach of the hero at the centre, releasing at once,
+-- so the horde arrives within a spec's few seconds.
+local function nearLair(run)
+	Fixtures.clearLairs(run)
+	Fixtures.lair(run, "brambleNest", 100, 0, 0)
+end
+
 local function eventKinds(events): { string }
 	local kinds = {}
 	for _, event in events do
@@ -36,6 +44,8 @@ return {
 	["a run is repeatable for a seed"] = function()
 		local a = Fixtures.run(1, nil, 21)
 		local b = Fixtures.run(1, nil, 21)
+		nearLair(a)
+		nearLair(b)
 		-- An unkillable hero, so both runs see the same long sequence.
 		a.config.classes.mage.maxHealth = 1e6
 		b.config.classes.mage.maxHealth = 1e6
@@ -53,6 +63,7 @@ return {
 
 	["the horde spawns, skills fire and crystals are collected on their own"] = function()
 		local run = Fixtures.run(1, nil, 3)
+		nearLair(run)
 		run.config.classes.mage.maxHealth = 1e6
 		run.players[1].health = 1e6
 		autoPick(run, 30)
@@ -61,7 +72,8 @@ return {
 		Assert.truthy(Fixtures.count(events, "kill") > 0, "kills")
 		Assert.truthy(Fixtures.count(events, "crystalCollected") > 0, "crystals collected")
 		Assert.truthy(run.players[1].level > 1, "levelled up")
-		Assert.truthy(#run.enemies >= 10, "the horde is up: " .. #run.enemies)
+		local kills = Fixtures.count(events, "kill")
+		Assert.truthy(kills >= run.config.lairs.batchStart, "the lair's batches came: " .. kills)
 	end,
 
 	["movement is held to the budget, the arena and the obstacles"] = function()
@@ -135,14 +147,33 @@ return {
 		Assert.equal(ended.reason, "allDead")
 	end,
 
-	["the final boss arrives at the duration and its death extracts the hero"] = function()
+	["the final boss rises at the last lair's fall and its death extracts the hero"] = function()
 		local run = Fixtures.run(1, nil, 2)
 		run.config.classes.mage.maxHealth = 1e6
 		run.players[1].health = 1e6
-		run.time = run.config.run.durationSeconds - DT / 2
 		Run.step(run, DT, {})
+		for index, lair in run.lairs do
+			local boss = State.enemyById(run, lair.bossId :: number) :: any
+			Assert.truthy(boss ~= nil, "lair " .. index .. " has its boss")
+			Damage.hit(run, boss, {
+				source = 1,
+				skill = "test",
+				amount = 1e12,
+				tags = {},
+				effect = nil,
+				critChance = 0,
+				knockback = 0,
+				fromX = boss.x - 1,
+				fromZ = boss.z,
+			})
+			Assert.truthy(lair.silenced)
+		end
+		Assert.equal(#run.players[1].offers, #run.lairs, "a great offer per lair")
+		while run.paused do
+			Run.chooseCard(run, 1, 1)
+		end
+		autoPick(run, run.config.lairs.finalRiseSeconds + DT)
 		Assert.truthy(run.finalBossId ~= nil, "the final boss is up")
-		Assert.truthy(run.finalBossDeadline ~= nil)
 		local boss = State.enemyById(run, run.finalBossId :: number)
 		Assert.truthy(boss ~= nil)
 		Assert.equal((boss :: any).kind, run.map.finalBoss)
@@ -154,17 +185,32 @@ return {
 		Assert.equal(Assert.findEvent(Run.drainEvents(run), "ended").reason, "finalBossKilled")
 	end,
 
-	["the map closes when the final boss outlives its time"] = function()
+	["in doom the wraiths kill a hero without the spell and the portal still extracts"] = function()
 		local run = Fixtures.run(1, nil, 2)
-		run.config.classes.mage.maxHealth = 1e6
-		run.players[1].health = 1e6
 		run.time = run.config.run.durationSeconds - DT / 2
 		Run.step(run, DT, {})
-		run.time = (run.finalBossDeadline :: number) - DT / 2
-		Run.step(run, DT, {})
-		Assert.truthy(run.ended)
+		Assert.truthy(run.doom)
+		Assert.equal(run.finalBossId, nil, "no final boss in doom")
+		autoPick(run, 120)
+		Assert.truthy(run.ended, "the wraiths killed the hero")
 		Assert.equal(run.players[1].state, "dead")
-		Assert.equal(Assert.findEvent(Run.drainEvents(run), "ended").reason, "mapClosed")
+		Assert.equal(Assert.findEvent(Run.drainEvents(run), "ended").reason, "allDead")
+
+		-- The spell cast just before the end time opens the portal in doom.
+		local escape = Fixtures.run(1, nil, 2)
+		Fixtures.clearLairs(escape)
+		local castSeconds = escape.config.extraction.castSeconds
+		escape.time = escape.config.run.durationSeconds - castSeconds + DT
+		local player = escape.players[1]
+		player.hasSpell = true
+		Assert.truthy(Run.castSpell(escape, 1))
+		stepFor(escape, castSeconds + 0.1)
+		Assert.truthy(escape.doom)
+		Assert.truthy(escape.portal ~= nil, "portal open")
+		Assert.truthy(Run.enterPortal(escape, 1))
+		Run.step(escape, DT, {})
+		Assert.truthy(escape.ended)
+		Assert.equal(Assert.findEvent(Run.drainEvents(escape), "ended").reason, "extracted")
 	end,
 
 	["extracting through the portal ends a solo run"] = function()
@@ -189,7 +235,7 @@ return {
 	["a dash covers its distance over its time"] = function()
 		local run = Fixtures.run()
 		Fixtures.clearObstacles(run)
-		run.nextSpawnAt = math.huge
+		Fixtures.clearLairs(run)
 		local player = run.players[1]
 		local config = run.config.player
 		Assert.truthy(Run.dash(run, 1, 0, 2))

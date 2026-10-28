@@ -3,7 +3,7 @@ local Assert = require("./Assert")
 local Fixtures = require("./Fixtures")
 local Geometry = require("../src/shared/Core/Geometry")
 local Hero = require("../src/shared/Core/Hero")
-local Horde = require("../src/shared/Core/Horde")
+local Lairs = require("../src/shared/Core/Lairs")
 local Progression = require("../src/shared/Core/Progression")
 local Run = require("../src/shared/Core/Run")
 local Shrines = require("../src/shared/Core/Shrines")
@@ -24,6 +24,7 @@ end
 local function openRun(playerCount: number?, seed: number?): Types.Run
 	local run = Fixtures.run(playerCount, nil, seed)
 	Fixtures.clearObstacles(run)
+	Fixtures.clearLairs(run)
 	run.shrines = {}
 	return run
 end
@@ -205,23 +206,27 @@ return {
 		Assert.near(player.shrineShares.maxHealth :: number, run.config.shrines.pactMinShare, 1e-9)
 	end,
 
-	["a trial spawns its ring of the window's grunts and an elite"] = function()
+	["a trial spawns its ring of the nearest living lair's grunts and an elite"] = function()
 		local run = openRun()
 		local config = run.config.shrines
+		-- A silenced lair nearer than the living one: the living one's grunts come.
+		Fixtures.lair(run, "bog", 150, 0).silenced = true
+		Fixtures.lair(run, "burntGlade", -250, 0)
 		local shrine = Fixtures.shrine(run, "trial", 60, 0)
 		activate(run, 1, shrine)
 		local total = config.trialRingCount + config.trialEliteCount
-		Assert.equal(#run.enemies, total)
 		Assert.equal(#(shrine.trialEnemies :: { number }), total)
 		Assert.equal(shrine.trialBy, 1)
 		Assert.falsy(shrine.used, "used once the ring is dead")
-		local window = Horde.windowKinds(run)
+		local grunts = run.config.lairs.kinds[6].grunts
+		Assert.equal(run.config.lairs.kinds[6].id, "burntGlade")
 		local elites = 0
-		for _, enemy in run.enemies do
+		for _, id in shrine.trialEnemies :: { number } do
+			local enemy = State.enemyById(run, id) :: Types.Enemy
 			if table.find(run.map.elites, enemy.kind) then
 				elites += 1
 			else
-				Assert.truthy(table.find(window, enemy.kind) ~= nil, "a window grunt")
+				Assert.truthy(table.find(grunts, enemy.kind) ~= nil, "a lair's grunt")
 			end
 			Assert.near(
 				Geometry.distance(enemy.x, enemy.z, shrine.x, shrine.z),
@@ -240,14 +245,14 @@ return {
 		local run = openRun()
 		local config = run.config.shrines
 		local maxAlive = run.config.horde.maxAlive
-		local window = Horde.windowKinds(run)
+		local window = run.map.roster
 		local room = config.trialEliteCount + 3
 		for index = 1, maxAlive - room do
 			Fixtures.enemy(run, window[1], -100 - index, 100)
 		end
 		local shrine = Fixtures.shrine(run, "trial", 60, 0)
 		activate(run, 1, shrine)
-		Assert.equal(Horde.aliveCount(run), maxAlive)
+		Assert.equal(Lairs.aliveCount(run), maxAlive)
 		Assert.equal(#(shrine.trialEnemies :: { number }), room)
 		local elites = 0
 		for _, id in shrine.trialEnemies :: { number } do
@@ -264,7 +269,7 @@ return {
 		local run = openRun()
 		local player = run.players[1]
 		local maxAlive = run.config.horde.maxAlive
-		local window = Horde.windowKinds(run)
+		local window = run.map.roster
 		for index = 1, maxAlive do
 			Fixtures.enemy(run, window[1], -100 - index, 100)
 		end

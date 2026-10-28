@@ -37,16 +37,23 @@ local Strings = {
 		bossApproaches = "%s approaches!",
 		-- The final boss's name ("The Forest Heart").
 		finalBossAwakens = "%s awakens!",
-		closingRing = "They're closing in!",
+		-- The final boss's name, then whole seconds until it stands.
+		finalBossRises = "%s rises... %d",
 		-- The boss's name.
 		bossEnraged = "%s is enraged!",
 		-- A boss whose name the client cannot find.
 		someBoss = "The boss",
-		-- Whole seconds.
-		finalBossTimer = "Kill it in %ds or the map closes",
 		compass = "The chest calls to you",
 		chestOpened = "You hold the extraction spell",
 		portalOpened = "The portal is open!",
+		-- A lair's name (Config.lairs.kinds[].name).
+		lairWoke = "%s stirs",
+		lairSlept = "%s sleeps",
+		lairSilenced = "%s silenced",
+		-- A lair whose name the client cannot find.
+		someLair = "A lair",
+		-- From the run's end time until it is over (ADR-0021).
+		doom = "DOOM",
 	},
 	notices = {
 		interrupted = "Interrupted!",
@@ -56,8 +63,10 @@ local Strings = {
 		given = "%s: %s",
 		springUsed = "Fully restored",
 	},
+	-- Beside the clock: the lairs silenced, then the lairs of the run.
+	lairs = "Lairs %d/%d",
 	-- Under the clock: the time left as m:ss, and whole seconds.
-	mapClosesIn = "The map closes in %s",
+	doomIn = "Doom in %s",
 	portalClosesIn = "The portal closes in %d s",
 
 	-- What each button is called in a prompt: a key, or a touch button's label.
@@ -214,7 +223,6 @@ local Strings = {
 			allDead = "You fell",
 			extracted = "Extracted!",
 			finalBossKilled = "The forest is free",
-			mapClosed = "The map closed",
 		},
 		-- The class name.
 		class = "Class: %s",

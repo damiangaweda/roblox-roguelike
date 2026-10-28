@@ -1,8 +1,9 @@
 --!strict
 -- Combat and world effects: skills, hits, statuses, state.bursts, areas, totems,
 -- telegraphs, projectiles, crystals, food, the chest's state.beam, the extraction
--- spell and its state.portal, a dash's afterimages and a shrine's activation
--- (the server draws the shrines themselves). Everything here is drawn from events and snapshots
+-- spell and its state.portal, a dash's afterimages, a shrine's activation
+-- (the server draws the shrines themselves), a lair waking and falling silent
+-- (the server draws its landmark), the final boss's rise and doom's sky. Everything here is drawn from events and snapshots
 -- the server sent; nothing is decided on the client (AGENTS.md rule 1).
 -- Every effect comes from a pool with a cap, particles are thrown in state.bursts
 -- from pooled hosts and state.lights are capped, so the frame budget holds however
@@ -552,10 +553,36 @@ WORLD.BOSS_WAIT = 2
 -- A boss's second phase: a red flash as big as the boss and a shockwave.
 WORLD.PHASE_FLASH_SHARE = 1.6
 WORLD.PHASE_SECONDS = 0.5
--- The closing ring: a brief ring of light where it spawns.
-WORLD.CLOSING_SECONDS = 1.2
-WORLD.CLOSING_STUDS = 0.9
-WORLD.CLOSING_FROM = 0.92
+-- A lair waking: a burst in its colour at its centre and a slight shake.
+WORLD.LAIR_WAKE_SECONDS = 0.9
+WORLD.LAIR_WAKE_MOTES = 24
+WORLD.LAIR_SHAKE = 0.6
+-- A lair falling silent: a column and a wide ring in its colour, sparks and motes.
+WORLD.LAIR_SILENCE_SECONDS = 1.6
+WORLD.LAIR_SILENCE_SPARKS = 30
+WORLD.LAIR_SILENCE_MOTES = 40
+WORLD.LAIR_SILENCE_GLOW = 12
+-- The final boss's rise: a ring of light widening on the ground, cracks of
+-- light radiating one after another, motes rising, the sky darkening; a flash
+-- when it stands, then the dark clears.
+PALETTE.RISE = rgb(180, 110, 255, 240, 220, 255)
+WORLD.RISE_RING_DIAMETER = 44
+WORLD.RISE_RING_STUDS = 1.4
+WORLD.RISE_CRACKS = 12
+WORLD.RISE_CRACK_SHARE = 0.7
+WORLD.RISE_CRACK_MIN = 10
+WORLD.RISE_CRACK_MAX = 24
+WORLD.RISE_CRACK_WIDTH = 0.35
+WORLD.RISE_MOTE_EVERY = 0.12
+WORLD.RISE_MOTES = 6
+WORLD.RISE_DARKEN_SECONDS = 2
+WORLD.RISE_CLEAR_SECONDS = 3
+-- How long past its seconds a rise waits for the boss before it clears.
+WORLD.RISE_WAIT = 3
+WORLD.RISE_FLASH_DIAMETER = 30
+WORLD.RISE_SHAKE = 1
+-- A wraith appearing: a dark puff.
+WORLD.WRAITH_SMOKE = 14
 -- Death: a dark burst.
 WORLD.DEATH_SMOKE = 16
 WORLD.DEATH_DIAMETER = 6
@@ -1030,6 +1057,19 @@ end
 
 -- Utilities by id.
 DATA.UTILITIES = {} :: { [string]: Types.UtilityConfig }
+-- The lair kinds by id, and the enemy kinds that are doom's wraiths.
+DATA.LAIR_KINDS = {} :: { [string]: Types.LairKindConfig }
+for _, lairKind in Config.lairs.kinds do
+	DATA.LAIR_KINDS[lairKind.id] = lairKind
+end
+DATA.WRAITH_KINDS = {} :: { [string]: boolean }
+for id, kind in Config.enemies do
+	if kind.role == "wraith" then
+		DATA.WRAITH_KINDS[id] = true
+	end
+end
+-- Doom's sky and the rise's darkness.
+DATA.ATMOSPHERE = require(script.Parent.Atmosphere)
 for _, utility in Config.utilities do
 	DATA.UTILITIES[utility.id] = utility
 end
@@ -1706,6 +1746,21 @@ state.enemyFacing = {} :: { [number]: number }
 state.enemyKind = {} :: { [number]: string }
 -- Bosses announced before a snapshot drew them, and when.
 state.pendingBosses = {} :: { [number]: number }
+-- The wraiths of the latest snapshot, and a spare set to fill the next.
+state.wraiths = {} :: { [number]: boolean }
+state.spareWraiths = {} :: { [number]: boolean }
+-- The final boss's rise in progress: where, since when and for how long,
+-- how many cracks it has opened, its next motes and when the boss stood.
+type Rise = {
+	x: number,
+	z: number,
+	at: number,
+	seconds: number,
+	cracks: number,
+	nextMote: number,
+	stoodAt: number?,
+}
+state.rise = nil :: Rise?
 
 local function forwardOf(enemyId: number): Vector3
 	local facing = state.enemyFacing[enemyId] or 0
@@ -4498,25 +4553,19 @@ function fx.onEvents(events: { Types.Event }, _self: Protocol.SelfView?)
 			if not fx.showBossArrival(event.enemyId) then
 				state.pendingBosses[event.enemyId] = os.clock()
 			end
+			if event.final then
+				fx.onFinalStands()
+			end
 		elseif event.kind == "bossPhase" then
 			fx.onBossPhase(event.enemyId)
-		elseif event.kind == "closingRing" then
-			local root = localRoot()
-			if root then
-				local diameter = Config.horde.ringRadius * 2
-				local position = root.Position
-				showRing(
-					position.X,
-					position.Z,
-					PALETTE.DANGER.color,
-					diameter * WORLD.CLOSING_FROM,
-					diameter,
-					WORLD.CLOSING_STUDS,
-					0.1,
-					0,
-					WORLD.CLOSING_SECONDS
-				)
-			end
+		elseif event.kind == "lairWoke" then
+			fx.onLairWoke(event.lairId)
+		elseif event.kind == "lairSilenced" then
+			fx.onLairSilenced(event.lairId)
+		elseif event.kind == "finalRising" then
+			fx.startRise(event.x, event.z, event.seconds)
+		elseif event.kind == "doomStarted" then
+			DATA.ATMOSPHERE.setDoom(true)
 		elseif event.kind == "crystalCollected" then
 			fx.collectGem(event.id, event.player)
 		elseif event.kind == "foodEaten" then
@@ -4606,13 +4655,224 @@ function fx.onEvents(events: { Types.Event }, _self: Protocol.SelfView?)
 	end
 end
 
+-- Lair `lairId` in the latest snapshot, and its kind's colour as a tint.
+function fx.lairOf(lairId: number): (Protocol.LairView?, Tint)
+	local latest = Net.latest
+	if latest then
+		for _, lair in latest.world.lairs do
+			if lair.id == lairId then
+				local kind = DATA.LAIR_KINDS[lair.kind]
+				return lair, if kind then tintFrom(fromHex(kind.colour)) else PALETTE.DANGER
+			end
+		end
+	end
+	return nil, PALETTE.DANGER
+end
+
+-- A lair woke: a burst at its centre and a slight shake nearby.
+function fx.onLairWoke(lairId: number)
+	local lair, tint = fx.lairOf(lairId)
+	if lair == nil then
+		return
+	end
+	local ground = groundAt(lair.x, lair.z, 1)
+	if onScreen(ground) then
+		showRing(
+			lair.x,
+			lair.z,
+			tint.color,
+			2,
+			lair.radius,
+			WORLD.BOSS_WAVE_STUDS,
+			0,
+			0,
+			WORLD.LAIR_WAKE_SECONDS
+		)
+		emit("embers", tint.color, ground, WORLD.LAIR_WAKE_MOTES, Vector3.new(6, 1, 6))
+		emit("smoke", PALETTE.SMOKE_COLOR, ground, WORLD.DEATH_SMOKE, Vector3.new(8, 1, 8))
+	end
+	if nearLocal(lair.x, lair.z) then
+		Camera.shake(WORLD.LAIR_SHAKE)
+	end
+end
+
+-- A lair fell silent: a column and a wide ring in its colour at its centre.
+function fx.onLairSilenced(lairId: number)
+	local lair, tint = fx.lairOf(lairId)
+	if lair == nil then
+		return
+	end
+	local ground = groundAt(lair.x, lair.z, 0)
+	if not onScreen(ground) then
+		return
+	end
+	local top = ground + SHAPE.UP * WORLD.BOSS_COLUMN_HEIGHT
+	showStreak(
+		state.streaks,
+		ground,
+		top,
+		tint.color,
+		WORLD.BOSS_COLUMN_WIDTH,
+		WORLD.COLUMN_FADE,
+		WORLD.LAIR_SILENCE_SECONDS,
+		"fade"
+	)
+	showStreak(
+		state.streaks,
+		ground,
+		top,
+		tint.core,
+		WORLD.COLUMN_CORE_WIDTH,
+		0,
+		WORLD.LAIR_SILENCE_SECONDS,
+		"fade"
+	)
+	showRing(
+		lair.x,
+		lair.z,
+		tint.color,
+		2,
+		lair.radius * 2,
+		WORLD.BOSS_WAVE_STUDS,
+		0,
+		0,
+		WORLD.LAIR_SILENCE_SECONDS
+	)
+	showGlow(
+		ground + SHAPE.UP * 2,
+		tint.core,
+		2,
+		WORLD.LAIR_SILENCE_GLOW,
+		0.3,
+		WORLD.LAIR_SILENCE_SECONDS * 0.5
+	)
+	emit("sparks", tint.color, ground + SHAPE.UP, WORLD.LAIR_SILENCE_SPARKS, Vector3.new(6, 1, 6))
+	emit("motes", tint.core, ground, WORLD.LAIR_SILENCE_MOTES, Vector3.new(10, 2, 10))
+	showLight(
+		ground + SHAPE.UP * 4,
+		tint.color,
+		SKILL.EXPLOSION_LIGHT_BRIGHTNESS,
+		40,
+		WORLD.LAIR_SILENCE_SECONDS
+	)
+end
+
+-- The final boss begins to rise at (x, z) for `seconds`: the ring widens over
+-- the whole rise; the cracks, motes and darkness come in `stepRise`.
+function fx.startRise(x: number, z: number, seconds: number)
+	local now = os.clock()
+	state.rise = {
+		x = x,
+		z = z,
+		at = now,
+		seconds = math.max(seconds, 0.1),
+		cracks = 0,
+		nextMote = now,
+		stoodAt = nil,
+	}
+	local tint = PALETTE.RISE
+	showRing(x, z, tint.color, 2, WORLD.RISE_RING_DIAMETER, WORLD.RISE_RING_STUDS, 0, 0, seconds)
+	showLight(groundAt(x, z, 4), tint.color, SKILL.EXPLOSION_LIGHT_BRIGHTNESS, 50, seconds)
+	if nearLocal(x, z) then
+		Camera.shake(WORLD.RISE_SHAKE)
+	end
+end
+
+-- The final boss stands: a flash over everything, and the rise's dark clears.
+function fx.onFinalStands()
+	DATA.ATMOSPHERE.flash()
+	local rise = state.rise
+	if rise == nil then
+		return
+	end
+	rise.stoodAt = os.clock()
+	local tint = PALETTE.RISE
+	local ground = groundAt(rise.x, rise.z, 2)
+	showGlow(ground, tint.core, 4, WORLD.RISE_FLASH_DIAMETER, 0.2, WORLD.BOSS_WAVE_SECONDS)
+	emit("sparks", tint.color, ground, WORLD.LAIR_SILENCE_SPARKS, Vector3.new(8, 1, 8))
+end
+
+function fx.stepRise(now: number)
+	local rise = state.rise
+	if rise == nil then
+		return
+	end
+	local stoodAt = rise.stoodAt
+	if stoodAt then
+		local clear = (now - stoodAt) / WORLD.RISE_CLEAR_SECONDS
+		DATA.ATMOSPHERE.setRise(1 - clear)
+		if clear >= 1 then
+			state.rise = nil
+		end
+		return
+	end
+	local elapsed = now - rise.at
+	if elapsed > rise.seconds + WORLD.RISE_WAIT then
+		-- The boss never came (the run ended): clear as if it had.
+		rise.stoodAt = now
+		return
+	end
+	DATA.ATMOSPHERE.setRise(math.min(1, elapsed / WORLD.RISE_DARKEN_SECONDS))
+	local tint = PALETTE.RISE
+	-- The cracks open one by one over the first part of the rise and last to its end.
+	local due = math.min(
+		WORLD.RISE_CRACKS,
+		math.floor(elapsed / (rise.seconds * WORLD.RISE_CRACK_SHARE) * WORLD.RISE_CRACKS) + 1
+	)
+	while rise.cracks < due do
+		rise.cracks += 1
+		local angle = (rise.cracks + state.random:NextNumber(-0.4, 0.4))
+			* 2
+			* math.pi
+			/ WORLD.RISE_CRACKS
+		local length = state.random:NextNumber(WORLD.RISE_CRACK_MIN, WORLD.RISE_CRACK_MAX)
+		local from = groundAt(rise.x, rise.z, DRAW.DISC_HEIGHT)
+		local to = from + Vector3.new(math.cos(angle), 0, math.sin(angle)) * length
+		showStreak(
+			state.streaks,
+			from,
+			to,
+			tint.color,
+			WORLD.RISE_CRACK_WIDTH,
+			0,
+			math.max(0.1, rise.seconds - elapsed),
+			"fade"
+		)
+	end
+	if now >= rise.nextMote then
+		rise.nextMote = now + WORLD.RISE_MOTE_EVERY
+		local ground = groundAt(rise.x, rise.z, 1)
+		if onScreen(ground) then
+			emit("motes", tint.core, ground, WORLD.RISE_MOTES, Vector3.new(12, 1, 12))
+		end
+	end
+end
+
+-- A wraith appeared at (x, z): a dark puff.
+function fx.onWraithAppeared(x: number, z: number)
+	local ground = groundAt(x, z, 1)
+	if onScreen(ground) then
+		emit("smoke", PALETTE.SHADOW.color, ground, WORLD.WRAITH_SMOKE, Vector3.new(3, 2, 3))
+		emit("implosion", PALETTE.SHADOW.core, ground + SHAPE.UP * 2, 1)
+	end
+end
+
 function fx.syncEnemies(snapshot: Net.Snapshot)
 	table.clear(state.enemyFacing)
 	table.clear(state.enemyKind)
+	local seen, wraiths = state.wraiths, state.spareWraiths
+	table.clear(wraiths)
 	for _, enemy in snapshot.enemies do
 		state.enemyFacing[enemy.id] = enemy.facing
 		state.enemyKind[enemy.id] = enemy.kind
+		if DATA.WRAITH_KINDS[enemy.kind] then
+			wraiths[enemy.id] = true
+			if not seen[enemy.id] then
+				fx.onWraithAppeared(enemy.x, enemy.z)
+			end
+		end
 	end
+	state.wraiths, state.spareWraiths = wraiths, seen
 	local now = os.clock()
 	for id, at in state.pendingBosses do
 		if fx.showBossArrival(id) or now - at > WORLD.BOSS_WAIT then
@@ -4631,6 +4891,10 @@ function fx.onWorld(snapshot: Net.Snapshot)
 	fx.syncPortal(world.portal)
 	fx.syncChest(world)
 	fx.syncPlayers(world.players)
+	-- Doom's sky also for a client that missed the event.
+	if world.doom then
+		DATA.ATMOSPHERE.setDoom(true)
+	end
 end
 
 function Effects.start()
@@ -4642,6 +4906,11 @@ function Effects.start()
 	end
 	Net.onEvents(fx.onEvents)
 	Net.onWorld(fx.onWorld)
+	-- A new run starts with no rise in progress; Atmosphere restores the sky.
+	Net.onPhase(function()
+		state.rise = nil
+		table.clear(state.wraiths)
+	end)
 	local latest = Net.latest
 	if latest then
 		fx.onWorld(latest)
@@ -4659,6 +4928,7 @@ function Effects.start()
 		fx.stepSprint(now)
 		fx.stepCasts(now)
 		fx.stepFades(now)
+		fx.stepRise(now)
 	end)
 end
 

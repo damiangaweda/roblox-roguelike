@@ -1,6 +1,7 @@
 --!strict
 local Assert = require("./Assert")
 local Fixtures = require("./Fixtures")
+local Lairs = require("../src/shared/Core/Lairs")
 local Protocol = require("../src/shared/Protocol")
 local Types = require("../src/shared/Core/Types")
 
@@ -279,7 +280,6 @@ return {
 		local boss = Fixtures.enemy(run, "thornback", 20, 0)
 		run.compassOn = true
 		run.portal = { x = 1, z = 2, until_ = 25 }
-		run.finalBossDeadline = 40
 
 		local view = Protocol.worldView(run)
 		Assert.equal(view.time, 10)
@@ -307,7 +307,6 @@ return {
 		assert(portal, "the portal is listed")
 		Assert.near(portal.x, 1)
 		Assert.near(portal.secondsLeft, 15)
-		Assert.near(view.finalBossLeft :: number, 30)
 		Assert.equal(#view.bossIds, 1)
 		Assert.equal(view.bossIds[1], boss.id)
 
@@ -343,6 +342,41 @@ return {
 		Assert.equal(view.players[1].dashing, true)
 		player.dashUntil = 0
 		Assert.equal(Protocol.worldView(run).players[1].dashing, false)
+	end,
+
+	["the world view lists the lairs, the rise and doom"] = function()
+		local run = Fixtures.run(1)
+		Fixtures.clearLairs(run)
+		local asleep = Fixtures.lair(run, "brambleNest", 200, 0)
+		local silenced = Fixtures.lair(run, "bog", -200, 0)
+		Lairs.update(run, 0)
+		silenced.silenced = true
+		silenced.bossId = nil
+		run.time = 100
+		run.finalRiseAt = 104
+		local view = Protocol.worldView(run)
+		Assert.equal(#view.lairs, 2)
+		local seen = view.lairs[1]
+		Assert.equal(seen.id, asleep.id)
+		Assert.equal(seen.kind, "brambleNest")
+		Assert.equal(seen.x, 200)
+		Assert.equal(seen.radius, asleep.radius)
+		Assert.equal(seen.asleep, true)
+		Assert.equal(seen.silenced, false)
+		Assert.equal(seen.bossId, asleep.bossId)
+		Assert.equal(view.lairs[2].silenced, true)
+		Assert.equal(view.lairs[2].bossId, nil)
+		Assert.near(view.finalRiseLeft :: number, 4)
+		Assert.equal(view.doom, false)
+		Assert.near(view.doomIn, run.config.run.durationSeconds - 100)
+		Assert.equal((view :: any).finalBossLeft, nil, "no final boss deadline")
+		run.time = run.config.run.durationSeconds + 5
+		run.doom = true
+		run.finalRiseAt = nil
+		view = Protocol.worldView(run)
+		Assert.equal(view.doom, true)
+		Assert.equal(view.doomIn, 0)
+		Assert.equal(view.finalRiseLeft, nil)
 	end,
 
 	["the self view carries the dash charges and the boons and pacts taken"] = function()

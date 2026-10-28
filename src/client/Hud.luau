@@ -1,7 +1,8 @@
 --!strict
 -- The HUD of the solo run, built in code (stage 3b's layout): the class pick
 -- screen; in the run the experience bar across the top with the level and
--- kills, the run clock and its timers, banners and notices under it, health
+-- kills, the run clock with the lairs silenced beside it and the doom
+-- countdown under it, banners and notices, the awake bosses' health, health
 -- with the barrier and the dash charges at the bottom centre above the skill
 -- bar with ranks and cooldowns and the three utility skills, the passives,
 -- boons and pacts on the right, the three-card level-up choice and the great
@@ -78,6 +79,15 @@ local CLOCK_TOP = 2
 local TIMER_TOP = 38
 local NOTICE_TOP = 82
 local NOTICE_STEP = 20
+-- Beside the clock: the lairs silenced, flashing and popping when it changes.
+local LAIRS_FLASH_SECONDS = 0.8
+local LAIRS_POP = 0.3
+-- Under the banner: one health bar per awake boss.
+local BOSS_BAR_TOP = NOTICE_TOP + MAX_NOTICES * NOTICE_STEP + 52
+local BOSS_BAR_WIDTH = 360
+local BOSS_BAR_HEIGHT = 16
+local BOSS_BAR_STEP = 22
+local MAX_BOSS_BARS = 3
 -- The experience bar: its height and the margin it keeps from the screen's
 -- edges (or the topbar's buttons) and the narrowest it gets.
 local XP_HEIGHT = 20
@@ -170,6 +180,9 @@ local SHRINE_COLORS: { [string]: Color3 } = {
 	spring = Color3.fromRGB(70, 220, 240),
 }
 local NOTICE_COLOR = Color3.fromRGB(225, 225, 232)
+-- The final boss's rise, and a boss's health bar.
+local RISE_COLOR = Color3.fromRGB(190, 140, 255)
+local BOSS_BAR_COLOR = Color3.fromRGB(200, 40, 40)
 local FONT = Enum.Font.GothamMedium
 local FONT_BOLD = Enum.Font.GothamBold
 
@@ -200,6 +213,21 @@ local EFFECT_TEXT = Strings.effects :: { [string]: string }
 local STAT_TEXT = Strings.stats :: { [string]: string }
 local OUTCOME_TEXT = Strings.summary.outcomes :: { [string]: string }
 local SHRINE_TEXT = Strings.shrines :: { [string]: string }
+
+-- The lair kinds by id, and the final boss's name for its rise.
+local LAIR_KINDS: { [string]: Types.LairKindConfig } = {}
+-- The bosses that live in lairs: they sleep in sight, so their spawning is no news.
+local LAIR_BOSSES: { [string]: boolean } = {}
+for _, lairKind in Config.lairs.kinds do
+	LAIR_KINDS[lairKind.id] = lairKind
+	LAIR_BOSSES[lairKind.boss] = true
+end
+local FINAL_BOSS_NAME = Strings.banners.someBoss
+for _, enemyKind in Config.enemies do
+	if enemyKind.role == "finalBoss" then
+		FINAL_BOSS_NAME = enemyKind.name
+	end
+end
 
 type Bar = {
 	root: Frame,
@@ -804,15 +832,49 @@ function Hud.start()
 		30,
 		FONT_BOLD
 	)
-	local bossTimerLabel = newLabel(
+	local doomTimerLabel = newLabel(
 		topLayer,
-		"FinalBossTimer",
+		"DoomTimer",
 		UDim2.fromOffset(460, 20),
 		UDim2.new(0.5, -230, 0, TIMER_TOP),
 		17,
 		FONT_BOLD
 	)
-	bossTimerLabel.TextColor3 = HURT_COLOR
+	doomTimerLabel.TextColor3 = HURT_COLOR
+	-- Stage 3c: the lairs beside the clock, what it shows and when it last
+	-- changed, and the awake bosses' bars.
+	local lairHud = {
+		label = newLabel(
+			topLayer,
+			"Lairs",
+			UDim2.fromOffset(140, 24),
+			UDim2.new(0.5, 110, 0, CLOCK_TOP + 6),
+			18,
+			FONT_BOLD
+		),
+		scale = Instance.new("UIScale"),
+		shown = "",
+		changedAt = -math.huge,
+		-- Doom from its event, before a snapshot says so.
+		doom = false,
+		bars = {} :: { Bar },
+	}
+	lairHud.label.TextXAlignment = Enum.TextXAlignment.Left
+	lairHud.label.TextColor3 = NOTICE_COLOR
+	lairHud.label.Visible = false
+	lairHud.scale.Parent = lairHud.label
+	for index = 1, MAX_BOSS_BARS do
+		local bar = newBar(
+			topLayer,
+			"Boss" .. index,
+			UDim2.fromOffset(BOSS_BAR_WIDTH, BOSS_BAR_HEIGHT),
+			UDim2.new(0.5, -BOSS_BAR_WIDTH / 2, 0, BOSS_BAR_TOP + (index - 1) * BOSS_BAR_STEP),
+			BOSS_BAR_COLOR,
+			13
+		)
+		bar.root.Visible = false
+		lairHud.bars[index] = bar
+	end
 	local portalTimerLabel = newLabel(
 		topLayer,
 		"PortalTimer",
@@ -1271,6 +1333,8 @@ function Hud.start()
 	-- What the HUD remembers between frames.
 	local phaseAt = os.clock()
 	local bannerUntil = 0
+	-- The passing banner's text and colour; the rise and doom show over or after it.
+	local banner = { text = "", color = EXTRACT_COLOR }
 	local hurtAt = -math.huge
 	-- The hurt flash's opacity when it popped.
 	local hurtStrength = 0
@@ -1283,15 +1347,18 @@ function Hud.start()
 	local shownState: Types.PlayerState = "alive"
 	local stateAt = -math.huge
 
-	local function showBanner(text: string)
-		bannerLabel.Text = text
-		bannerLabel.Visible = true
+	local function showBanner(text: string, color: Color3?)
+		banner.text = text
+		banner.color = color or EXTRACT_COLOR
 		bannerUntil = os.clock() + BANNER_SECONDS
 	end
 
 	local function resetRun()
 		bannerLabel.Visible = false
 		bannerUntil = 0
+		lairHud.shown = ""
+		lairHud.changedAt = -math.huge
+		lairHud.doom = false
 		hurtAt = -math.huge
 		hurtStrength = 0
 		lowLevel = 0
@@ -1349,6 +1416,20 @@ function Hud.start()
 		return Strings.banners.someBoss
 	end
 
+	-- A lair's name and colour, from the latest snapshot's lair with that id.
+	local function lairOf(lairId: number): (string, Color3)
+		local latest = Net.latest
+		if latest then
+			for _, lair in latest.world.lairs do
+				local kind = if lair.id == lairId then LAIR_KINDS[lair.kind] else nil
+				if kind then
+					return kind.name, hexColor(kind.colour)
+				end
+			end
+		end
+		return Strings.banners.someLair, EXTRACT_COLOR
+	end
+
 	Net.onPhase(function(phase)
 		phaseAt = os.clock()
 		pickedAt = nil
@@ -1359,7 +1440,9 @@ function Hud.start()
 
 	Net.onEvents(function(events: { Types.Event })
 		for _, event in events do
-			if event.kind == "bossSpawned" then
+			if
+				event.kind == "bossSpawned" and (event.final or not LAIR_BOSSES[event.enemyKind])
+			then
 				local kind = Config.enemies[event.enemyKind]
 				local name = if kind then kind.name else Strings.banners.someBoss
 				showBanner(
@@ -1368,14 +1451,22 @@ function Hud.start()
 							then Strings.banners.finalBossAwakens
 							else Strings.banners.bossApproaches,
 						name
-					)
+					),
+					if event.final then RISE_COLOR else nil
 				)
-			elseif event.kind == "closingRing" then
-				showBanner(Strings.banners.closingRing)
 			elseif event.kind == "bossPhase" then
 				showBanner(string.format(Strings.banners.bossEnraged, bossName(event.enemyId)))
-			elseif event.kind == "finalBossTimer" then
-				showBanner(string.format(Strings.banners.finalBossTimer, math.ceil(event.seconds)))
+			elseif event.kind == "lairWoke" then
+				local name, color = lairOf(event.lairId)
+				showBanner(string.format(Strings.banners.lairWoke, name), color)
+			elseif event.kind == "lairSlept" then
+				local name = lairOf(event.lairId)
+				showBanner(string.format(Strings.banners.lairSlept, name), NOTICE_COLOR)
+			elseif event.kind == "lairSilenced" then
+				local name, color = lairOf(event.lairId)
+				showBanner(string.format(Strings.banners.lairSilenced, name), color)
+			elseif event.kind == "doomStarted" then
+				lairHud.doom = true
 			elseif event.kind == "compass" then
 				showBanner(Strings.banners.compass)
 			elseif event.kind == "chestOpened" and event.player == userId then
@@ -1876,13 +1967,70 @@ function Hud.start()
 		updateSkillBar(selfView, sinceSelf)
 		updateDash(selfView, sinceSelf)
 
-		-- The run clock and the timers under it, run on between snapshots.
+		-- The run clock and the timers under it, run on between snapshots; red in doom.
+		local doom = lairHud.doom or (world ~= nil and world.doom)
 		clockLabel.Text = formatTime(if world then world.time + sinceSnapshot else 0)
-		local bossLeft = if world then world.finalBossLeft else nil
-		bossTimerLabel.Visible = bossLeft ~= nil
-		if bossLeft then
-			bossTimerLabel.Text =
-				string.format(Strings.mapClosesIn, formatTime(bossLeft - sinceSnapshot))
+		clockLabel.TextColor3 = if doom then HURT_COLOR else WHITE
+		local doomIn = if world then world.doomIn - sinceSnapshot else math.huge
+		doomTimerLabel.Visible = not doom and doomIn <= Config.lairs.doomWarnSeconds
+		if doomTimerLabel.Visible then
+			doomTimerLabel.Text = string.format(Strings.doomIn, formatTime(math.ceil(doomIn)))
+		end
+
+		-- The lairs silenced of the run's, beside the clock.
+		local lairs: { Protocol.LairView } = if world then world.lairs else {}
+		local silenced = 0
+		for _, lair in lairs do
+			if lair.silenced then
+				silenced += 1
+			end
+		end
+		lairHud.label.Visible = #lairs > 0
+		local lairsText = string.format(Strings.lairs, silenced, #lairs)
+		if lairsText ~= lairHud.shown then
+			if lairHud.shown ~= "" then
+				lairHud.changedAt = now
+			end
+			lairHud.shown = lairsText
+		end
+		lairHud.label.Text = lairsText
+		local sinceLairs = now - lairHud.changedAt
+		local lairsFlash = if sinceLairs < LAIRS_FLASH_SECONDS
+			then 1 - sinceLairs / LAIRS_FLASH_SECONDS
+			else 0
+		lairHud.label.TextColor3 = NOTICE_COLOR:Lerp(LEVEL_COLOR, lairsFlash)
+		lairHud.scale.Scale = 1 + LAIRS_POP * lairsFlash
+
+		-- The awake bosses' health: a sleeping boss in its lair shows none.
+		local barCount = 0
+		if world and snapshot then
+			local asleep: { [number]: boolean } = {}
+			for _, lair in lairs do
+				local bossId = lair.bossId
+				if lair.asleep and bossId then
+					asleep[bossId] = true
+				end
+			end
+			local awake: { [number]: boolean } = {}
+			for _, bossId in world.bossIds do
+				if not asleep[bossId] then
+					awake[bossId] = true
+				end
+			end
+			for _, enemy in snapshot.enemies do
+				if barCount < MAX_BOSS_BARS and awake[enemy.id] then
+					barCount += 1
+					local kind = Config.enemies[enemy.kind]
+					setBar(
+						lairHud.bars[barCount],
+						enemy.health,
+						if kind then kind.name else Strings.banners.someBoss
+					)
+				end
+			end
+		end
+		for index, bar in lairHud.bars do
+			bar.root.Visible = index <= barCount
 		end
 		local portal = if world then world.portal else nil
 		portalTimerLabel.Visible = portal ~= nil
@@ -1892,7 +2040,26 @@ function Hud.start()
 				math.max(0, math.ceil(portal.secondsLeft - sinceSnapshot))
 			)
 		end
-		if bannerLabel.Visible and now >= bannerUntil then
+		-- The banner: the final boss's rise over all, then a passing banner,
+		-- then doom, which stays.
+		local riseLeft = if world then world.finalRiseLeft else nil
+		if riseLeft then
+			bannerLabel.Text = string.format(
+				Strings.banners.finalBossRises,
+				FINAL_BOSS_NAME,
+				math.max(1, math.ceil(riseLeft - sinceSnapshot))
+			)
+			bannerLabel.TextColor3 = RISE_COLOR
+			bannerLabel.Visible = true
+		elseif now < bannerUntil then
+			bannerLabel.Text = banner.text
+			bannerLabel.TextColor3 = banner.color
+			bannerLabel.Visible = true
+		elseif doom then
+			bannerLabel.Text = Strings.banners.doom
+			bannerLabel.TextColor3 = HURT_COLOR
+			bannerLabel.Visible = true
+		else
 			bannerLabel.Visible = false
 		end
 

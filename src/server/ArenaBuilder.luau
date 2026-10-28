@@ -5,10 +5,12 @@
 -- an invisible wall at the edge, a prop per obstacle drawn from its kind's
 -- mesh (or built from parts while the kind has none), an invisible solid body
 -- per obstacle circle, the shrines, the extraction chest and the portal's
--- arch, each from its own mesh with parts as the fallback. Everything here is
+-- arch, each from its own mesh with parts as the fallback, the lairs' columns
+-- of light (ADR-0021) and the final boss's rise point. Everything here is
 -- presentation; the rules live in the core.
 
 local InsertService = game:GetService("InsertService")
+local TweenService = game:GetService("TweenService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Config = require(ReplicatedStorage.Shared.Config)
@@ -114,6 +116,36 @@ local SHRINE_SPENT_TRANSPARENCY = 0.4
 -- The invisible plinth under a shrine mesh, as tall as the part plinth.
 local SHRINE_BODY_HEIGHT = 1
 
+-- Lairs (ADR-0021): a column of light in the kind's colour over the landmark
+-- the arena already drew, pulsing slowly while the lair sleeps, steady and
+-- brighter once it wakes, out once it is silenced; embers rise at its base.
+local LAIR_BEAM_HEIGHT = 80
+local LAIR_BEAM_RADIUS = 1.2
+local LAIR_GLOW_RADIUS = 3.5
+local LAIR_BEAM_AWAKE = 0.15
+local LAIR_GLOW_AWAKE = 0.7
+-- A sleeping column's transparency swings between these.
+local LAIR_BEAM_ASLEEP = { 0.45, 0.75 }
+local LAIR_GLOW_ASLEEP = { 0.85, 0.95 }
+local LAIR_LIGHT_ASLEEP = { 1, 3 }
+local LAIR_LIGHT_AWAKE = 6
+local LAIR_LIGHT_RANGE = 32
+local LAIR_PULSE_SECONDS = 2.5
+local LAIR_EMBER_AREA = 14
+local LAIR_EMBER_RATE_ASLEEP = 8
+local LAIR_EMBER_RATE_AWAKE = 24
+-- The final boss's rise point: a cracked ring of light on the ground with
+-- thin beams radiating from it.
+local RISE_COLOR = Color3.fromRGB(255, 96, 64)
+local RISE_RADIUS = 14
+local RISE_RING_SEGMENTS = 24
+local RISE_RING_WIDTH = 1.2
+local RISE_CRACKS = 10
+local RISE_CRACK_LENGTH = 12
+local RISE_CRACK_WIDTH = 0.35
+local RISE_BEAM_HEIGHT = 30
+local RISE_BEAM_RADIUS = 0.25
+
 type Look = { part: BasePart, color: Color3, material: Enum.Material }
 type ShrineLook = {
 	beam: Part,
@@ -121,6 +153,15 @@ type ShrineLook = {
 	light: PointLight,
 	emblem: { Look },
 	mesh: MeshPart?,
+	state: string?,
+}
+
+type LairLook = {
+	beam: Part,
+	glow: Part,
+	light: PointLight,
+	embers: ParticleEmitter,
+	pulses: { Tween },
 	state: string?,
 }
 
@@ -152,6 +193,8 @@ local chestGlow: Part? = nil
 local chestLight: PointLight? = nil
 local portalArch: MeshPart? = nil
 local shrineLooks: { [number]: ShrineLook } = {}
+local lairLooks: { [number]: LairLook } = {}
+local finalRise: Model? = nil
 -- One loaded mesh per mesh id, cloned for every prop; false when it failed.
 local templates: { [string]: MeshPart | false } = {}
 
@@ -1355,6 +1398,261 @@ function ArenaBuilder.setShrineState(id: number, used: boolean, ready: boolean)
 	end
 end
 
+-- A config colour (0xRRGGBB) as a Color3.
+local function fromHex(value: number): Color3
+	return Color3.fromRGB(bit32.rshift(value, 16) % 256, bit32.rshift(value, 8) % 256, value % 256)
+end
+
+local function lairColor(kind: string): Color3
+	for _, config in Config.lairs.kinds do
+		if config.id == kind then
+			return fromHex(config.colour)
+		end
+	end
+	return Color3.new(1, 1, 1)
+end
+
+-- A tween swinging `property` of `instance` from its value when it starts
+-- playing to `target` and back, for as long as it plays.
+local function pulse(instance: Instance, property: string, target: number): Tween
+	return TweenService:Create(
+		instance,
+		TweenInfo.new(
+			LAIR_PULSE_SECONDS,
+			Enum.EasingStyle.Sine,
+			Enum.EasingDirection.InOut,
+			-1,
+			true
+		),
+		{ [property] = target }
+	)
+end
+
+local function buildLair(lair: Types.Lair, parent: Instance)
+	local color = lairColor(lair.kind)
+	local model = Instance.new("Model")
+	model.Name = "Lair_" .. lair.id
+	local x, z = lair.x, lair.z
+	local beam = cylinder(
+		"Beam",
+		x,
+		z,
+		0,
+		LAIR_BEAM_HEIGHT,
+		LAIR_BEAM_RADIUS,
+		color,
+		Enum.Material.Neon,
+		model
+	)
+	beam.CastShadow = false
+	local glow = cylinder(
+		"BeamGlow",
+		x,
+		z,
+		0,
+		LAIR_BEAM_HEIGHT,
+		LAIR_GLOW_RADIUS,
+		color,
+		Enum.Material.Neon,
+		model
+	)
+	glow.CastShadow = false
+	local light = Instance.new("PointLight")
+	light.Color = color
+	light.Range = LAIR_LIGHT_RANGE
+	light.Parent = beam
+	-- The embers rise from an invisible slab around the column's foot.
+	local base = block(
+		"Embers",
+		CFrame.new(x, 0.5, z),
+		Vector3.new(LAIR_EMBER_AREA, 1, LAIR_EMBER_AREA),
+		color,
+		Enum.Material.SmoothPlastic,
+		model
+	)
+	base.Transparency = 1
+	base.CastShadow = false
+	local embers = Instance.new("ParticleEmitter")
+	embers.Color = ColorSequence.new(color)
+	embers.LightEmission = 1
+	embers.LightInfluence = 0
+	embers.Size = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.5),
+		NumberSequenceKeypoint.new(1, 0),
+	})
+	embers.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.2),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	embers.Lifetime = NumberRange.new(2, 4)
+	embers.Speed = NumberRange.new(2, 5)
+	embers.SpreadAngle = Vector2.new(20, 20)
+	embers.Acceleration = Vector3.new(0, 1.5, 0)
+	embers.EmissionDirection = Enum.NormalId.Top
+	embers.Parent = base
+	model.Parent = parent
+	lairLooks[lair.id] = {
+		beam = beam,
+		glow = glow,
+		light = light,
+		embers = embers,
+		pulses = {
+			pulse(beam, "Transparency", LAIR_BEAM_ASLEEP[1]),
+			pulse(glow, "Transparency", LAIR_GLOW_ASLEEP[1]),
+			pulse(light, "Brightness", LAIR_LIGHT_ASLEEP[2]),
+		},
+	}
+	ArenaBuilder.setLairState(lair.id, lair.asleep, lair.silenced)
+end
+
+-- Puts the run's lairs' columns of light on the map, in workspace.World.Lairs;
+-- their landmarks and kits are the arena's props.
+function ArenaBuilder.buildLairs(lairs: { Types.Lair })
+	local root = folder
+	if root == nil then
+		return
+	end
+	local existing = root:FindFirstChild("Lairs")
+	if existing then
+		existing:Destroy()
+	end
+	for _, look in lairLooks do
+		for _, tween in look.pulses do
+			tween:Cancel()
+		end
+	end
+	lairLooks = {}
+	local parent = Instance.new("Folder")
+	parent.Name = "Lairs"
+	for _, lair in lairs do
+		buildLair(lair, parent)
+	end
+	parent.Parent = root
+end
+
+-- Shows a lair's state: asleep, the column pulses slowly; awake, it burns
+-- steady and brighter; silenced, the column, the light and the embers go out
+-- and only the landmark stays. Does nothing when the state is the one
+-- already shown.
+function ArenaBuilder.setLairState(id: number, asleep: boolean, silenced: boolean)
+	local look = lairLooks[id]
+	if look == nil then
+		return
+	end
+	local state = if silenced then "silenced" elseif asleep then "asleep" else "awake"
+	if look.state == state then
+		return
+	end
+	look.state = state
+	for _, tween in look.pulses do
+		tween:Cancel()
+	end
+	if state == "asleep" then
+		-- Each pulse swings from these values, so they are set before it plays.
+		look.beam.Transparency = LAIR_BEAM_ASLEEP[2]
+		look.glow.Transparency = LAIR_GLOW_ASLEEP[2]
+		look.light.Brightness = LAIR_LIGHT_ASLEEP[1]
+		for _, tween in look.pulses do
+			tween:Play()
+		end
+		look.light.Enabled = true
+		look.embers.Enabled = true
+		look.embers.Rate = LAIR_EMBER_RATE_ASLEEP
+	elseif state == "awake" then
+		look.beam.Transparency = LAIR_BEAM_AWAKE
+		look.glow.Transparency = LAIR_GLOW_AWAKE
+		look.light.Enabled = true
+		look.light.Brightness = LAIR_LIGHT_AWAKE
+		look.embers.Enabled = true
+		look.embers.Rate = LAIR_EMBER_RATE_AWAKE
+	else
+		look.beam.Transparency = 1
+		look.glow.Transparency = 1
+		look.light.Enabled = false
+		look.embers.Enabled = false
+	end
+end
+
+-- Marks where the final boss rises: a ring of cracked light flat on the
+-- ground, cracks radiating from it and a thin beam at each crack's end.
+function ArenaBuilder.setFinalRise(x: number, z: number)
+	ArenaBuilder.clearFinalRise()
+	local root = folder
+	if root == nil then
+		return
+	end
+	local model = Instance.new("Model")
+	model.Name = "FinalRise"
+	local arc = 2 * math.pi * RISE_RADIUS / RISE_RING_SEGMENTS
+	for index = 1, RISE_RING_SEGMENTS do
+		local angle = index * 2 * math.pi / RISE_RING_SEGMENTS
+		local segment = block(
+			"Ring" .. index,
+			CFrame.new(x + math.cos(angle) * RISE_RADIUS, 0.1, z + math.sin(angle) * RISE_RADIUS)
+				* CFrame.Angles(0, -angle, 0),
+			Vector3.new(RISE_RING_WIDTH, 0.2, arc * 1.05),
+			RISE_COLOR,
+			Enum.Material.Neon,
+			model
+		)
+		segment.CastShadow = false
+	end
+	for index = 1, RISE_CRACKS do
+		-- The cracks are uneven, so the ring reads as broken ground.
+		local angle = (index + 0.3 * math.sin(index * 2.7)) * 2 * math.pi / RISE_CRACKS
+		local length = RISE_CRACK_LENGTH * (0.6 + 0.4 * math.abs(math.sin(index * 1.9)))
+		local middle = RISE_RADIUS + length / 2
+		local crack = block(
+			"Crack" .. index,
+			CFrame.new(x + math.cos(angle) * middle, 0.1, z + math.sin(angle) * middle)
+				* CFrame.Angles(0, -angle, 0),
+			Vector3.new(length, 0.2, RISE_CRACK_WIDTH),
+			RISE_COLOR,
+			Enum.Material.Neon,
+			model
+		)
+		crack.CastShadow = false
+		local reach = RISE_RADIUS + length
+		local beam = cylinder(
+			"Beam" .. index,
+			x + math.cos(angle) * reach,
+			z + math.sin(angle) * reach,
+			0,
+			RISE_BEAM_HEIGHT * (0.5 + 0.5 * math.abs(math.cos(index * 1.3))),
+			RISE_BEAM_RADIUS,
+			RISE_COLOR,
+			Enum.Material.Neon,
+			model
+		)
+		beam.CastShadow = false
+		beam.Transparency = 0.3
+	end
+	local light = Instance.new("PointLight")
+	light.Color = RISE_COLOR
+	light.Range = 40
+	light.Brightness = 4
+	local centre = block(
+		"Centre",
+		CFrame.new(x, 1, z),
+		Vector3.new(1, 1, 1),
+		RISE_COLOR,
+		Enum.Material.SmoothPlastic,
+		model
+	)
+	centre.Transparency = 1
+	light.Parent = centre
+	model.Parent = root
+	finalRise = model
+end
+
+-- Takes the rise point away.
+function ArenaBuilder.clearFinalRise()
+	if finalRise then
+		finalRise:Destroy()
+		finalRise = nil
+	end
+end
+
 -- Shows the chest opened once the run says so: the part chest's lid opens,
 -- the mesh rises a little and turns; the glow dims either way.
 function ArenaBuilder.setChestOpened(opened: boolean)
@@ -1403,6 +1701,13 @@ function ArenaBuilder.clear()
 	chestLight = nil
 	portalArch = nil
 	shrineLooks = {}
+	ArenaBuilder.clearFinalRise()
+	for _, look in lairLooks do
+		for _, tween in look.pulses do
+			tween:Cancel()
+		end
+	end
+	lairLooks = {}
 	local baseplate = workspace:FindFirstChild("Baseplate")
 	if baseplate then
 		baseplate:Destroy()
