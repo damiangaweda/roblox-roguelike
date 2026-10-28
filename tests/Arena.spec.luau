@@ -33,15 +33,56 @@ local function spots(seed: number): { Types.ShrineSpot }
 	return Arena.generate(map, Rng.new(seed), config.shrines).shrineSpots
 end
 
+local function arenaOf(seed: number): (Types.Arena, Types.MapConfig)
+	local config = Fixtures.config()
+	local map = config.maps[config.map]
+	return Arena.generate(map, Rng.new(seed), config.shrines), map
+end
+
+-- The place whose clearing holds the circle's centre: its kit's props are the
+-- only obstacles there.
+local function placeOf(arena: Types.Arena, obstacle: Types.Obstacle): Types.Place?
+	for _, place in arena.places do
+		if Geometry.distance(obstacle.x, obstacle.z, place.x, place.z) <= place.radius then
+			return place
+		end
+	end
+	return nil
+end
+
+local function placeKindOf(map: Types.MapConfig, id: string): Types.PlaceKind
+	for _, kind in map.placeKinds do
+		if kind.id == id then
+			return kind
+		end
+	end
+	error("no place kind " .. id)
+end
+
+local function turn(dx: number, dz: number, rotation: number): (number, number)
+	local cos, sin = math.cos(rotation), math.sin(rotation)
+	return dx * cos - dz * sin, dx * sin + dz * cos
+end
+
+local function deepEqual(a: any, b: any, path: string)
+	if type(a) ~= "table" or type(b) ~= "table" then
+		Assert.equal(a, b, path)
+		return
+	end
+	for key, value in a do
+		deepEqual(value, b[key], path .. "." .. tostring(key))
+	end
+	for key in b do
+		Assert.truthy(a[key] ~= nil, path .. "." .. tostring(key) .. " missing")
+	end
+end
+
 return {
-	["the scatter keeps its spacing and the clear ground"] = function()
+	["the composition keeps its spacing and the clear ground"] = function()
 		local run = Fixtures.run(1, nil, 7)
 		local map = run.map
 		local arena = run.arena
-		Assert.truthy(
-			#arena.obstacles > map.obstacleCount * 0.5,
-			"too few obstacles: " .. #arena.obstacles
-		)
+		Assert.truthy(#arena.obstacles > 100, "too few obstacles: " .. #arena.obstacles)
 		for i, a in arena.obstacles do
 			Assert.truthy(
 				Geometry.distance(a.x, a.z, 0, 0) >= map.startClearRadius + a.radius - 1e-6,
@@ -56,9 +97,15 @@ return {
 				Geometry.distance(a.x, a.z, 0, 0) + a.radius <= map.radius - map.edgeMargin + 1e-6,
 				"inside"
 			)
+			local placeA = placeOf(arena, a)
 			for j, b in arena.obstacles do
-				-- A prop's own circles may touch; props keep their spacing.
-				if i < j and a.group ~= b.group then
+				-- A prop's own circles may touch, and so may a place's kit; every
+				-- other prop keeps its spacing.
+				if
+					i < j
+					and a.group ~= b.group
+					and (placeA == nil or placeA ~= placeOf(arena, b))
+				then
 					Assert.truthy(
 						Geometry.distance(a.x, a.z, b.x, b.z)
 							>= a.radius + b.radius + map.obstacleSpacing - 1e-6,
@@ -71,6 +118,170 @@ return {
 			Geometry.distance(0, 0, arena.chestX, arena.chestZ) >= map.chestMinDistance,
 			"chest far"
 		)
+	end,
+
+	["places are dealt every kind before a repeat and keep their distances"] = function()
+		for seed = 1, 8 do
+			local arena, map = arenaOf(seed)
+			Assert.equal(#arena.places, map.placeCount, "seed " .. seed)
+			local seen: { [string]: boolean } = {}
+			for index = 1, #map.placeKinds do
+				local kind = arena.places[index].kind
+				Assert.falsy(seen[kind], "repeated before every kind: " .. kind)
+				seen[kind] = true
+			end
+			for i, place in arena.places do
+				Assert.truthy(
+					Geometry.distance(place.x, place.z, 0, 0) >= map.placeStartDistance,
+					"start"
+				)
+				Assert.truthy(
+					Geometry.distance(place.x, place.z, arena.chestX, arena.chestZ)
+						>= map.chestClearRadius + place.radius,
+					"chest"
+				)
+				Assert.truthy(
+					Geometry.distance(place.x, place.z, 0, 0) + place.radius
+						<= map.radius - map.edgeMargin + 1e-6,
+					"inside"
+				)
+				for j, other in arena.places do
+					if i < j then
+						Assert.truthy(
+							Geometry.distance(place.x, place.z, other.x, other.z)
+								>= map.placeSpacing,
+							"spacing"
+						)
+					end
+				end
+			end
+		end
+	end,
+
+	["every prop of a place's kit stands at its turned offset"] = function()
+		local arena, map = arenaOf(3)
+		local byGroup = groups(arena)
+		for _, place in arena.places do
+			for _, prop in placeKindOf(map, place.kind).props do
+				local dx, dz = turn(prop.dx, prop.dz, place.rotation)
+				local x, z = place.x + dx, place.z + dz
+				local rotation = place.rotation + (prop.rotation or 0)
+				local kind = kindOf(map, prop.kind)
+				local found = false
+				for _, circles in byGroup do
+					local anchor = circles[1]
+					if anchor.kind == prop.kind and math.abs(anchor.rotation - rotation) < 1e-9 then
+						-- The prop's centre, found from the anchor's footprint offset.
+						local fx, fz = 0, 0
+						if kind.footprint then
+							fx, fz = turn(kind.footprint[1].dx, kind.footprint[1].dz, rotation)
+						end
+						if Geometry.distance(anchor.x - fx, anchor.z - fz, x, z) < 1e-6 then
+							found = true
+							break
+						end
+					end
+				end
+				Assert.truthy(found, place.kind .. ": " .. prop.kind .. " missing")
+			end
+		end
+	end,
+
+	["a grove's trees lie in its disc, densest at the core"] = function()
+		local rng = Rng.new(11)
+		local radius, core = 40, 0.5
+		local inside, outside = 0, 0
+		for _ = 1, 20000 do
+			local dx, dz = Arena.groveOffset(rng, radius, core)
+			if dx and dz then
+				local r = math.sqrt(dx * dx + dz * dz)
+				Assert.truthy(r <= radius, "inside the disc")
+				if r < core * radius then
+					inside += 1
+				else
+					outside += 1
+				end
+			end
+		end
+		-- Per area: the core holds a quarter of the disc.
+		local coreArea = core * core
+		local inner = inside / coreArea
+		local outer = outside / (1 - coreArea)
+		Assert.truthy(inner > outer * 1.8, "core " .. inner .. " edge " .. outer)
+	end,
+
+	["no prop but its own place's kit comes within a path's width"] = function()
+		for seed = 1, 5 do
+			local arena, map = arenaOf(seed)
+			Assert.equal(#arena.paths, #arena.places)
+			for index, path in arena.paths do
+				local place = arena.places[index]
+				Assert.near(path[1].x, 0, 1e-9)
+				Assert.near(path[1].z, 0, 1e-9)
+				Assert.near(
+					Geometry.distance(path[#path].x, path[#path].z, place.x, place.z),
+					place.radius,
+					1e-6,
+					"ends at the clearing"
+				)
+				for _, obstacle in arena.obstacles do
+					if placeOf(arena, obstacle) ~= place then
+						Assert.truthy(
+							Arena.pathDistance(path, obstacle.x, obstacle.z)
+								>= map.pathWidth + obstacle.radius - 1e-6,
+							"seed " .. seed .. ": " .. obstacle.kind .. " on a path"
+						)
+					end
+				end
+			end
+		end
+	end,
+
+	["pines rule the north and oaks the south"] = function()
+		local north = { pine = 0, oak = 0 }
+		local south = { pine = 0, oak = 0 }
+		for seed = 1, 12 do
+			local arena = arenaOf(seed)
+			for _, obstacle in arena.obstacles do
+				local kind = obstacle.kind
+				if (kind == "pine" or kind == "oak") and placeOf(arena, obstacle) == nil then
+					if obstacle.z < -200 then
+						north[kind] += 1
+					elseif obstacle.z > 200 then
+						south[kind] += 1
+					end
+				end
+			end
+		end
+		Assert.truthy(north.pine > north.oak * 2, "north " .. north.pine .. "/" .. north.oak)
+		Assert.truthy(south.oak > south.pine * 2, "south " .. south.oak .. "/" .. south.pine)
+	end,
+
+	["every prop varies its scale and lean within the config"] = function()
+		local arena, map = arenaOf(2)
+		local varied = false
+		for _, circles in groups(arena) do
+			local first = circles[1]
+			Assert.truthy(math.abs(first.scale - 1) <= map.scaleVariation + 1e-9, "scale")
+			Assert.truthy(
+				first.lean >= 0 and first.lean <= math.rad(map.leanDegrees) + 1e-9,
+				"lean"
+			)
+			for _, circle in circles do
+				Assert.equal(circle.scale, first.scale, "one scale per group")
+				Assert.equal(circle.lean, first.lean, "one lean per group")
+			end
+			varied = varied or math.abs(first.scale - 1) > map.scaleVariation * 0.5
+		end
+		Assert.truthy(varied, "some scale varies")
+	end,
+
+	["the same seed composes the same map"] = function()
+		local a = arenaOf(21)
+		local b = arenaOf(21)
+		deepEqual(a, b, "arena")
+		local c = arenaOf(22)
+		Assert.truthy(a.places[1].x ~= c.places[1].x, "another seed, another map")
 	end,
 
 	["the same seed scatters the same obstacles and a different seed others"] = function()

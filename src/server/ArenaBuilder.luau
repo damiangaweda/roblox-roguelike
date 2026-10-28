@@ -1,6 +1,7 @@
 --!strict
 -- Builds the forest map in the workspace from the core's arena (ADR-0014,
--- ADR-0020): a round terrain ground with clearings and a path to the chest,
+-- ADR-0020): a round terrain ground with the places' clearings and the paths
+-- to them (stage 3b),
 -- an invisible wall at the edge, a prop per obstacle drawn from its kind's
 -- mesh (or built from parts while the kind has none), an invisible solid body
 -- per obstacle circle, the shrines, the extraction chest and the portal's
@@ -26,23 +27,16 @@ local PATCH_MATERIALS = {
 }
 local PATCH_COUNT = 120
 local PATCH_RADIUS_MIN, PATCH_RADIUS_MAX = 6, 18
--- Clearings: lighter grass discs away from the start. Terrain colours are per
+-- Clearings: a lighter grass disc under every place. Terrain colours are per
 -- material, so the clearings take a material nothing else uses, recoloured.
 local CLEARING_MATERIAL = Enum.Material.Snow
 local CLEARING_COLOR = Color3.fromRGB(138, 170, 88)
-local CLEARING_COUNT_MIN, CLEARING_COUNT_MAX = 3, 5
-local CLEARING_RADIUS_MIN, CLEARING_RADIUS_MAX = 25, 40
-local CLEARING_START_GAP = 60
-local CLEARING_ATTEMPTS = 20
--- The path: a winding dirt band from the start to the chest.
+-- The paths: dirt bands along the core's polylines, a disc every PATH_STEP
+-- studs, kept off the start's ring of stones.
 local PATH_MATERIAL = Enum.Material.Mud
 local PATH_COLOR = Color3.fromRGB(128, 102, 68)
 local PATH_STEP = 3
-local PATH_RADIUS = 3.5
-local PATH_SWAY = 14
-local PATH_WAVES = 2.5
 local PATH_START_GAP = 10
-local PATH_CHEST_GAP = 8
 local FLOWER_COUNT = 50
 local FLOWER_COLORS = {
 	Color3.fromRGB(240, 200, 80),
@@ -133,8 +127,8 @@ type ShrineLook = {
 -- A circle of a kind's footprint, offset from the prop's centre (Config.maps).
 type FootprintCircle = { dx: number, dz: number, radius: number }
 
--- A prop to draw: where its centre is, how it turns, and the world position
--- of each circle of its kind's footprint.
+-- A prop to draw: where its centre is, how it turns, its size factor and
+-- lean, and the world position of each circle of its kind's footprint.
 type Prop = {
 	kind: string,
 	x: number,
@@ -142,6 +136,8 @@ type Prop = {
 	rotation: number,
 	radius: number,
 	group: number,
+	scale: number,
+	lean: number,
 	circles: { { x: number, z: number, radius: number } },
 }
 
@@ -310,15 +306,16 @@ local function preloadProps()
 end
 
 -- A clone of a props key's mesh (variant `choice`, wrapping), sized by its
--- scale, standing on the ground at (x, z) turned by `rotation`, in `parent`;
--- nil when the key has no mesh or it failed to load.
+-- scale times `factor`, standing on the ground at (x, z) turned by
+-- `rotation`, in `parent`; nil when the key has no mesh or it failed to load.
 local function placeMesh(
 	key: string,
 	choice: number,
 	x: number,
 	z: number,
 	rotation: CFrame,
-	parent: Instance
+	parent: Instance,
+	factor: number?
 ): MeshPart?
 	local variants = Config.props[key]
 	if variants == nil or #variants == 0 then
@@ -336,7 +333,7 @@ local function placeMesh(
 	if variant.textureId ~= "" then
 		mesh.TextureID = assetId(variant.textureId)
 	end
-	local size = source.Size * variant.scale
+	local size = source.Size * variant.scale * (factor or 1)
 	mesh.Size = size
 	mesh.CFrame = CFrame.new(x, variant.yOffset + size.Y / 2, z) * rotation
 	mesh.Parent = parent
@@ -357,10 +354,23 @@ local function align(mesh: MeshPart, direction: Vector3)
 	mesh.CFrame = CFrame.new(mesh.Position) * rotation
 end
 
--- The kind's mesh, drawn at the prop's centre on the ground; false when the
--- kind has no mesh or it failed to load.
+-- A prop's lean: a small tilt about its own x axis, after its yaw.
+local function tilt(prop: Prop): CFrame
+	return CFrame.Angles(prop.lean, 0, 0)
+end
+
+-- The kind's mesh, drawn at the prop's centre on the ground, sized and
+-- leaning as the core says; false when the kind has no mesh or it failed to load.
 local function meshProp(prop: Prop, parent: Instance): boolean
-	return placeMesh(prop.kind, prop.group, prop.x, prop.z, yaw(prop.rotation), parent) ~= nil
+	return placeMesh(
+		prop.kind,
+		prop.group,
+		prop.x,
+		prop.z,
+		yaw(prop.rotation) * tilt(prop),
+		parent,
+		prop.scale
+	) ~= nil
 end
 
 -- A tree: a trunk and a crown of a few overlapping balls, the crown leaning a
@@ -647,14 +657,22 @@ local function meshStoneCircle(prop: Prop, parent: Instance): boolean
 	local model = Instance.new("Model")
 	model.Name = "StoneCircle"
 	for index, circle in prop.circles do
-		local stone =
-			placeMesh("stoneCircle", prop.group + index, circle.x, circle.z, CFrame.identity, model)
+		local stone = placeMesh(
+			"stoneCircle",
+			prop.group + index,
+			circle.x,
+			circle.z,
+			CFrame.identity,
+			model,
+			prop.scale
+		)
 		if stone == nil then
 			model:Destroy()
 			return false
 		end
 		-- The broad face toward the centre: the long side along the ring.
 		align(stone, Vector3.new(-(cz - circle.z), 0, cx - circle.x))
+		stone.CFrame *= tilt(prop)
 	end
 	model.Parent = parent
 	return true
@@ -665,15 +683,21 @@ end
 local function meshFence(prop: Prop, parent: Instance): boolean
 	local from, to = span(prop)
 	local centre = (from + to) / 2
-	local fence = placeMesh("fence", prop.group, centre.X, centre.Z, yaw(prop.rotation), parent)
+	local fence =
+		placeMesh("fence", prop.group, centre.X, centre.Z, yaw(prop.rotation), parent, prop.scale)
 	if fence == nil then
 		return false
 	end
 	align(fence, to - from)
+	fence.CFrame *= tilt(prop)
 	return true
 end
 
-local function buildFallback(prop: Prop, parent: Instance, random: Random)
+-- The part look while a kind has no mesh: single-circle kinds grow with the
+-- prop's scale; the lean is the meshes' only.
+local function buildFallback(original: Prop, parent: Instance, random: Random)
+	local prop = table.clone(original)
+	prop.radius *= prop.scale
 	local kind = prop.kind
 	if kind == "pine" or kind == "tree" then
 		buildTree(prop.x, prop.z, prop.radius, prop.rotation, false, parent, random)
@@ -765,6 +789,8 @@ local function propOf(
 		rotation = anchor.rotation,
 		radius = anchor.radius,
 		group = anchor.group,
+		scale = anchor.scale,
+		lean = anchor.lean,
 		circles = circles,
 	}
 end
@@ -779,65 +805,46 @@ local function paint(x: number, z: number, radius: number, material: Enum.Materi
 	)
 end
 
--- Lighter grass discs away from the start, none overlapping another.
-local function buildClearings(arena: Types.Arena, random: Random)
-	local placed: { { x: number, z: number, radius: number } } = {}
-	local count = random:NextInteger(CLEARING_COUNT_MIN, CLEARING_COUNT_MAX)
-	for _ = 1, count do
-		local radius = random:NextNumber(CLEARING_RADIUS_MIN, CLEARING_RADIUS_MAX)
-		for _ = 1, CLEARING_ATTEMPTS do
-			local angle = random:NextNumber(0, 2 * math.pi)
-			local distance = math.max(arena.radius - radius - 10, 0)
-				* math.sqrt(random:NextNumber())
-			local x, z = math.cos(angle) * distance, math.sin(angle) * distance
-			local fits = math.sqrt((x - arena.startX) ^ 2 + (z - arena.startZ) ^ 2)
-				>= CLEARING_START_GAP + radius
-			for _, other in placed do
-				if math.sqrt((x - other.x) ^ 2 + (z - other.z) ^ 2) < radius + other.radius then
-					fits = false
-					break
-				end
-			end
-			if fits then
-				table.insert(placed, { x = x, z = z, radius = radius })
-				paint(x, z, radius, CLEARING_MATERIAL)
-				break
-			end
-		end
+-- A lighter grass disc under every place, its clearing's radius.
+local function buildClearings(arena: Types.Arena)
+	for _, place in arena.places do
+		paint(place.x, place.z, place.radius, CLEARING_MATERIAL)
 	end
 end
 
--- A winding dirt band from the start toward the chest: a chain of terrain
--- discs swaying off the straight line, back on it at both ends.
-local function buildPath(arena: Types.Arena, random: Random)
-	local from = Vector3.new(arena.startX, 0, arena.startZ)
-	local to = Vector3.new(arena.chestX, 0, arena.chestZ)
-	local line = to - from
-	local length = line.Magnitude
-	local run = length - PATH_START_GAP - PATH_CHEST_GAP
-	if run <= 0 then
+-- A dirt band along every path of the core: discs of the path's width,
+-- jittered, every PATH_STEP studs along its polyline, none on the start's ring.
+local function buildPaths(arena: Types.Arena, random: Random)
+	local map = Config.maps[Config.map]
+	if map == nil then
 		return
 	end
-	local along = line.Unit
-	local side = Vector3.new(-along.Z, 0, along.X)
-	local phase = random:NextNumber(0, 2 * math.pi)
-	local steps = math.floor(run / PATH_STEP)
-	for index = 0, steps do
-		local t = index / steps
-		local sway = PATH_SWAY
-			* math.sin(t * PATH_WAVES * 2 * math.pi + phase)
-			* math.sin(t * math.pi)
-		local point = from + along * (PATH_START_GAP + t * run) + side * sway
-		paint(point.X, point.Z, PATH_RADIUS * random:NextNumber(0.85, 1.15), PATH_MATERIAL)
-		if index % BUILD_BATCH == 0 then
-			task.wait()
+	local radius = map.pathWidth / 2
+	local count = 0
+	for _, path in arena.paths do
+		for index = 2, #path do
+			local from = Vector3.new(path[index - 1].x, 0, path[index - 1].z)
+			local to = Vector3.new(path[index].x, 0, path[index].z)
+			local steps = math.max(math.ceil((to - from).Magnitude / PATH_STEP), 1)
+			for step = 0, steps - 1 do
+				local point = from:Lerp(to, step / steps)
+				if
+					(point - Vector3.new(arena.startX, 0, arena.startZ)).Magnitude >= PATH_START_GAP
+				then
+					paint(point.X, point.Z, radius * random:NextNumber(0.85, 1.15), PATH_MATERIAL)
+					count += 1
+					if count % BUILD_BATCH == 0 then
+						task.wait()
+					end
+				end
+			end
 		end
 	end
 end
 
 -- The ground is terrain: a grass disc with patches of other materials
 -- blended in, which gives the forest floor its texture and swaying grass for
--- nothing per frame; clearings and the path over them; above it the start's
+-- nothing per frame; the places' clearings and the paths over them; above it the start's
 -- ring of stones and a few flowers.
 local function buildGround(arena: Types.Arena, parent: Instance, random: Random)
 	local terrain = workspace.Terrain
@@ -855,8 +862,8 @@ local function buildGround(arena: Types.Arena, parent: Instance, random: Random)
 			task.wait()
 		end
 	end
-	buildClearings(arena, random)
-	buildPath(arena, random)
+	buildClearings(arena)
+	buildPaths(arena, random)
 
 	local ground = Instance.new("Model")
 	ground.Name = "Ground"
@@ -914,6 +921,8 @@ local function buildTreeLine(arena: Types.Arena, parent: Instance, random: Rando
 				rotation = angle,
 				radius = treeRadius,
 				group = count,
+				scale = 1,
+				lean = 0,
 				circles = { { x = x, z = z, radius = treeRadius } },
 			}
 			if not meshProp(prop, line) then
@@ -1252,7 +1261,7 @@ function ArenaBuilder.build(arena: Types.Arena)
 	local root = Instance.new("Folder")
 	root.Name = "World"
 	folder = root
-	-- Only the look varies with it: colours, tilts, clearings and the path.
+	-- Only the look varies with it: colours, tilts and the paths' jitter.
 	local random = Random.new(arena.chestX * 1000 + arena.chestZ)
 	lookRandom = random
 	buildGround(arena, root, random)

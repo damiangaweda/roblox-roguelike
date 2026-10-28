@@ -349,15 +349,21 @@ export type EnemyKindConfig = {
 
 export type BossScheduleEntry = { kind: string, atSeconds: number }
 
+-- A prop of a place's kit: an obstacle kind at an offset from the place's
+-- centre, turned with the place, and its own extra rotation.
+export type PlaceProp = { kind: string, dx: number, dz: number, rotation: number? }
+
+-- A kind of place (stage 3b): a kit of props on a clearing of `radius`, kept
+-- free of every other prop.
+export type PlaceKind = { id: string, radius: number, weight: number, props: { PlaceProp } }
+
 -- One map: its ground, obstacles, roster and bosses (ADR-0014, ADR-0015).
 export type MapConfig = {
 	id: string,
 	name: string,
 	radius: number,
-	-- Obstacles: how many the scatter tries to place, their kinds with radii
-	-- and weights, the minimum gap between them and the clear ground around
-	-- the start and the extraction chest.
-	obstacleCount: number,
+	-- Obstacles: their kinds with radii and weights, the minimum gap between
+	-- them and the clear ground around the start and the extraction chest.
 	-- A kind with a footprint takes one circle per entry, offset from the
 	-- prop's centre and turned with its rotation; without one, a single circle.
 	obstacleKinds: {
@@ -375,6 +381,35 @@ export type MapConfig = {
 	-- The chest lies at least this far from the start and this far inside the edge.
 	chestMinDistance: number,
 	edgeMargin: number,
+	-- The composition (stage 3b). Places: how many, their kinds, the gap
+	-- between their centres and their least distance from the start.
+	placeCount: number,
+	placeKinds: { PlaceKind },
+	placeSpacing: number,
+	placeStartDistance: number,
+	-- Groves: how many, their radii and tree counts, the gap kept from places'
+	-- clearings and other groves, and the share of a grove's radius inside
+	-- which its density is full.
+	groveCount: number,
+	groveRadiusMin: number,
+	groveRadiusMax: number,
+	groveTreesMin: number,
+	groveTreesMax: number,
+	groveSpacing: number,
+	groveCore: number,
+	-- Leftovers: how many sparse props, and their kinds by weight.
+	scatterCount: number,
+	scatterKinds: { { id: string, weight: number } },
+	-- Paths: the open ground kept on either side of a path, and how far it sways.
+	pathWidth: number,
+	pathSway: number,
+	-- How strongly the north (-z) favours pines: the pine share of a tree at z
+	-- is 0.5 + northShare * (-z / radius), clamped to [0.1, 0.9].
+	northShare: number,
+	-- Every prop's size varies by up to this share either way, and it leans by
+	-- up to this many degrees.
+	scaleVariation: number,
+	leanDegrees: number,
 	-- Grunt kinds from weakest to strongest.
 	roster: { string },
 	-- Elite kinds the horde may spawn.
@@ -626,7 +661,25 @@ export type Obstacle = {
 	-- one group; the anchor circle is where the builder draws the prop.
 	group: number,
 	anchor: boolean,
+	-- The prop's look, the same for every circle of a group: its size factor
+	-- and how far it leans (radians); the circles keep the kind's sizes.
+	scale: number,
+	lean: number,
 }
+
+-- A place on the map: its kit drawn at (x, z) turned by `rotation`, on a
+-- clearing of `radius`.
+export type Place = {
+	id: number,
+	kind: string,
+	x: number,
+	z: number,
+	radius: number,
+	rotation: number,
+}
+
+-- A path of open ground: a polyline from the start to a place's clearing.
+export type Path = { { x: number, z: number } }
 
 export type Arena = {
 	radius: number,
@@ -637,6 +690,8 @@ export type Arena = {
 	chestX: number,
 	chestZ: number,
 	shrineSpots: { ShrineSpot },
+	places: { Place },
+	paths: { Path },
 }
 
 -- A damage-over-time stack on an enemy.
