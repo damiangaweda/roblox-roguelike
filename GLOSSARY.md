@@ -44,6 +44,38 @@ _Avoid_: Zone, arena, level, battleground, world (the game's setting as a whole)
 A prop scattered on the map anew for every run, which blocks players and enemies and nothing else.
 _Avoid_: Cover, prop, wall
 
+**Plateau**:
+A raised, flat-topped rise of the map ringed by cliffs, reached only by its ramps.
+_Avoid_: Hill, mesa, high ground
+
+**Cliff**:
+A plateau's sheer side, which blocks players and enemies like an obstacle.
+_Avoid_: Wall, ledge, edge
+
+**Ramp**:
+A gap in a plateau's cliffs where the ground climbs, the one way up or down.
+_Avoid_: Slope, path (reserved for the open ground between places), stairs
+
+**Stream**:
+The one watercourse winding edge to edge across a map: a deep channel nobody crosses, shallow banks and a few fords.
+_Avoid_: River, creek, water (the material)
+
+**Channel**:
+A stream's deep middle, which blocks players and enemies like an obstacle.
+_Avoid_: Current, deep water, riverbed
+
+**Shallows**:
+Water a player or enemy wades through slower: a stream's banks, its fords and a pond's rim.
+_Avoid_: Slow zone (in code only), shallow water, wading area
+
+**Ford**:
+A place where a stream is shallows all the way across, so it can be crossed.
+_Avoid_: Crossing, bridge, gap
+
+**Pad**:
+A disc of ground the map keeps flat: under the start, the chest, places, lairs, paths and plateau tops.
+_Avoid_: Platform, flat area, footprint
+
 **Shrine**:
 A place scattered on the map with the obstacles, seen from afar by its beam of light, that a hero activates by holding beside it for a boon, a pact, a trial or a spring.
 _Avoid_: Altar, totem (reserved for the skill), pickup, power-up
