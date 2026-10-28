@@ -26,7 +26,7 @@ Aimed combat with the Elementalist ([ADR-0009](adr/0009-aimed-combat.md)), seven
 
 ### Stage 3: the solo run
 
-**Status:** proposed; grilled on 2026-10-27, awaiting the user's acceptance of this text and ADR-0013 to ADR-0018.
+**Status:** accepted on 2026-10-27 together with ADR-0013 to ADR-0018; in progress on `feat/solo-run`.
 
 **Goal:** one fifteen-minute run, played alone, that is fun and looks intended: three classes whose skills cast themselves, cards that build a different character every run, a horde with elites and bosses, a hidden way out and a final boss.
 

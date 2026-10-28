@@ -1,75 +1,63 @@
 --!strict
--- A skill's effective numbers: its configuration with the player's perks
--- applied to the properties the skill carries (plan, stage 2a). A perk for a
--- property the skill lacks changes nothing.
+-- A skill's numbers at a rank, after the hero's stats (ADR-0013): what
+-- Casting fires. Each rank above 1 raises damage, shortens the cooldown and
+-- grows the radius and the duration; the configured ranks add a target.
+-- Range and an effect's own duration do not scale.
 
-local Perks = require("./Perks")
 local Types = require("./Types")
 
 local Skills = {}
 
--- The properties each shape carries, beyond damage and its interval.
-local SHAPE_PROPERTIES: { [Types.SkillShape]: { Types.Property } } = {
-	line = { "range", "pierce" },
-	projectile = { "range", "area", "projectileSplit", "knockback" },
-	ring = { "area", "knockback" },
-	chain = { "range", "chainJumps" },
-}
-
--- Whether a perk on `property` changes the skill. The basic attack's interval
--- is attackSpeed, an active skill's is cooldown.
-function Skills.carries(
-	skill: Types.SkillConfig,
-	isBasic: boolean,
-	property: Types.Property
-): boolean
-	if property == "damage" then
-		return true
-	elseif property == "cooldown" then
-		return not isBasic
-	elseif property == "attackSpeed" then
-		return isBasic
-	elseif property == "statusDuration" then
-		return #skill.tags > 0
+-- Targets added by the ranks up to `rank`.
+function Skills.extraTargets(config: Types.Config, rank: number): number
+	local extra = 0
+	for _, threshold in config.ranks.extraTargetRanks do
+		if threshold <= rank then
+			extra += 1
+		end
 	end
-	return table.find(SHAPE_PROPERTIES[skill.shape], property) ~= nil
+	return extra
 end
 
--- The skill with the player's perks applied.
 function Skills.effective(
 	config: Types.Config,
-	player: Types.Player,
 	skill: Types.SkillConfig,
-	isBasic: boolean
+	rank: number,
+	stats: Types.HeroStats
 ): Types.EffectiveSkill
-	local modifiers = Perks.modifiers(config, player)
-	local function value(property: Types.Property, base: number): number
-		if Skills.carries(skill, isBasic, property) then
-			return Perks.value(modifiers, property, base)
-		end
-		return base
+	local ranks = config.ranks
+	local above = rank - 1
+	local damageFactor = (1 + ranks.damagePerRank * above) * stats.damage
+	local cooldown = skill.cooldownSeconds
+		* ranks.cooldownFactorPerRank ^ above
+		* math.max(1 - stats.haste, ranks.minCooldownShare)
+
+	-- Damage over time scales like the hit.
+	local effect = skill.effect
+	if effect and effect.kind == "dot" and effect.dps then
+		local scaled = table.clone(effect)
+		scaled.dps = effect.dps * damageFactor
+		effect = scaled
 	end
 
 	return {
 		id = skill.id,
-		name = skill.name,
-		shape = skill.shape,
-		damage = value("damage", skill.damage),
-		cooldownSeconds = if isBasic
-			then value("attackSpeed", skill.cooldownSeconds)
-			else value("cooldown", skill.cooldownSeconds),
-		range = value("range", skill.range),
-		radius = value("area", skill.radius),
-		width = skill.width,
-		pierce = value("pierce", skill.pierce),
-		count = value("projectileSplit", 1),
-		jumps = value("chainJumps", skill.jumps),
-		jumpRange = skill.jumpRange,
-		coneDegrees = skill.coneDegrees,
+		targeting = skill.targeting,
+		toughest = skill.toughest == true,
+		damage = skill.damage * damageFactor,
+		cooldownSeconds = math.max(ranks.minCooldownSeconds, cooldown),
+		range = skill.range,
+		radius = skill.radius * (1 + ranks.radiusPerRank * above) * stats.area,
+		-- Area kinds (count 0) gain no targets.
+		count = if skill.count > 0
+			then skill.count + Skills.extraTargets(config, rank)
+			else skill.count,
+		durationSeconds = skill.durationSeconds * (1 + ranks.durationPerRank * above),
 		speed = skill.speed,
-		knockback = value("knockback", skill.knockback),
+		knockback = skill.knockback,
 		tags = skill.tags,
-		statusFactor = value("statusDuration", 1),
+		effect = effect,
+		critChance = stats.critChance,
 	}
 end
 

@@ -1,6 +1,6 @@
 # Only what a run found is at risk; what a player brings in and earns is kept
 
-**Status:** proposed; once accepted it supersedes [ADR-0005](0005-gear-at-risk-skills-safe.md).
+**Status:** accepted on 2026-10-27; once accepted it supersedes [ADR-0005](0005-gear-at-risk-skills-safe.md).
 
 A player who dies in a run loses the haul, every item and utility skill they picked up during that run; the items and utility skills they brought in are never lost, and the gold and experience the run earned are kept either way. Extracting moves the haul into the stash. We chose this over ADR-0005's gear at risk because, with no betrayal and no other players to take a dead player's bag, losing worn gear would only punish, while losing the haul keeps every extraction a decision and every run leaves some progress.
 

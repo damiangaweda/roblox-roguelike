@@ -120,6 +120,10 @@ _Avoid_: Level (reserved for the hero), tier, star
 One of the three choices a level-up offers: a new skill, a skill's next rank, a new passive or a passive's next rank.
 _Avoid_: Perk, upgrade, offer
 
+**Offer**:
+The three cards a level-up deals, from which the player takes one; a solo run stands still until they do.
+_Avoid_: Hand, draw, choice
+
 **Crystal**:
 What a killed enemy drops and a player within pickup range draws in, carrying experience.
 _Avoid_: Gem, orb, shard, XP

@@ -9,10 +9,10 @@ TOOLS := $(HOME)/.rokit/bin
 LUAU_LSP_VERSION := 1.70.1
 DEFINITIONS := .cache/globalTypes-$(LUAU_LSP_VERSION).d.luau
 
-.PHONY: ci commits setup hooks fmt fmt-check lint types purity test build serve
+.PHONY: ci commits setup hooks fmt fmt-check lint types purity compile test build serve
 
 ## Every check a pull request needs before a merge.
-ci: commits fmt-check lint types purity test build
+ci: commits fmt-check lint types purity compile test build
 
 ## Commit subjects on this branch since it left origin/main.
 commits:
@@ -49,6 +49,10 @@ types:
 ## The rules core must not touch the Roblox API (ADR-0002).
 purity:
 	scripts/check-core-purity.sh $(TOOLS)/luau-lsp
+
+## Every source compiles under Luau's compiler (Studio's limits, e.g. 200 locals).
+compile:
+	$(TOOLS)/lune run scripts/check-compile src tests
 
 ## Core tests under Lune; `make test FILTER=perk` runs the matching ones.
 test:

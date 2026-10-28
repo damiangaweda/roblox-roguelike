@@ -1,6 +1,6 @@
 # Skills cast themselves; the player moves, picks cards and fires utility skills
 
-**Status:** proposed; once accepted it supersedes [ADR-0009](0009-aimed-combat.md).
+**Status:** accepted on 2026-10-27; once accepted it supersedes [ADR-0009](0009-aimed-combat.md).
 
 Every skill a player gathers during a run fires on its own cooldown at a target its targeting picks (the nearest enemy, the toughest, the densest cluster, a chain, the ground around the hero), and nothing the player aims steers it. The player's decisions are where to move, which of three cards to take at each level-up, and when to fire up to three utility skills by hand (a sprint, a barrier, a heal), which are the only buttons besides moving. We chose this over the aimed combat of ADR-0009 because the user judged the aimed, open-map game beyond what this project can make look and feel good, and the survivors-like loop (modelled on Azeroth Survivors) puts the fun in systems and numbers: ranks with thresholds, distinct targeting, a growing horde. With no aim, no platform has an aiming advantage, so the cursor-against-stick fairness problem disappears with it.
 

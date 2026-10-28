@@ -1,6 +1,6 @@
 # Maps ask for a minimum power from every player who enters
 
-**Status:** proposed; once accepted it supersedes [ADR-0006](0006-map-tiers-with-power-limit.md).
+**Status:** accepted on 2026-10-27; once accepted it supersedes [ADR-0006](0006-map-tiers-with-power-limit.md).
 
 Maps are ordered from easiest to hardest, and each asks for a minimum power: a party enters only if every member's power (account level, worn items and utility skills) reaches it; harder maps hold stronger enemies and drop better loot. Later classes have the same power budget as the first ones and differ by mechanics, not strength, so unlocking one for Robux buys convenience, not victory. We chose a minimum over ADR-0006's maximum because the maximum protected new players from veterans in PvP, which co-op removes ([ADR-0016](0016-co-op-party-of-up-to-four.md)), while a minimum tells a player when they are ready and keeps a weak player from being carried through a map that would only kill them.
 

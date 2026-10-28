@@ -1,160 +1,92 @@
 --!strict
 -- One run, advanced by the server adapter in fixed steps (ADR-0002). The core
--- never reads time, randomness or the engine itself: the adapter passes them in.
+-- never reads time, randomness or the engine itself: the adapter passes them
+-- in. Run holds the players' movement, the intents and the run's end; the
+-- subsystems it steps live in their own modules.
 
-local Arc = require("./Arc")
-local Camps = require("./Camps")
-local Combat = require("./Combat")
+local Arena = require("./Arena")
+local Cards = require("./Cards")
+local Casting = require("./Casting")
+local Damage = require("./Damage")
 local Enemies = require("./Enemies")
 local Extraction = require("./Extraction")
-local Life = require("./Life")
-local Map = require("./Map")
-local Perks = require("./Perks")
+local Hero = require("./Hero")
+local Horde = require("./Horde")
+local Progression = require("./Progression")
 local Projectiles = require("./Projectiles")
 local State = require("./State")
 local Types = require("./Types")
 
 local Run = {}
 
--- A run for `playerCount` players: the map is generated for that many,
--- populated with camps and patrols, and given the clues to its leaders.
-function Run.new(config: Types.Config, seed: number, playerCount: number): Types.Run
-	local run = State.newRun(config, seed, playerCount)
-	Camps.populate(run)
-	Arc.placeClues(run)
-	return run
+function Run.new(config: Types.Config, seed: number): Types.Run
+	return State.newRun(config, seed)
 end
 
+-- A hero of `class` joins at the start; an unknown class falls back to the
+-- first class by id.
 function Run.addPlayer(run: Types.Run, id: number, class: string?): Types.Player
-	return State.newPlayer(run, id, class)
+	local chosen = class
+	if chosen == nil or run.config.classes[chosen] == nil then
+		local ids = {}
+		for key in run.config.classes do
+			table.insert(ids, key)
+		end
+		table.sort(ids)
+		chosen = ids[1]
+	end
+	return State.newPlayer(run, id, chosen :: string)
 end
 
 -- A player who leaves the server leaves the run.
 function Run.removePlayer(run: Types.Run, id: number)
 	run.players[id] = nil
+	run.paused = false
+	for _, player in run.players do
+		if #player.offers > 0 then
+			run.paused = true
+		end
+	end
 end
 
-local function alivePlayer(run: Types.Run, playerId: number): Types.Player?
+function Run.chooseCard(run: Types.Run, playerId: number, index: number): boolean
 	if run.ended then
-		return nil
+		return false
 	end
-	local player = run.players[playerId]
-	if player == nil or player.state ~= "alive" then
-		return nil
-	end
-	return player
+	return Cards.choose(run, playerId, index)
 end
 
--- The player's class.
-function Run.class(run: Types.Run, player: Types.Player): Types.ClassConfig
-	return run.config.classes[player.class]
+function Run.useUtility(run: Types.Run, playerId: number, index: number): boolean
+	if run.ended or run.paused then
+		return false
+	end
+	return Hero.useUtility(run, playerId, index)
 end
 
--- How fast the player may walk, after perks.
+function Run.setOpening(run: Types.Run, playerId: number, held: boolean)
+	if run.ended then
+		return
+	end
+	Extraction.setOpening(run, playerId, held)
+end
+
+function Run.castSpell(run: Types.Run, playerId: number): boolean
+	if run.ended or run.paused then
+		return false
+	end
+	return Extraction.castSpell(run, playerId)
+end
+
+function Run.enterPortal(run: Types.Run, playerId: number): boolean
+	if run.ended or run.paused then
+		return false
+	end
+	return Extraction.enterPortal(run, playerId)
+end
+
+-- How fast the player may walk now, after passives and the sprint.
 function Run.walkSpeed(run: Types.Run, player: Types.Player): number
-	return Perks.playerValue(run.config, player, "moveSpeed", run.config.player.walkSpeed)
-end
-
-function Run.dashMaxCharges(run: Types.Run, player: Types.Player): number
-	return math.floor(
-		Perks.playerValue(run.config, player, "dashCharges", Run.class(run, player).dash.charges)
-	)
-end
-
--- The player pressed (`held`) or released the basic attack.
-function Run.setFiring(run: Types.Run, playerId: number, held: boolean)
-	local player = run.players[playerId]
-	if player then
-		player.firing = held
-	end
-end
-
--- Whether the player's aim snaps to enemies in the assist cone (touch, gamepad).
-function Run.setAssist(run: Types.Run, playerId: number, enabled: boolean)
-	local player = run.players[playerId]
-	if player then
-		player.assist = enabled
-	end
-end
-
--- The aim: the direction the player's skills fire in (ADR-0009).
-function Run.setAim(run: Types.Run, playerId: number, angle: number)
-	local player = run.players[playerId]
-	if player and angle == angle and angle ~= math.huge and angle ~= -math.huge then
-		player.facing = angle
-	end
-end
-
--- Uses active skill `index` along `aim` (the player's current aim when nil).
-function Run.useSkill(
-	run: Types.Run,
-	playerId: number,
-	index: number,
-	aim: number?,
-	aimDistance: number?
-): boolean
-	if run.ended then
-		return false
-	end
-	if aim then
-		Run.setAim(run, playerId, aim)
-	end
-	return Combat.useActive(run, playerId, index, aimDistance)
-end
-
--- The dash: the client moves the character; the run only spends a charge and
--- grants the dash distance as a boost to the movement budget (ADR-0007),
--- usable for the dash's duration plus a grace for lag. A dash not taken lapses,
--- so boosts cannot be banked into a teleport.
-function Run.dash(run: Types.Run, playerId: number): boolean
-	local player = alivePlayer(run, playerId)
-	if player == nil or player.dashCharges <= 0 then
-		return false
-	end
-	local dash = Run.class(run, player).dash
-	if player.dashCharges >= Run.dashMaxCharges(run, player) then
-		player.dashRechargeAt = run.time + dash.rechargeSeconds
-	end
-	player.dashCharges -= 1
-	if run.time >= player.boostUntil then
-		player.boost = 0
-	end
-	player.boost += Run.dashDistance(run, player)
-	player.boostUntil = run.time + dash.seconds + run.config.player.moveBurstSeconds
-	table.insert(run.events, { kind = "dashed", player = player.id })
-	return true
-end
-
--- How far the player's dash carries, after perks.
-function Run.dashDistance(run: Types.Run, player: Types.Player): number
-	return Perks.playerValue(
-		run.config,
-		player,
-		"dashDistance",
-		Run.class(run, player).dash.distance
-	)
-end
-
-function Run.drink(run: Types.Run, playerId: number): boolean
-	if run.ended then
-		return false
-	end
-	return Life.drink(run, playerId)
-end
-
--- The player pressed (`held`) or released the interact button.
-function Run.setInteracting(run: Types.Run, playerId: number, held: boolean)
-	local player = run.players[playerId]
-	if player then
-		player.interacting = held
-	end
-end
-
-function Run.choosePerk(run: Types.Run, playerId: number, index: number): boolean
-	if run.ended then
-		return false
-	end
-	return Perks.choose(run, playerId, index)
+	return Hero.walkSpeed(run, player)
 end
 
 local function isFinite(value: number): boolean
@@ -162,92 +94,105 @@ local function isFinite(value: number): boolean
 end
 
 -- Positions come from the client's character, so the run accepts only what
--- walking could reach: anything not finite is dropped, the rest is held on
--- walkable ground, before the first water or prop on its way, and to the player's
--- movement budget (rule 1). The budget refills at walking speed with a
--- tolerance (slower while firing backwards) and banks a short burst, which
--- absorbs late updates but not a teleport; a dash adds a boost that lapses.
--- A knocked player is carried by the knockback, not by the client.
+-- walking could reach (rule 1, ADR-0007): anything not finite is dropped, the
+-- rest is held inside the arena, before the first obstacle on its way, and to
+-- the player's movement budget. The budget refills at walking speed with a
+-- tolerance and banks a short burst, which absorbs late updates but not a
+-- teleport. A knocked player is carried by the knockback, not by the client.
 local function move(run: Types.Run, player: Types.Player, input: Types.PlayerInput?, dt: number)
 	local config = run.config.player
+	local speed = Hero.walkSpeed(run, player) * config.moveTolerance
+	local cap = speed * config.moveBurstSeconds
 	if input == nil or not (isFinite(input.x) and isFinite(input.z)) then
-		player.moveBudget = math.min(
-			player.moveBudget + Run.walkSpeed(run, player) * config.moveTolerance * dt,
-			Run.walkSpeed(run, player) * config.moveTolerance * config.moveBurstSeconds
-		)
+		player.moveBudget = math.min(player.moveBudget + speed * dt, cap)
 		return
 	end
+	player.moveBudget = math.min(player.moveBudget + speed * dt, cap)
 	if run.time < player.knockUntil then
 		return
 	end
 
-	local targetX, targetZ = Map.clamp(run.map, input.x, input.z)
+	local targetX, targetZ = Arena.clamp(run.arena, input.x, input.z, config.radius)
 	local dx, dz = targetX - player.x, targetZ - player.z
 	local distance = math.sqrt(dx * dx + dz * dz)
-
-	-- Walking away from the aim while firing is slower.
-	local speed = Run.walkSpeed(run, player) * config.moveTolerance
-	if player.firing and distance > 1e-6 then
-		local dot = (dx * math.cos(player.facing) + dz * math.sin(player.facing)) / distance
-		if dot < config.backpedalDot then
-			speed *= config.backpedalFactor
-		end
+	if distance < 1e-9 then
+		return
 	end
-	player.moveBudget = math.min(player.moveBudget + speed * dt, speed * config.moveBurstSeconds)
-	if run.time >= player.boostUntil then
-		player.boost = 0
-	end
-
-	-- Water or a prop on the way stops the move there.
-	local reach = Map.reach(run.map, player.x, player.z, targetX, targetZ)
-	local allowed = math.min(distance, reach, player.moveBudget + player.boost)
-	if distance > 1e-9 and allowed < distance then
+	local reach = Arena.reach(run.arena, player.x, player.z, targetX, targetZ, config.radius)
+	local allowed = math.min(distance, reach, player.moveBudget)
+	if allowed < distance then
 		local scale = allowed / distance
 		dx *= scale
 		dz *= scale
 		distance = allowed
 	end
+	if distance > 1e-9 then
+		player.facing = math.atan2(dz, dx)
+	end
 	player.x += dx
 	player.z += dz
-	-- The boost is spent first; it is the part that lapses.
-	local fromBoost = math.min(distance, player.boost)
-	player.boost -= fromBoost
-	player.moveBudget -= distance - fromBoost
+	player.moveBudget -= distance
 end
 
--- Refreshes where the player stands and gives dash charges back.
-local function refresh(run: Types.Run, player: Types.Player)
-	player.pointId = State.pointIdAt(run, player.x, player.z)
-	player.inCover = Map.inCover(run.map, run.config, player.x, player.z)
-
-	local max = Run.dashMaxCharges(run, player)
-	while player.dashCharges < max and run.time >= player.dashRechargeAt do
-		player.dashCharges += 1
-		player.dashRechargeAt += Run.class(run, player).dash.rechargeSeconds
+local function endRun(
+	run: Types.Run,
+	reason: "allDead" | "extracted" | "finalBossKilled" | "mapClosed"
+)
+	if run.ended then
+		return
 	end
+	run.ended = true
+	run.paused = false
+	table.insert(run.events, { kind = "ended", reason = reason })
 end
 
+-- The run ends when nobody is alive, when every living player has left, when
+-- the final boss falls (everyone alive extracts), or when the final boss
+-- outlives its time (the map closes: everyone left dies).
 local function checkEnded(run: Types.Run)
-	local any = false
+	local finalId = run.finalBossId
+	if finalId ~= nil and State.enemyById(run, finalId) == nil then
+		for _, player in State.sortedPlayers(run) do
+			if player.state == "alive" then
+				player.state = "extracted"
+				table.insert(run.events, { kind = "extracted", player = player.id })
+			end
+		end
+		endRun(run, "finalBossKilled")
+		return
+	end
+	local deadline = run.finalBossDeadline
+	if deadline ~= nil and run.time >= deadline then
+		for _, player in State.sortedPlayers(run) do
+			if player.state == "alive" then
+				player.state = "dead"
+				player.health = 0
+				table.insert(run.events, { kind = "died", player = player.id })
+			end
+		end
+		endRun(run, "mapClosed")
+		return
+	end
+
+	local any, alive, extracted = false, 0, 0
 	for _, player in run.players do
 		any = true
-		if player.state == "alive" or player.state == "downed" then
-			return
+		if player.state == "alive" then
+			alive += 1
+		elseif player.state == "extracted" then
+			extracted += 1
 		end
 	end
-	if any then
-		run.ended = true
-		table.insert(run.events, { kind = "ended" })
+	if any and alive == 0 then
+		endRun(run, if extracted > 0 then "extracted" else "allDead")
 	end
 end
 
--- Advances the run by `dt` seconds. `inputs` carries the positions and
--- facings of players the adapter reports; only alive players move. The arc
--- (zones, the flood and its damage, run events) follows the moves, so the
--- flood hurts where players stand and its deaths go through Life.update.
--- The run ends when the flood meets at the centre, or at its duration.
+-- Advances the run by `dt` seconds. `inputs` carries where each player's
+-- character stands; only alive players move. The run stands still while a
+-- solo player chooses a card.
 function Run.step(run: Types.Run, dt: number, inputs: { [number]: Types.PlayerInput })
-	if run.ended then
+	if run.ended or run.paused then
 		return
 	end
 	run.time += dt
@@ -255,21 +200,17 @@ function Run.step(run: Types.Run, dt: number, inputs: { [number]: Types.PlayerIn
 	for _, player in State.sortedPlayers(run) do
 		if player.state == "alive" then
 			move(run, player, inputs[player.id], dt)
-			refresh(run, player)
-			Combat.fireBasic(run, player)
 		end
 	end
 
-	Arc.update(run, dt)
-	Camps.update(run, dt)
-	Enemies.step(run, dt)
+	Casting.update(run, dt)
 	Projectiles.step(run, dt)
-	Combat.burn(run, dt)
-	Life.update(run, dt)
+	Horde.update(run, dt)
+	Enemies.step(run, dt)
+	Damage.update(run, dt)
+	Hero.update(run, dt)
+	Progression.update(run, dt)
 	Extraction.update(run, dt)
-	if run.floodHalf <= 0 or run.time >= run.config.run.durationSeconds then
-		Extraction.flood(run)
-	end
 	checkEnded(run)
 end
 

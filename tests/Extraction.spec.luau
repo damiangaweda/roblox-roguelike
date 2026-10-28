@@ -1,261 +1,178 @@
 --!strict
-local Arc = require("../src/shared/Core/Arc")
 local Assert = require("./Assert")
 local Extraction = require("../src/shared/Core/Extraction")
 local Fixtures = require("./Fixtures")
-local Life = require("../src/shared/Core/Life")
 local Types = require("../src/shared/Core/Types")
 
--- Advances the clock and extraction by `seconds` in steps of `dt`.
-local function advance(run: Types.Run, seconds: number, dt: number)
-	for _ = 1, math.round(seconds / dt) do
-		run.time += dt
-		Extraction.update(run, dt)
+local DT = 0.1
+
+-- Advances the clock and extraction by `seconds` in steps of DT.
+local function advance(run: Types.Run, seconds: number)
+	for _ = 1, math.round(seconds / DT) do
+		run.time += DT
+		Extraction.update(run, DT)
 	end
 end
 
--- Opens a zone at each of the first `count` points that are not entries.
-local function openZones(run: Types.Run, count: number?)
-	for _, point in run.map.points do
-		if #run.zones >= (count or 1) then
-			return
-		end
-		if not point.isEntry then
-			Arc.openZone(run, point.id)
-		end
-	end
+local function atChest(run: Types.Run, id: number, offset: number?)
+	Fixtures.place(run, id, run.arena.chestX + (offset or 0), run.arena.chestZ)
 end
 
--- Puts player `id` in the middle of zone `index`, opening one first when
--- none is, holding the interact button.
-local function enterZone(run: Types.Run, id: number, index: number?)
-	if #run.zones == 0 then
-		openZones(run)
-	end
-	local zone = run.zones[index or 1]
-	Fixtures.place(run, run.players[id], zone.x, zone.z)
-	run.players[id].interacting = true
-end
-
-local function count(events: { Types.Event }, kind: string): number
-	local n = 0
-	for _, event in events do
-		if event.kind == kind then
-			n += 1
-		end
-	end
-	return n
+-- Player `id` holds the spell, as if it had opened the chest.
+local function withSpell(run: Types.Run, id: number): Types.Player
+	local player = run.players[id]
+	player.hasSpell = true
+	run.chestOpened = true
+	return player
 end
 
 return {
-	["no zone is open at the start of the run"] = function()
-		for _, players in { 1, 4, 12 } do
-			for seed = 1, 5 do
-				local run = Fixtures.run(players, nil, seed)
-				Assert.equal(#run.zones, 0, "seed " .. seed .. ", " .. players .. " players")
-			end
-		end
+	["the compass turns on at its minute, once"] = function()
+		local run = Fixtures.run(1, nil, 5)
+		local at = run.config.extraction.compassMinute * 60
+		advance(run, at - 1)
+		Assert.falsy(run.compassOn, "before the minute")
+		Assert.equal(Fixtures.count(run.events, "compass"), 0)
+		advance(run, 2)
+		Assert.truthy(run.compassOn, "at the minute")
+		local event = Assert.findEvent(run.events, "compass")
+		Assert.near(event.x, run.arena.chestX)
+		Assert.near(event.z, run.arena.chestZ)
+		advance(run, 5)
+		Assert.equal(Fixtures.count(run.events, "compass"), 1)
 	end,
 
-	["a zone opens at its point's centre with the configured radius"] = function()
-		local run = Fixtures.run(1)
-		openZones(run)
-		local zone = run.zones[1]
-		local point = run.map.points[zone.pointId]
-		Assert.equal(zone.x, point.x)
-		Assert.equal(zone.z, point.z)
-		Assert.equal(zone.radius, run.config.map.zoneRadius)
-		Assert.truthy(zone.open)
+	["opening takes the hold within reach for its seconds"] = function()
+		local run = Fixtures.run(1, nil, 5)
+		local config = run.config.extraction
+		atChest(run, 1, config.openRadius - 0.5)
+		Extraction.setOpening(run, 1, true)
+		advance(run, config.openSeconds - 2 * DT)
+		Assert.falsy(run.chestOpened, "not yet")
+		Assert.truthy(run.players[1].openProgress > 0)
+		advance(run, 3 * DT)
+		Assert.truthy(run.chestOpened)
+		Assert.truthy(run.players[1].hasSpell)
+		Assert.equal(Fixtures.count(run.events, "chestOpened"), 1)
+		Assert.equal(Assert.findEvent(run.events, "chestOpened").player, 1)
 	end,
 
-	["a closed zone does not extract"] = function()
-		local run = Fixtures.run(1)
-		enterZone(run, 1)
-		advance(run, 2, 1)
-		run.zones[1].open = false
-		advance(run, 1, 1)
-		Assert.equal(run.players[1].extractProgress, 0)
-		advance(run, run.config.run.extractSeconds, 1)
-		Assert.equal(run.players[1].state, "alive")
-	end,
-
-	["a player is extracted after five seconds in a zone"] = function()
-		local run = Fixtures.run(1)
-		enterZone(run, 1)
-		local extractSeconds = run.config.run.extractSeconds
-		advance(run, extractSeconds - 1, 1)
-		Assert.equal(run.players[1].state, "alive")
-		Assert.near(run.players[1].extractProgress, extractSeconds - 1)
-		Assert.falsy(Assert.findEvent(run.events, "extracted"))
-		advance(run, 1, 1)
-		Assert.equal(run.players[1].state, "extracted")
-		local event = Assert.findEvent(run.events, "extracted")
-		Assert.truthy(event)
-		Assert.equal(event.player, 1)
-	end,
-
-	["every zone extracts"] = function()
-		local run = Fixtures.run(1)
-		openZones(run, 3)
-		Assert.equal(#run.zones, 3)
-		for index = 1, #run.zones do
-			run.players[1].state = "alive"
-			run.players[1].extractProgress = 0
-			enterZone(run, 1, index)
-			advance(run, run.config.run.extractSeconds, 1)
-			Assert.equal(run.players[1].state, "extracted", "zone " .. index)
-		end
-	end,
-
-	["the zone reaches as far as its radius"] = function()
-		local run = Fixtures.run(1)
-		openZones(run)
-		local zone = run.zones[1]
-		local radius = run.config.map.zoneRadius
-		enterZone(run, 1)
-		run.players[1].x = zone.x + radius
-		advance(run, 1, 1)
-		Assert.near(run.players[1].extractProgress, 1)
-		run.players[1].x = zone.x + radius + 0.1
-		advance(run, 1, 1)
-		Assert.equal(run.players[1].extractProgress, 0)
-	end,
-
-	["outside a zone nothing happens"] = function()
-		local run = Fixtures.run(1)
+	["releasing or stepping away resets the hold"] = function()
+		local run = Fixtures.run(1, nil, 5)
+		local config = run.config.extraction
 		local player = run.players[1]
-		-- Zones open only at points other than the entries.
-		openZones(run, 3)
-		player.interacting = true
-		advance(run, run.config.run.extractSeconds * 2, 1)
-		Assert.equal(player.state, "alive")
-		Assert.equal(player.extractProgress, 0)
-		Assert.falsy(Assert.findEvent(run.events, "extracted"))
+		atChest(run, 1)
+		Extraction.setOpening(run, 1, true)
+		advance(run, config.openSeconds / 2)
+		Extraction.setOpening(run, 1, false)
+		advance(run, DT)
+		Assert.equal(player.openProgress, 0, "released")
+		Extraction.setOpening(run, 1, true)
+		advance(run, config.openSeconds / 2)
+		atChest(run, 1, config.openRadius + 1)
+		advance(run, DT)
+		Assert.equal(player.openProgress, 0, "stepped away")
+		atChest(run, 1)
+		advance(run, config.openSeconds - 2 * DT)
+		Assert.falsy(run.chestOpened, "the hold started over")
 	end,
 
-	["standing in a zone without holding interact does not extract"] = function()
-		local run = Fixtures.run(1)
-		enterZone(run, 1)
-		run.players[1].interacting = false
-		advance(run, run.config.run.extractSeconds * 2, 0.5)
-		Assert.equal(run.players[1].state, "alive")
-		Assert.equal(run.players[1].extractProgress, 0)
+	["the chest gives the spell to its opener only, once"] = function()
+		local run = Fixtures.run(2, nil, 5)
+		local config = run.config.extraction
+		atChest(run, 1)
+		atChest(run, 2, config.openRadius + 5)
+		Extraction.setOpening(run, 1, true)
+		Extraction.setOpening(run, 2, true)
+		advance(run, config.openSeconds + DT)
+		Assert.truthy(run.players[1].hasSpell)
+		Assert.falsy(run.players[2].hasSpell)
+		atChest(run, 2)
+		advance(run, config.openSeconds * 2)
+		Assert.falsy(run.players[2].hasSpell, "the chest is open")
+		Assert.equal(run.players[2].openProgress, 0)
+		Assert.equal(Fixtures.count(run.events, "chestOpened"), 1)
 	end,
 
-	["letting go of interact resets extraction progress"] = function()
-		local run = Fixtures.run(1)
-		enterZone(run, 1)
-		advance(run, 3, 1)
-		Assert.near(run.players[1].extractProgress, 3)
-		run.players[1].interacting = false
-		advance(run, 1, 1)
-		Assert.equal(run.players[1].extractProgress, 0)
-		run.players[1].interacting = true
-		advance(run, run.config.run.extractSeconds - 1, 1)
-		Assert.equal(run.players[1].state, "alive")
+	["a dead player does not open the chest"] = function()
+		local run = Fixtures.run(1, nil, 5)
+		atChest(run, 1)
+		run.players[1].state = "dead"
+		Extraction.setOpening(run, 1, true)
+		advance(run, run.config.extraction.openSeconds * 2)
+		Assert.falsy(run.chestOpened)
 	end,
 
-	["leaving the zone resets extraction progress"] = function()
-		local run = Fixtures.run(1)
-		enterZone(run, 1)
-		advance(run, 3, 1)
-		Assert.near(run.players[1].extractProgress, 3)
-		run.players[1].x += run.config.map.zoneRadius + 1
-		advance(run, 1, 1)
-		Assert.equal(run.players[1].extractProgress, 0)
-		enterZone(run, 1)
-		advance(run, run.config.run.extractSeconds - 1, 1)
-		Assert.equal(run.players[1].state, "alive")
+	["the cast opens a portal at the caster after its seconds"] = function()
+		local run = Fixtures.run(1, nil, 5)
+		local config = run.config.extraction
+		withSpell(run, 1)
+		Fixtures.place(run, 1, 30, -20)
+		Assert.truthy(Extraction.castSpell(run, 1))
+		Assert.equal(Assert.findEvent(run.events, "castStarted").seconds, config.castSeconds)
+		advance(run, config.castSeconds - 2 * DT)
+		Assert.equal(run.portal, nil, "still casting")
+		advance(run, 3 * DT)
+		local portal = run.portal
+		assert(portal, "the portal opened")
+		Assert.near(portal.x, 30)
+		Assert.near(portal.z, -20)
+		Assert.equal(run.players[1].castingUntil, nil)
+		local event = Assert.findEvent(run.events, "portalOpened")
+		Assert.near(event.x, 30)
+		Assert.equal(event.seconds, config.portalSeconds)
 	end,
 
-	["a hit interrupts extraction"] = function()
-		local run = Fixtures.run(1)
-		enterZone(run, 1)
-		advance(run, 3, 1)
-		Assert.near(run.players[1].extractProgress, 3)
-		Life.damage(run, run.players[1], 1)
-		Assert.equal(run.players[1].extractProgress, 0)
-		advance(run, run.config.run.extractSeconds - 1, 1)
-		Assert.equal(run.players[1].state, "alive")
-		advance(run, 1, 1)
-		Assert.equal(run.players[1].state, "extracted")
+	["the cast needs the spell and starts once while no portal stands"] = function()
+		local run = Fixtures.run(2, nil, 5)
+		local config = run.config.extraction
+		Assert.falsy(Extraction.castSpell(run, 1), "no spell")
+		withSpell(run, 1)
+		Assert.falsy(Extraction.castSpell(run, 2), "the other player has none")
+		Assert.truthy(Extraction.castSpell(run, 1))
+		Assert.falsy(Extraction.castSpell(run, 1), "already casting")
+		advance(run, config.castSeconds + DT)
+		Assert.truthy(run.portal)
+		Assert.falsy(Extraction.castSpell(run, 1), "a portal stands")
+		Assert.equal(Fixtures.count(run.events, "castStarted"), 1)
+		run.players[1].state = "dead"
+		run.portal = nil
+		Assert.falsy(Extraction.castSpell(run, 1), "dead")
 	end,
 
-	["holding interact by a downed player revives it and nothing else"] = function()
-		local run = Fixtures.run(2)
-		local config = run.config.player
-		local player, downed = run.players[1], run.players[2]
-		enterZone(run, 1)
-		local zone = run.zones[1]
-		player.extractProgress = 1
-		Fixtures.place(run, downed, zone.x + config.reviveRadius - 1, zone.z)
-		Life.damage(run, downed, downed.maxHealth)
-		Assert.equal(downed.state, "downed")
-		local steps = 0
-		while downed.state == "downed" do
-			run.time += 0.5
-			Life.update(run, 0.5)
-			Extraction.update(run, 0.5)
-			steps += 1
-			if downed.state == "downed" then
-				Assert.equal(player.extractProgress, 0)
-			end
-			Assert.truthy(steps <= 20, "never revived")
-		end
-		Assert.near(steps * 0.5, config.reviveSeconds)
-		Assert.equal(downed.state, "alive")
-		Assert.equal(player.state, "alive")
-		-- With nobody left to revive, the button extracts.
-		advance(run, run.config.run.extractSeconds, 0.5)
-		Assert.equal(player.state, "extracted")
+	["the portal closes after its seconds and the spell can be cast again"] = function()
+		local run = Fixtures.run(1, nil, 5)
+		local config = run.config.extraction
+		withSpell(run, 1)
+		Extraction.castSpell(run, 1)
+		advance(run, config.castSeconds + DT)
+		Assert.truthy(run.portal)
+		advance(run, config.portalSeconds - 2 * DT)
+		Assert.truthy(run.portal, "still standing")
+		advance(run, 3 * DT)
+		Assert.equal(run.portal, nil)
+		Assert.equal(Fixtures.count(run.events, "portalClosed"), 1)
+		Assert.truthy(run.players[1].hasSpell, "the spell stays")
+		Assert.truthy(Extraction.castSpell(run, 1))
 	end,
 
-	["a downed player does not extract"] = function()
-		local run = Fixtures.run(1)
-		enterZone(run, 1)
-		Life.damage(run, run.players[1], run.players[1].maxHealth)
-		advance(run, run.config.run.extractSeconds + 1, 1)
-		Assert.equal(run.players[1].state, "downed")
-		Assert.falsy(Assert.findEvent(run.events, "extracted"))
-	end,
-
-	["an extracted player is not extracted again"] = function()
-		local run = Fixtures.run(1)
-		enterZone(run, 1)
-		advance(run, run.config.run.extractSeconds + 5, 1)
-		Assert.equal(count(run.events, "extracted"), 1)
-	end,
-
-	["flood kills alive and downed players and keeps extracted ones"] = function()
-		local run = Fixtures.run(4)
-		run.players[2].state = "downed"
-		run.players[3].state = "extracted"
-		run.players[4].state = "dead"
-		Extraction.flood(run)
-		Assert.truthy(run.flooded)
-		Assert.equal(count(run.events, "flood"), 1)
-		Assert.equal(run.players[1].state, "dead")
-		Assert.equal(run.players[2].state, "dead")
-		Assert.equal(run.players[3].state, "extracted")
-		Assert.equal(run.players[4].state, "dead")
-		local died = {}
-		for _, event in run.events do
-			if event.kind == "died" then
-				table.insert(died, event.player)
-			end
-		end
-		Assert.equal(#died, 2)
-		Assert.equal(died[1], 1)
-		Assert.equal(died[2], 2)
-	end,
-
-	["the flood happens once"] = function()
-		local run = Fixtures.run(1)
-		Extraction.flood(run)
-		run.events = {}
-		run.players[1].state = "alive"
-		Extraction.flood(run)
-		Assert.equal(run.players[1].state, "alive")
-		Assert.equal(#run.events, 0)
+	["entering needs an open portal within reach and extracts"] = function()
+		local run = Fixtures.run(2, nil, 5)
+		local config = run.config.extraction
+		Assert.falsy(Extraction.enterPortal(run, 1), "no portal")
+		withSpell(run, 1)
+		Fixtures.place(run, 1, 10, 10)
+		Extraction.castSpell(run, 1)
+		advance(run, config.castSeconds + DT)
+		Fixtures.place(run, 2, 10 + config.portalRadius + 1, 10)
+		Assert.falsy(Extraction.enterPortal(run, 2), "too far")
+		Assert.equal(run.players[2].state, "alive")
+		Fixtures.place(run, 2, 10 + config.portalRadius - 0.5, 10)
+		Assert.truthy(Extraction.enterPortal(run, 2))
+		Assert.equal(run.players[2].state, "extracted")
+		Assert.equal(Assert.findEvent(run.events, "extracted").player, 2)
+		Assert.falsy(Extraction.enterPortal(run, 2), "already gone")
+		Assert.truthy(Extraction.enterPortal(run, 1))
+		Assert.equal(Fixtures.count(run.events, "extracted"), 2)
 	end,
 }

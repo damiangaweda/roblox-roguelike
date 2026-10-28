@@ -1,27 +1,30 @@
 --!strict
--- What every enemy does in one step (ADR-0004): notice players, chase them,
--- wind up an attack the players can read, land it, recover, and walk home when
--- the chase ends. Enemies are plain data; nothing here moves a Humanoid.
+-- What every enemy does in one step (ADR-0004, ADR-0014): walk at the nearest
+-- hero around the obstacles, hit on contact (grunts) or wind up an attack the
+-- players can read, land it and recover (elites and bosses), then push apart
+-- from the crowd. Enemies are plain data; nothing here moves a Humanoid.
 
+local Arena = require("./Arena")
+local Damage = require("./Damage")
 local Geometry = require("./Geometry")
-local Life = require("./Life")
-local Map = require("./Map")
+local Hero = require("./Hero")
+local Horde = require("./Horde")
 local State = require("./State")
 local Types = require("./Types")
 
 local Enemies = {}
 
--- Spots a wanderer draws before it waits for the next draw.
-local WANDER_DRAWS = 8
+-- A grunt touches a hero within the two radii and this margin.
+-- Draws a leap spends looking for free ground at its aim.
+local FREE_SPOT_TRIES = 8
+-- How far ahead of a feared or backing-off enemy its walk aims.
+local AWAY_LOOK = 10
 
--- Per-step lookups shared by every enemy: the alive players by ascending id,
--- and the enemies by id (a heal reaches its camp through camp.members).
+-- Per-step lookups shared by every enemy: the alive heroes by ascending id.
 type Context = {
 	players: { Types.Player },
-	byId: { [number]: Types.Enemy },
 }
 
--- Faces (x, z); an enemy standing on it keeps its facing.
 local function face(enemy: Types.Enemy, x: number, z: number)
 	local dx, dz = x - enemy.x, z - enemy.z
 	if dx ~= 0 or dz ~= 0 then
@@ -29,25 +32,11 @@ local function face(enemy: Types.Enemy, x: number, z: number)
 	end
 end
 
--- Whether `enemy` notices `player`: alive and within the detection range,
--- which cover halves. The map is open: nothing else hides a player.
-function Enemies.detects(run: Types.Run, enemy: Types.Enemy, player: Types.Player): boolean
-	if player.state ~= "alive" then
-		return false
-	end
-	local range = State.archetype(run, enemy).detectionRange
-	if player.inCover then
-		range *= run.config.enemies.coverDetectionFactor
-	end
-	return Geometry.distance(enemy.x, enemy.z, player.x, player.z) <= range
-end
-
--- The nearest alive player the enemy notices; a tie goes to the lowest id.
-local function nearestDetected(run: Types.Run, enemy: Types.Enemy, context: Context): Types.Player?
+local function nearestPlayer(enemy: Types.Enemy, context: Context): Types.Player?
 	local best: Types.Player? = nil
 	local bestDistance = math.huge
 	for _, player in context.players do
-		if Enemies.detects(run, enemy, player) then
+		if player.state == "alive" then
 			local distance = Geometry.distance(enemy.x, enemy.z, player.x, player.z)
 			if distance < bestDistance then
 				best, bestDistance = player, distance
@@ -57,86 +46,136 @@ local function nearestDetected(run: Types.Run, enemy: Types.Enemy, context: Cont
 	return best
 end
 
--- Wakes the camp's idle members against `targetId`; the event fires only the
--- first time, until the camp calms down.
-function Enemies.alertCamp(run: Types.Run, camp: Types.Camp, targetId: number)
-	for _, id in table.clone(camp.members) do
-		local member = State.enemyById(run, id)
-		if member and member.state == "idle" then
-			member.state = "chase"
-			member.target = targetId
-		end
+local function buffed(run: Types.Run, enemy: Types.Enemy): boolean
+	return enemy.buffedUntil > run.time
+end
+
+-- `base` damage after the horde's growth, a weaken and a shaman's buff.
+local function scaled(run: Types.Run, enemy: Types.Enemy, base: number): number
+	local buff = if buffed(run, enemy) then run.config.horde.buffDamageFactor else 1
+	return base * enemy.damageFactor * enemy.weakenFactor * buff
+end
+
+local function speedOf(run: Types.Run, enemy: Types.Enemy, kind: Types.EnemyKindConfig): number
+	local speed = kind.speed * enemy.slowFactor
+	if buffed(run, enemy) then
+		speed *= run.config.horde.buffSpeedFactor
 	end
-	if not camp.alerted then
-		camp.alerted = true
-		table.insert(run.events, { kind = "campAlerted", campId = camp.id })
+	if enemy.phase == 2 and kind.phaseSpeedFactor then
+		speed *= kind.phaseSpeedFactor
+	end
+	return speed
+end
+
+-- The attacks the enemy may use now: before a boss's second phase, those
+-- before phaseAttackIndex.
+local function available(kind: Types.EnemyKindConfig, enemy: Types.Enemy): number
+	if kind.phaseAttackIndex and enemy.phase == 1 then
+		return math.min(kind.phaseAttackIndex - 1, #kind.attacks)
+	end
+	return #kind.attacks
+end
+
+local function nextAttack(kind: Types.EnemyKindConfig, enemy: Types.Enemy)
+	enemy.attack = enemy.attack % available(kind, enemy) + 1
+end
+
+-- Hurts a hero; thorns on the hero return their damage to the enemy.
+local function hurt(run: Types.Run, enemy: Types.Enemy, player: Types.Player, amount: number)
+	local result = Hero.damage(run, player, amount, enemy.id)
+	if result.reflected > 0 and enemy.health > 0 then
+		local hit: Damage.Hit = {
+			source = player.id,
+			skill = "thorns",
+			amount = result.reflected,
+			tags = { "physical" },
+			effect = nil,
+			critChance = 0,
+			knockback = 0,
+			fromX = player.x,
+			fromZ = player.z,
+		}
+		Damage.hit(run, enemy, hit)
 	end
 end
 
--- A hit wakes the enemy against whoever dealt it, and its camp with it: an
--- enemy shot from beyond its detection range still reacts. A returning enemy
--- turns back; a telegraph or recovery in progress is not interrupted.
-function Enemies.provoke(run: Types.Run, enemy: Types.Enemy, playerId: number)
-	local player = run.players[playerId]
-	if player == nil or player.state ~= "alive" then
+-- Pushes a hero `studs` away from (fromX, fromZ), or along (dirX, dirZ)
+-- when standing on it.
+local function knock(
+	run: Types.Run,
+	player: Types.Player,
+	fromX: number,
+	fromZ: number,
+	studs: number,
+	dirX: number?,
+	dirZ: number?
+)
+	if studs <= 0 then
 		return
 	end
-	local state = enemy.state
-	if state == "idle" or state == "patrol" or state == "return" then
-		if state ~= "return" and enemy.patrolId then
-			enemy.homeX, enemy.homeZ = enemy.x, enemy.z
-		end
-		enemy.state = "chase"
-		enemy.target = playerId
-		enemy.stuckSince = nil
+	local dx, dz = player.x - fromX, player.z - fromZ
+	if dx * dx + dz * dz < 1e-9 then
+		dx, dz = dirX or 1, dirZ or 0
 	end
-	local camp = if enemy.campId then State.campById(run, enemy.campId) else nil
-	if camp and run.config.enemies.campAlerts then
-		Enemies.alertCamp(run, camp, playerId)
-	end
+	local nx, nz = Geometry.normalize(dx, dz)
+	Hero.knock(run, player, nx * studs, nz * studs)
 end
 
--- The camp is quiet again once every living member stands idle at home.
-local function calmCamp(run: Types.Run, enemy: Types.Enemy, context: Context)
-	local camp = if enemy.campId then State.campById(run, enemy.campId) else nil
-	if camp == nil or not camp.alerted then
-		return
-	end
-	for _, id in camp.members do
-		local member = context.byId[id]
-		if member and member.state ~= "idle" then
-			return
-		end
-	end
-	camp.alerted = false
-end
-
--- The enemy a heal reaches: its camp's living members, or itself alone.
-local function campMembers(run: Types.Run, enemy: Types.Enemy, context: Context): { Types.Enemy }
-	local camp = if enemy.campId then State.campById(run, enemy.campId) else nil
-	if camp == nil then
-		return { enemy }
-	end
-	local members: { Types.Enemy } = {}
-	for _, id in camp.members do
-		local member = context.byId[id]
-		if member then
-			table.insert(members, member)
-		end
-	end
-	return members
-end
-
-local function hurtMemberInRadius(
+-- Walks up to `step` studs toward (toX, toZ), steering round obstacles and
+-- stopped by them and the edge.
+local function walk(
 	run: Types.Run,
 	enemy: Types.Enemy,
-	attack: Types.AttackConfig,
-	context: Context
-): boolean
-	for _, member in campMembers(run, enemy, context) do
+	kind: Types.EnemyKindConfig,
+	toX: number,
+	toZ: number,
+	step: number
+)
+	if step <= 0 then
+		return
+	end
+	local dx, dz = Arena.steer(
+		run.arena,
+		enemy.x,
+		enemy.z,
+		toX,
+		toZ,
+		kind.radius,
+		run.config.horde.steerMargin,
+		step + kind.radius + 2
+	)
+	local reach = Arena.reach(
+		run.arena,
+		enemy.x,
+		enemy.z,
+		enemy.x + dx * step,
+		enemy.z + dz * step,
+		kind.radius
+	)
+	local move = math.min(step, reach)
+	enemy.x += dx * move
+	enemy.z += dz * move
+end
+
+-- Walks `step` studs directly away from (fromX, fromZ).
+local function walkAway(
+	run: Types.Run,
+	enemy: Types.Enemy,
+	kind: Types.EnemyKindConfig,
+	fromX: number,
+	fromZ: number,
+	step: number
+)
+	local nx, nz = Geometry.normalize(enemy.x - fromX, enemy.z - fromZ)
+	face(enemy, enemy.x + nx, enemy.z + nz)
+	walk(run, enemy, kind, enemy.x + nx * AWAY_LOOK, enemy.z + nz * AWAY_LOOK, step)
+end
+
+local function hurtNeighbour(run: Types.Run, enemy: Types.Enemy, radius: number): boolean
+	for _, other in run.enemies do
 		if
-			member.health < member.maxHealth
-			and Geometry.distance(enemy.x, enemy.z, member.x, member.z) <= attack.radius
+			other.health < other.maxHealth
+			and Geometry.distance(enemy.x, enemy.z, other.x, other.z) <= radius
 		then
 			return true
 		end
@@ -144,42 +183,20 @@ local function hurtMemberInRadius(
 	return false
 end
 
--- Moves one step toward (toX, toZ) along the map's paths or around what
--- blocks the way, kept on walkable ground. Returns whether the map found a
--- way on; when it does not, the enemy stays.
-local function walkToward(
+-- Whether the attack's condition holds: a heal needs someone hurt, a summon
+-- room under the cap, everything else the target within range.
+local function canStart(
 	run: Types.Run,
 	enemy: Types.Enemy,
-	toX: number,
-	toZ: number,
-	step: number
+	attack: Types.AttackConfig,
+	distance: number
 ): boolean
-	local wx, wz = Map.waypointToward(run.map, enemy.x, enemy.z, toX, toZ)
-	if wx == enemy.x and wz == enemy.z then
-		return false
+	if attack.kind == "heal" then
+		return hurtNeighbour(run, enemy, attack.radius)
+	elseif attack.kind == "summon" then
+		return Horde.aliveCount(run) < run.config.horde.maxAlive
 	end
-	local x, z = Geometry.stepToward(enemy.x, enemy.z, wx, wz, step)
-	enemy.x, enemy.z = Map.clamp(run.map, x, z)
-	return true
-end
-
--- Whether an enemy that found no way on has been stuck for giveUpSeconds;
--- records when it got stuck, and forgets it once a way is found.
-local function givesUp(run: Types.Run, enemy: Types.Enemy, found: boolean): boolean
-	if found then
-		enemy.stuckSince = nil
-		return false
-	end
-	local since = enemy.stuckSince or run.time
-	enemy.stuckSince = since
-	return run.time - since >= run.config.enemies.giveUpSeconds
-end
-
--- Ends a chase: the enemy walks home.
-local function giveUpChase(enemy: Types.Enemy)
-	enemy.state = "return"
-	enemy.target = nil
-	enemy.stuckSince = nil
+	return distance <= attack.range
 end
 
 -- Starts the telegraph of the current attack: the aim is locked now, so a
@@ -196,43 +213,177 @@ local function beginTelegraph(
 	face(enemy, target.x, target.z)
 
 	local x, z, radius = enemy.x, enemy.z, attack.radius
+	local endX: number?, endZ: number? = nil, nil
 	if attack.kind == "projectile" then
 		x, z, radius = enemy.aimX, enemy.aimZ, math.max(attack.radius, 1)
+	elseif attack.kind == "leap" or attack.kind == "ground" then
+		x, z = enemy.aimX, enemy.aimZ
+	elseif attack.kind == "charge" then
+		local nx, nz = Geometry.normalize(enemy.aimX - enemy.x, enemy.aimZ - enemy.z)
+		local overshoot = attack.chargeOvershoot or 0
+		enemy.chargeEndX = enemy.aimX + nx * overshoot
+		enemy.chargeEndZ = enemy.aimZ + nz * overshoot
+		endX, endZ = enemy.chargeEndX, enemy.chargeEndZ
 	end
 	table.insert(run.events, {
 		kind = "telegraph",
 		enemyId = enemy.id,
-		attack = enemy.attack,
+		attackKind = attack.kind,
 		x = x,
 		z = z,
 		radius = radius,
 		seconds = attack.telegraphSeconds,
+		endX = endX,
+		endZ = endZ,
 	})
 end
 
--- Lands the current attack. Returns whether the attack removed the enemy.
-local function land(run: Types.Run, enemy: Types.Enemy, context: Context): boolean
-	local config = run.config
-	local archetype = State.archetype(run, enemy)
-	local attack = archetype.attacks[enemy.attack]
-	local damage = attack.damage
-	if run.time < enemy.buffedUntil then
-		damage *= config.enemies.buffDamageFactor
+-- Every alive hero within `radius` (plus the hero's own) of (x, z).
+local function burstAt(
+	run: Types.Run,
+	enemy: Types.Enemy,
+	attack: Types.AttackConfig,
+	x: number,
+	z: number,
+	context: Context
+)
+	local reach = attack.radius + run.config.player.radius
+	local damage = scaled(run, enemy, attack.damage)
+	for _, player in context.players do
+		if player.state == "alive" and Geometry.distance(x, z, player.x, player.z) <= reach then
+			hurt(run, enemy, player, damage)
+			knock(run, player, x, z, attack.knockback)
+		end
 	end
-	if enemy.boss then
-		damage *= config.run.arc.events.wanderingBoss.damageMultiplier
-	end
-	local reach = attack.radius + config.player.radius
+end
 
-	if attack.kind == "melee" then
-		table.insert(run.events, {
-			kind = "enemyAttack",
-			enemyId = enemy.id,
-			archetype = enemy.archetype,
-			attack = enemy.attack,
+local function shoot(run: Types.Run, enemy: Types.Enemy, attack: Types.AttackConfig)
+	local dx, dz = enemy.aimX - enemy.x, enemy.aimZ - enemy.z
+	-- Aimed at its own feet, it shoots the way it faces.
+	local base = if dx * dx + dz * dz < 1e-6 then enemy.facing else Geometry.angle(dx, dz)
+	local count = attack.projectileCount or 1
+	local spread = math.rad(attack.spreadDegrees or 0)
+	-- A full circle spaces its shots evenly without doubling the last on the first.
+	local gaps = if spread >= 2 * math.pi - 1e-6 then count else count - 1
+	local damage = scaled(run, enemy, attack.damage)
+	for index = 1, count do
+		local offset = 0
+		if count > 1 then
+			offset = -spread / 2 + (index - 1) * spread / gaps
+		end
+		local angle = base + offset
+		table.insert(run.projectiles, {
+			id = State.nextId(run),
+			owner = "enemy",
+			source = enemy.id,
+			kind = enemy.kind,
 			x = enemy.x,
 			z = enemy.z,
+			dirX = math.cos(angle),
+			dirZ = math.sin(angle),
+			speed = attack.projectileSpeed or 0,
+			-- Flies on past a miss, then lands.
+			remaining = attack.range * run.config.projectiles.overshoot,
+			damage = damage,
+			radius = attack.radius,
+			knockback = attack.knockback,
+			tags = {},
+			effect = nil,
+			targetId = nil,
+			critChance = 0,
 		})
+	end
+end
+
+local function summon(run: Types.Run, enemy: Types.Enemy, attack: Types.AttackConfig)
+	-- A summon fills the horde at most up to its cap.
+	local count =
+		math.min(attack.summonCount or 0, run.config.horde.maxAlive - Horde.aliveCount(run))
+	local kindId = Horde.windowKinds(run)[1]
+	for index = 1, count do
+		local angle = enemy.facing + (index - 1) * 2 * math.pi / count
+		Horde.spawnKind(
+			run,
+			kindId,
+			enemy.x + math.cos(angle) * attack.radius,
+			enemy.z + math.sin(angle) * attack.radius
+		)
+	end
+end
+
+local function placeGround(run: Types.Run, enemy: Types.Enemy, attack: Types.AttackConfig)
+	local seconds = attack.groundSeconds or 0
+	local tick = attack.groundTickSeconds or seconds
+	local area: Types.Area = {
+		id = State.nextId(run),
+		owner = "enemy",
+		source = enemy.id,
+		kind = enemy.kind,
+		x = enemy.aimX,
+		z = enemy.aimZ,
+		radius = attack.radius,
+		damage = scaled(run, enemy, attack.damage),
+		until_ = run.time + seconds,
+		nextTickAt = run.time + tick,
+		tickSeconds = tick,
+		tags = {},
+		effect = nil,
+		critChance = 0,
+		knockback = attack.knockback,
+	}
+	table.insert(run.areas, area)
+	table.insert(run.events, {
+		kind = "areaPlaced",
+		id = area.id,
+		owner = "enemy",
+		areaKind = enemy.kind,
+		x = area.x,
+		z = area.z,
+		radius = area.radius,
+		seconds = seconds,
+	})
+end
+
+local function heal(run: Types.Run, enemy: Types.Enemy, attack: Types.AttackConfig)
+	for _, other in run.enemies do
+		if Geometry.distance(enemy.x, enemy.z, other.x, other.z) <= attack.radius then
+			local gained = math.min(other.maxHealth - other.health, attack.heal or 0)
+			other.health += gained
+			other.buffedUntil = run.time + (attack.buffSeconds or 0)
+			table.insert(
+				run.events,
+				{ kind = "enemyHealed", enemyId = other.id, by = enemy.id, amount = gained }
+			)
+		end
+	end
+end
+
+-- Lands the current attack. Returns whether the enemy is gone (it exploded,
+-- or thorns killed it).
+local function land(
+	run: Types.Run,
+	enemy: Types.Enemy,
+	kind: Types.EnemyKindConfig,
+	attack: Types.AttackConfig,
+	context: Context
+): boolean
+	if attack.kind == "leap" then
+		enemy.x, enemy.z =
+			Arena.freeSpot(run.arena, enemy.aimX, enemy.aimZ, kind.radius, run.rng, FREE_SPOT_TRIES)
+	end
+	table.insert(run.events, {
+		kind = "enemyAttack",
+		enemyId = enemy.id,
+		enemyKind = enemy.kind,
+		attackKind = attack.kind,
+		x = enemy.x,
+		z = enemy.z,
+		radius = attack.radius,
+	})
+
+	if attack.kind == "melee" then
+		local reach = attack.radius + run.config.player.radius
+		local damage = scaled(run, enemy, attack.damage)
 		for _, player in context.players do
 			if
 				player.state == "alive"
@@ -246,97 +397,50 @@ local function land(run: Types.Run, enemy: Types.Enemy, context: Context): boole
 					player.z
 				)
 			then
-				Life.damage(run, player, damage, enemy.id)
-				Life.knockPlayer(run, player, enemy.x, enemy.z, attack.knockback)
+				hurt(run, enemy, player, damage)
+				knock(run, player, enemy.x, enemy.z, attack.knockback)
 			end
 		end
 	elseif attack.kind == "projectile" then
-		table.insert(run.events, {
-			kind = "enemyAttack",
-			enemyId = enemy.id,
-			archetype = enemy.archetype,
-			attack = enemy.attack,
-			x = enemy.x,
-			z = enemy.z,
-		})
-		local dx, dz = enemy.aimX - enemy.x, enemy.aimZ - enemy.z
-		-- Aimed at its own feet, it shoots the way it faces.
-		local base = if dx * dx + dz * dz < 1e-6 then enemy.facing else Geometry.angle(dx, dz)
-		local count = attack.projectileCount or 1
-		local spread = math.rad(attack.spreadDegrees or 0)
-		for index = 1, count do
-			local offset = 0
-			if count > 1 then
-				offset = -spread / 2 + (index - 1) * spread / (count - 1)
-			end
-			local angle = base + offset
-			table.insert(run.projectiles, {
-				id = run.nextProjectileId,
-				owner = "enemy",
-				source = enemy.id,
-				kind = enemy.archetype,
+		shoot(run, enemy, attack)
+	elseif attack.kind == "burst" or attack.kind == "leap" then
+		burstAt(run, enemy, attack, enemy.x, enemy.z, context)
+		if kind.diesOnAttack then
+			table.insert(run.events, {
+				kind = "exploded",
+				enemyId = enemy.id,
 				x = enemy.x,
 				z = enemy.z,
-				dirX = math.cos(angle),
-				dirZ = math.sin(angle),
-				speed = attack.projectileSpeed or 0,
-				-- Flies on past a miss, then lands.
-				remaining = attack.range * config.projectiles.overshoot,
-				damage = damage,
 				radius = attack.radius,
-				knockback = attack.knockback,
-				tags = {},
-				statusFactor = 1,
 			})
-			run.nextProjectileId += 1
-		end
-	elseif attack.kind == "burst" then
-		table.insert(run.events, {
-			kind = "exploded",
-			enemyId = enemy.id,
-			x = enemy.x,
-			z = enemy.z,
-			radius = attack.radius,
-		})
-		for _, player in context.players do
-			if
-				player.state == "alive"
-				and Geometry.distance(enemy.x, enemy.z, player.x, player.z) <= reach
-			then
-				Life.damage(run, player, damage, enemy.id)
-				Life.knockPlayer(run, player, enemy.x, enemy.z, attack.knockback)
-			end
-		end
-		if archetype.diesOnAttack then
 			-- Nobody killed it: no kill event, no experience.
 			State.removeEnemy(run, enemy)
 			return true
 		end
-	else
-		for _, member in campMembers(run, enemy, context) do
-			if Geometry.distance(enemy.x, enemy.z, member.x, member.z) <= attack.radius then
-				local gained = math.min(member.maxHealth - member.health, attack.heal or 0)
-				member.health += gained
-				member.buffedUntil = run.time + (attack.buffSeconds or 0)
-				table.insert(
-					run.events,
-					{ kind = "healed", enemyId = member.id, by = enemy.id, amount = gained }
-				)
-			end
-		end
+	elseif attack.kind == "heal" then
+		heal(run, enemy, attack)
+	elseif attack.kind == "summon" then
+		summon(run, enemy, attack)
+	elseif attack.kind == "ground" then
+		placeGround(run, enemy, attack)
+	elseif attack.kind == "charge" then
+		enemy.chargedPlayers = {}
 	end
-	return false
+	return enemy.health <= 0
 end
 
--- The telegraph is over: land the attack, then start the cooldown and recovery.
-local function finishTelegraph(run: Types.Run, enemy: Types.Enemy, context: Context)
-	local archetype = State.archetype(run, enemy)
-	local attack = archetype.attacks[enemy.attack]
-	if land(run, enemy, context) then
-		return
+local function cooldownOf(
+	kind: Types.EnemyKindConfig,
+	enemy: Types.Enemy,
+	attack: Types.AttackConfig
+): number
+	if enemy.phase == 2 and kind.phaseCooldownFactor then
+		return attack.cooldownSeconds * kind.phaseCooldownFactor
 	end
-	enemy.attackReadyAt = run.time + attack.cooldownSeconds
-	enemy.attack = enemy.attack % #archetype.attacks + 1
+	return attack.cooldownSeconds
+end
+
+local function recover(run: Types.Run, enemy: Types.Enemy, attack: Types.AttackConfig)
 	if attack.recoverSeconds > 0 then
 		enemy.state = "recover"
 		enemy.stateUntil = run.time + attack.recoverSeconds
@@ -345,246 +449,244 @@ local function finishTelegraph(run: Types.Run, enemy: Types.Enemy, context: Cont
 	end
 end
 
--- The player chased: the current target while alive, else the nearest noticed.
-local function resolveTarget(run: Types.Run, enemy: Types.Enemy, context: Context): Types.Player?
-	local current = if enemy.target then run.players[enemy.target] else nil
-	if current and current.state == "alive" then
-		return current
+-- The telegraph is over: land the attack, start the cooldown, then recover
+-- (a charge rushes first).
+local function finishTelegraph(
+	run: Types.Run,
+	enemy: Types.Enemy,
+	kind: Types.EnemyKindConfig,
+	context: Context
+)
+	local attack = kind.attacks[enemy.attack]
+	if land(run, enemy, kind, attack, context) then
+		return
 	end
-	return nearestDetected(run, enemy, context)
+	enemy.attackReadyAt = run.time + cooldownOf(kind, enemy, attack)
+	if attack.kind == "charge" then
+		-- The index moves on when the rush ends.
+		enemy.state = "charge"
+		return
+	end
+	nextAttack(kind, enemy)
+	recover(run, enemy, attack)
 end
 
+-- The distance from (px, pz) to the segment from (ax, az) to (bx, bz).
+local function segmentDistance(
+	px: number,
+	pz: number,
+	ax: number,
+	az: number,
+	bx: number,
+	bz: number
+): number
+	local dx, dz = bx - ax, bz - az
+	local length2 = dx * dx + dz * dz
+	local t = 0
+	if length2 > 1e-12 then
+		t = math.clamp(((px - ax) * dx + (pz - az) * dz) / length2, 0, 1)
+	end
+	return Geometry.distance(px, pz, ax + dx * t, az + dz * t)
+end
+
+-- One step of a rush along the locked line: hits every hero it passes once,
+-- and ends at the end point or against an obstacle or the edge.
+local function stepCharge(
+	run: Types.Run,
+	enemy: Types.Enemy,
+	kind: Types.EnemyKindConfig,
+	dt: number,
+	context: Context
+)
+	local attack = kind.attacks[enemy.attack]
+	local left = Geometry.distance(enemy.x, enemy.z, enemy.chargeEndX, enemy.chargeEndZ)
+	local step = math.min((attack.chargeSpeed or 0) * dt, left)
+	local reach =
+		Arena.reach(run.arena, enemy.x, enemy.z, enemy.chargeEndX, enemy.chargeEndZ, kind.radius)
+	local move = math.min(step, reach)
+	local nx, nz = Geometry.normalize(enemy.chargeEndX - enemy.x, enemy.chargeEndZ - enemy.z)
+	local fromX, fromZ = enemy.x, enemy.z
+	enemy.x += nx * move
+	enemy.z += nz * move
+	face(enemy, enemy.chargeEndX, enemy.chargeEndZ)
+
+	local width = attack.radius + run.config.player.radius
+	local damage = scaled(run, enemy, attack.damage)
+	for _, player in context.players do
+		if
+			player.state == "alive"
+			and not enemy.chargedPlayers[player.id]
+			and segmentDistance(player.x, player.z, fromX, fromZ, enemy.x, enemy.z) <= width
+		then
+			enemy.chargedPlayers[player.id] = true
+			hurt(run, enemy, player, damage)
+			knock(run, player, enemy.x, enemy.z, attack.knockback, nx, nz)
+			if enemy.health <= 0 then
+				return
+			end
+		end
+	end
+
+	local arrived = left - move <= 1e-6
+	local blocked = move < step - 1e-6 or (step > 0 and reach <= 1e-6)
+	if arrived or blocked or (attack.chargeSpeed or 0) <= 0 then
+		nextAttack(kind, enemy)
+		recover(run, enemy, attack)
+	end
+end
+
+-- A telegraph or rush in progress stops: the attack is not spent.
+local function interrupt(enemy: Types.Enemy)
+	if enemy.state == "telegraph" or enemy.state == "charge" then
+		enemy.state = "chase"
+	end
+end
+
+-- A grunt walks straight at the hero, stops at contact and hits on contact.
+local function stepGrunt(
+	run: Types.Run,
+	enemy: Types.Enemy,
+	kind: Types.EnemyKindConfig,
+	target: Types.Player,
+	dt: number,
+	rooted: boolean
+)
+	local touching = run.config.player.radius + kind.radius
+	local distance = Geometry.distance(enemy.x, enemy.z, target.x, target.z)
+	face(enemy, target.x, target.z)
+	if not rooted and distance > touching + run.config.horde.contactMargin then
+		local step = math.min(speedOf(run, enemy, kind) * dt, distance - touching)
+		walk(run, enemy, kind, target.x, target.z, step)
+		distance = Geometry.distance(enemy.x, enemy.z, target.x, target.z)
+	end
+	if
+		distance <= touching + run.config.horde.contactMargin
+		and enemy.contactReadyAt <= run.time
+	then
+		enemy.contactReadyAt = run.time + run.config.horde.contactSeconds
+		hurt(run, enemy, target, scaled(run, enemy, kind.damage))
+	end
+end
+
+-- An elite or boss closes to its attack's range (backing off inside its
+-- preferred range) and starts the attack when its condition holds.
 local function chase(
 	run: Types.Run,
 	enemy: Types.Enemy,
+	kind: Types.EnemyKindConfig,
+	target: Types.Player,
 	dt: number,
-	speed: number,
-	context: Context
+	rooted: boolean
 )
-	local archetype = State.archetype(run, enemy)
-	local target = resolveTarget(run, enemy, context)
-	if
-		target == nil
-		or Geometry.distance(enemy.x, enemy.z, enemy.homeX, enemy.homeZ) > archetype.leash
-	then
-		giveUpChase(enemy)
-		return
+	if enemy.attack > available(kind, enemy) then
+		enemy.attack = 1
 	end
-	enemy.target = target.id
 	face(enemy, target.x, target.z)
-
-	local attack = archetype.attacks[enemy.attack]
 	local distance = Geometry.distance(enemy.x, enemy.z, target.x, target.z)
+	local attack = kind.attacks[enemy.attack]
 	if run.time >= enemy.attackReadyAt then
-		-- A shaman starts its heal only when someone needs it.
-		local ready = if attack.kind == "heal"
-			then hurtMemberInRadius(run, enemy, attack, context)
-			else distance <= attack.range
-		if ready then
+		if canStart(run, enemy, attack, distance) then
 			beginTelegraph(run, enemy, attack, target)
 			return
+		elseif
+			(attack.kind == "heal" or attack.kind == "summon") and available(kind, enemy) > 1
+		then
+			-- A heal or summon with nothing to do does not hold up the others.
+			nextAttack(kind, enemy)
+			attack = kind.attacks[enemy.attack]
 		end
 	end
+	if rooted then
+		return
+	end
 
-	local step = speed * dt
-	local found = true
-	if archetype.preferredRange and distance < archetype.preferredRange then
-		local nx, nz = Geometry.normalize(enemy.x - target.x, enemy.z - target.z)
-		enemy.x, enemy.z = Map.clamp(run.map, enemy.x + nx * step, enemy.z + nz * step)
-	elseif distance > attack.range * run.config.enemies.approachFactor then
+	local step = speedOf(run, enemy, kind) * dt
+	if kind.preferredRange and distance < kind.preferredRange then
+		walkAway(run, enemy, kind, target.x, target.z, step)
+		face(enemy, target.x, target.z)
+	elseif distance > attack.range * run.config.horde.approachFactor then
 		-- Never closer than touching.
-		local gap = State.enemyRadius(run, enemy) + run.config.player.radius
-		local allowed = math.min(step, math.max(0, distance - gap))
-		if allowed > 0 then
-			found = walkToward(run, enemy, target.x, target.z, allowed)
-		end
-	end
-	-- A target the map finds no way to (across water) ends the chase as the
-	-- leash does.
-	if givesUp(run, enemy, found) then
-		giveUpChase(enemy)
+		local gap = kind.radius + run.config.player.radius
+		walk(run, enemy, kind, target.x, target.z, math.min(step, math.max(0, distance - gap)))
 	end
 end
 
-local function walkHome(
-	run: Types.Run,
-	enemy: Types.Enemy,
-	speed: number,
-	dt: number,
-	context: Context
-)
-	local config = run.config.enemies
-	if Geometry.distance(enemy.x, enemy.z, enemy.homeX, enemy.homeZ) <= config.arriveDistance then
-		-- Back in formation, healed, and ready to notice again.
-		enemy.x, enemy.z = enemy.homeX, enemy.homeZ
-		enemy.health = math.max(enemy.health, enemy.maxHealth * config.returnHealFraction)
-		enemy.target = nil
-		enemy.stuckSince = nil
-		enemy.state = if enemy.patrolId then "patrol" else "idle"
-		calmCamp(run, enemy, context)
-		return
-	end
-	face(enemy, enemy.homeX, enemy.homeZ)
-	-- With no way home for giveUpSeconds, where it stands becomes its home,
-	-- so it does not stand in the return forever, blind to players.
-	if givesUp(run, enemy, walkToward(run, enemy, enemy.homeX, enemy.homeZ, speed * dt)) then
-		enemy.homeX, enemy.homeZ = enemy.x, enemy.z
-	end
-end
-
--- Sends the patrol on to a neighbour of its point, not back where it came
--- from unless the point is a dead end. A chest's guard stays.
-local function advancePatrol(run: Types.Run, patrol: Types.Patrol)
-	if patrol.stays then
-		return
-	end
-	local point = run.map.points[patrol.routePoint]
-	local options: { number } = {}
-	for _, neighbour in point.neighbours do
-		if neighbour ~= patrol.previousPoint then
-			table.insert(options, neighbour)
-		end
-	end
-	if #options == 0 then
-		options = point.neighbours
-	end
-	if #options == 0 then
-		return
-	end
-	local next = if #options > 1 then options[run.rng:integer(1, #options)] else options[1]
-	patrol.previousPoint = patrol.routePoint
-	patrol.routePoint = next
-end
-
--- Sends a wanderer to a walkable spot drawn within wanderRadius of (x, z),
--- or keeps it where it stands when no draw is walkable, until wanderSeconds
--- pass.
-local function drawWanderSpot(run: Types.Run, patrol: Types.Patrol, x: number, z: number)
-	local patrols = run.config.enemies.patrols
-	patrol.wanderX, patrol.wanderZ = x, z
-	patrol.wanderUntil = run.time + patrols.wanderSeconds
-	for _ = 1, WANDER_DRAWS do
-		local angle = run.rng:next() * 2 * math.pi
-		-- Uniform over the disc, not bunched at its centre.
-		local radius = patrols.wanderRadius * math.sqrt(run.rng:next())
-		local sx, sz = x + math.cos(angle) * radius, z + math.sin(angle) * radius
-		if Map.walkable(run.map, sx, sz) then
-			patrol.wanderX, patrol.wanderZ = sx, sz
-			return
-		end
-	end
-end
-
--- A wanderer roams the open ground: to its spot, then to a new one drawn
--- where it arrived, or drawn where it stands once wanderSeconds pass.
-local function wanderWalk(
-	run: Types.Run,
-	enemy: Types.Enemy,
-	patrol: Types.Patrol,
-	speed: number,
-	dt: number,
-	arriveDistance: number
-)
-	local arrived = Geometry.distance(enemy.x, enemy.z, patrol.wanderX, patrol.wanderZ)
-		<= arriveDistance
-	if patrol.members[1] == enemy.id and (arrived or run.time >= patrol.wanderUntil) then
-		drawWanderSpot(run, patrol, enemy.x, enemy.z)
-	end
-	if Geometry.distance(enemy.x, enemy.z, patrol.wanderX, patrol.wanderZ) > arriveDistance then
-		face(enemy, patrol.wanderX, patrol.wanderZ)
-		walkToward(run, enemy, patrol.wanderX, patrol.wanderZ, speed * dt)
-	end
-end
-
-local function patrolWalk(
-	run: Types.Run,
-	enemy: Types.Enemy,
-	speed: number,
-	dt: number,
-	arriveDistance: number
-)
-	local patrol = if enemy.patrolId then State.patrolById(run, enemy.patrolId) else nil
-	if patrol == nil then
-		return
-	end
-	if patrol.wanders then
-		wanderWalk(run, enemy, patrol, speed, dt, arriveDistance)
-		return
-	end
-	local point = run.map.points[patrol.routePoint]
-	-- One member decides where the patrol goes next, so it stays together.
+local function enterPhase(run: Types.Run, enemy: Types.Enemy, kind: Types.EnemyKindConfig)
 	if
-		patrol.members[1] == enemy.id
-		and Geometry.distance(enemy.x, enemy.z, point.x, point.z) <= arriveDistance
+		kind.phaseHealthShare
+		and enemy.phase == 1
+		and enemy.health <= kind.phaseHealthShare * enemy.maxHealth
 	then
-		advancePatrol(run, patrol)
-		point = run.map.points[patrol.routePoint]
-	end
-	enemy.routePoint = patrol.routePoint
-	if Geometry.distance(enemy.x, enemy.z, point.x, point.z) > arriveDistance then
-		face(enemy, point.x, point.z)
-		walkToward(run, enemy, point.x, point.z, speed * dt)
+		enemy.phase = 2
+		table.insert(run.events, { kind = "bossPhase", enemyId = enemy.id, phase = 2 })
 	end
 end
 
 local function stepEnemy(run: Types.Run, enemy: Types.Enemy, dt: number, context: Context)
-	local config = run.config
+	local kind = State.kind(run, enemy)
+	local time = run.time
+	enterPhase(run, enemy, kind)
 
 	-- The last step of a knockback covers only what is left of it.
-	local knockLeft = math.clamp(enemy.knockUntil - (run.time - dt), 0, dt)
-	if knockLeft > 0 then
-		-- Water or a prop on the way stops the push there.
+	local knockLeft = math.clamp(enemy.knockUntil - (time - dt), 0, dt)
+	if enemy.knockUntil > time or knockLeft > 0 then
 		local toX = enemy.x + enemy.knockX * knockLeft
 		local toZ = enemy.z + enemy.knockZ * knockLeft
-		local reach = Map.reach(run.map, enemy.x, enemy.z, toX, toZ)
+		local reach = Arena.reach(run.arena, enemy.x, enemy.z, toX, toZ, kind.radius)
 		local x, z = Geometry.stepToward(enemy.x, enemy.z, toX, toZ, reach)
-		enemy.x, enemy.z = Map.clamp(run.map, x, z)
+		enemy.x, enemy.z = Arena.clamp(run.arena, x, z, kind.radius)
 		-- A telegraph in progress still lands on time; nothing else is decided.
-		if enemy.state == "telegraph" and run.time >= enemy.stateUntil then
-			finishTelegraph(run, enemy, context)
+		if enemy.state == "telegraph" and time >= enemy.stateUntil then
+			finishTelegraph(run, enemy, kind, context)
 		end
 		return
 	end
 
-	local speed = State.archetype(run, enemy).speed
-	if run.time < enemy.chilledUntil then
-		speed *= 1 - config.statuses.chillSlow
+	local stunned = enemy.stunnedUntil > time
+	local feared = enemy.fearedUntil > time
+	local rooted = stunned or enemy.rootedUntil > time
+	if stunned or feared then
+		interrupt(enemy)
+	elseif rooted and enemy.state == "charge" then
+		local attack = kind.attacks[enemy.attack]
+		nextAttack(kind, enemy)
+		recover(run, enemy, attack)
 	end
-	if run.time < enemy.buffedUntil then
-		speed *= config.enemies.buffSpeedFactor
+
+	local target = nearestPlayer(enemy, context)
+	enemy.target = if target then target.id else nil
+
+	if stunned then
+		return
+	end
+	if feared then
+		if target and not rooted then
+			walkAway(run, enemy, kind, target.x, target.z, speedOf(run, enemy, kind) * dt)
+		end
+		return
+	end
+
+	if #kind.attacks == 0 then
+		if target then
+			stepGrunt(run, enemy, kind, target, dt, rooted)
+		end
+		return
 	end
 
 	local state = enemy.state
-	if state == "idle" or state == "patrol" then
-		local found = nearestDetected(run, enemy, context)
-		if found then
-			enemy.state = "chase"
-			enemy.target = found.id
-			-- A patrol member's or a wanderer's leash starts where it noticed
-			-- the player.
-			if enemy.patrolId then
-				enemy.homeX, enemy.homeZ = enemy.x, enemy.z
-			end
-			local camp = if enemy.campId then State.campById(run, enemy.campId) else nil
-			if camp and config.enemies.campAlerts then
-				Enemies.alertCamp(run, camp, found.id)
-			end
-		elseif state == "patrol" then
-			patrolWalk(run, enemy, speed, dt, config.enemies.arriveDistance)
-		end
-	elseif state == "chase" then
-		chase(run, enemy, dt, speed, context)
-	elseif state == "telegraph" then
+	if state == "telegraph" then
 		face(enemy, enemy.aimX, enemy.aimZ)
-		if run.time >= enemy.stateUntil then
-			finishTelegraph(run, enemy, context)
+		if time >= enemy.stateUntil then
+			finishTelegraph(run, enemy, kind, context)
 		end
+	elseif state == "charge" then
+		stepCharge(run, enemy, kind, dt, context)
 	elseif state == "recover" then
-		if run.time >= enemy.stateUntil then
+		if time >= enemy.stateUntil then
 			enemy.state = "chase"
 		end
-	else
-		walkHome(run, enemy, speed, dt, context)
+	elseif target then
+		chase(run, enemy, kind, target, dt, rooted)
 	end
 end
 
@@ -592,7 +694,7 @@ end
 -- a grid of separationRadius cells, so the cost stays near linear.
 local function separate(run: Types.Run)
 	local enemies = run.enemies
-	local radius = run.config.enemies.separationRadius
+	local radius = run.config.horde.separationRadius
 	if #enemies < 2 or radius <= 0 then
 		return
 	end
@@ -659,29 +761,35 @@ local function separate(run: Types.Run)
 	end
 end
 
--- Advances every enemy by `dt` seconds: knockback, behaviour, separation, and
--- back onto walkable ground.
-function Enemies.step(run: Types.Run, dt: number)
-	local players: { Types.Player } = {}
-	for _, player in State.sortedPlayers(run) do
-		if player.state == "alive" then
-			table.insert(players, player)
-		end
+-- Keeps an enemy inside the edge and out of the obstacles: one pushed into
+-- an obstacle leaves it along the obstacle's normal.
+local function settle(run: Types.Run, enemy: Types.Enemy)
+	local radius = State.kind(run, enemy).radius
+	enemy.x, enemy.z = Arena.clamp(run.arena, enemy.x, enemy.z, radius)
+	local blocker = Arena.blocking(run.arena, enemy.x, enemy.z, radius)
+	if blocker then
+		local nx, nz = Geometry.normalize(enemy.x - blocker.x, enemy.z - blocker.z)
+		local push = blocker.radius + radius + 1e-3
+		enemy.x, enemy.z =
+			Arena.clamp(run.arena, blocker.x + nx * push, blocker.z + nz * push, radius)
 	end
-	local byId: { [number]: Types.Enemy } = {}
-	for _, enemy in run.enemies do
-		byId[enemy.id] = enemy
-	end
-	local context: Context = { players = players, byId = byId }
+end
 
-	-- An exploder removes itself from run.enemies mid-pass.
+-- Advances every enemy by `dt` seconds: knockback, statuses, movement,
+-- contact hits and attacks, then separation and back onto free ground.
+function Enemies.step(run: Types.Run, dt: number)
+	local context: Context = { players = State.alivePlayers(run) }
+	-- An exploder or an attacker killed by thorns leaves run.enemies mid-pass,
+	-- only ever itself; a summon adds to it.
 	for _, enemy in table.clone(run.enemies) do
-		stepEnemy(run, enemy, dt, context)
+		if enemy.health > 0 then
+			stepEnemy(run, enemy, dt, context)
+		end
 	end
 
 	separate(run)
 	for _, enemy in run.enemies do
-		enemy.x, enemy.z = Map.clamp(run.map, enemy.x, enemy.z)
+		settle(run, enemy)
 	end
 end
 

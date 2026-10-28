@@ -1,44 +1,52 @@
 --!strict
--- The server adapter (ADR-0002): builds the map, owns the run lifecycle and
--- drives the pure core in fixed steps. The only things it reads from the world
--- are character positions and parsed intents (AGENTS.md rule 1).
+-- The server adapter (ADR-0002): owns the run lifecycle (the class pick, the
+-- run, the summary) and drives the pure core in fixed steps. The only things
+-- it reads from the world are character positions and parsed intents
+-- (AGENTS.md rule 1).
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
 local Config = require(ReplicatedStorage.Shared.Config)
-local Life = require(ReplicatedStorage.Shared.Core.Life)
-local Map = require(ReplicatedStorage.Shared.Core.Map)
-local Progression = require(ReplicatedStorage.Shared.Core.Progression)
 local Protocol = require(ReplicatedStorage.Shared.Protocol)
 local Run = require(ReplicatedStorage.Shared.Core.Run)
 local Types = require(ReplicatedStorage.Shared.Core.Types)
 
+local ArenaBuilder = require(script.Parent.ArenaBuilder)
 local Characters = require(script.Parent.Characters)
-local MapBuilder = require(script.Parent.MapBuilder)
 local Network = require(script.Parent.Network)
 
 local STEP_SECONDS = 1 / Config.net.stepHz
 local SNAPSHOT_SECONDS = 1 / Config.net.snapshotHz
 -- A slow frame catches up with at most this many steps; the rest is dropped.
 local MAX_STEPS_PER_FRAME = 5
--- The seed and the core's view of each player are Studio-only diagnostics:
--- attributes replicate to every client, and the seed with the shared core
--- would let a client replay the run's rolls.
+-- The ground is flat (ADR-0014): every position is at this height.
+local GROUND_HEIGHT = 0
+-- The seed, the run's clock and the core's view of each player are
+-- Studio-only diagnostics: attributes replicate to every client, and the seed
+-- with the shared core would let a client replay the run's rolls.
 local IS_STUDIO = RunService:IsStudio()
 
-local archetypeNames = Protocol.archetypeNames(Config)
+local enemyKinds = Protocol.enemyKinds(Config)
 local projectileKinds = Protocol.projectileKinds(Config)
+
+type Phase = "pick" | "run" | "summary"
 
 local run: Types.Run? = nil
 -- True while a run is being set up, which yields on building the map and on
 -- respawning characters.
 local starting = false
--- Real seconds left of the summary after the run ended.
-local summaryLeft = 0
+-- Players who picked a class while the run was being set up, and the class.
+local waiting: { [Player]: string } = {}
+-- Real seconds left of the summary once the run ended; nil before.
+local summaryLeft: number? = nil
+-- Why the run ended, from its `ended` event.
+local endReason: string? = nil
 -- Whether the current run was started with the Studio perf test config.
 local perfRun = false
+-- Each present player's phase.
+local phases: { [Player]: Phase } = {}
 -- The players in the current run, by core id.
 local members: { [number]: Player } = {}
 -- Everyone who has been in the current run, so leaving and rejoining does not
@@ -60,34 +68,19 @@ local function deepCopy(value: any): any
 	return copy
 end
 
--- Studio only: a heavy run for the performance check (plan, criterion 6): a
--- map full of patrols and an unkillable player.
+-- Studio only: a heavy run for the performance check (plan, stage 3
+-- criterion 5): the horde at its cap from the start and an unkillable hero.
 local function perfConfig(): Types.Config
 	local config = deepCopy(Config) :: Types.Config
-	config.enemies.patrols.groupsAtStart = 25
-	config.enemies.patrols.sizeAtStart = 8
-	config.player.maxHealth = 1e6
-	-- The map of a full server, whatever the player count (stage 2b criterion 6).
-	config.map.minHalf = config.map.maxHalf
-	config.map.minPoints = config.map.maxPoints
+	config.horde.aliveAtStart = config.horde.maxAlive
+	for _, class in config.classes do
+		class.maxHealth = 1e6
+	end
 	return config
 end
 
 local function perfRequested(): boolean
-	return RunService:IsStudio() and workspace:GetAttribute("PerfTest") == true
-end
-
--- Moves the character onto the map's ground at (x, z).
-local function teleport(current: Types.Run, player: Player, x: number, z: number)
-	Characters.teleport(player, x, z, Map.heightAt(current.map, x, z))
-end
-
--- Adds a player to the run and moves their character to its entry.
-local function joinRun(current: Types.Run, player: Player)
-	local core = Run.addPlayer(current, player.UserId)
-	members[player.UserId] = player
-	seen[player.UserId] = true
-	teleport(current, player, core.x, core.z)
+	return IS_STUDIO and workspace:GetAttribute("PerfTest") == true
 end
 
 local function present(): { Player }
@@ -100,145 +93,178 @@ local function present(): { Player }
 	return players
 end
 
--- Starts a run with everyone present: builds its map, which takes some
--- frames, then respawns everyone if asked to and lets them in. Whoever joins
--- during the build is let in with the rest.
-local function startRun(respawn: boolean)
-	if starting then
-		return
-	end
-	starting = true
+local function setPhase(player: Player, phase: Phase, summary: Protocol.SummaryView?)
+	phases[player] = phase
+	Network.sendPhase(player, phase, summary)
+end
+
+-- Forgets the run; the world stays until the next one is built.
+local function dropRun()
 	run = nil
 	members = {}
 	seen = {}
 	pending = {}
+	summaryLeft = nil
+	endReason = nil
+end
 
-	local count = #present()
-	if count > 0 then
-		-- The old map goes away under the characters while the new one is built.
-		for _, player in present() do
-			Characters.freeze(player)
-		end
-		perfRun = perfRequested()
-		local config = if perfRun then perfConfig() else Config
-		local seed = Random.new():NextInteger(1, 2 ^ 31 - 2)
-		local fresh = Run.new(config, seed, count)
-		-- The seed regenerates this map offline (Map.generate) when a position needs a look.
-		if IS_STUDIO then
-			workspace:SetAttribute("MapSeed", seed)
-		end
-		local buildStart = os.clock()
-		MapBuilder.build(fresh.map, config)
-		-- How long the map took, for the lead to read in Studio (stage 2b criterion 6).
-		workspace:SetAttribute("MapBuildSeconds", os.clock() - buildStart)
+-- Adds a player to the run as `class`, respawns their character, puts it
+-- where the run says they are and dresses it for the class.
+local function joinRun(current: Types.Run, player: Player, class: string)
+	local core = Run.addPlayer(current, player.UserId, class)
+	seen[player.UserId] = true
+	-- A dead or extracted character from the last run comes back whole.
+	pcall(player.LoadCharacter, player)
+	if player.Parent ~= Players then
+		Run.removePlayer(current, player.UserId)
+		return
+	end
+	Characters.teleport(player, core.x, core.z, GROUND_HEIGHT)
+	Characters.dress(player, current.config.classes[core.class])
+	members[player.UserId] = player
+	setPhase(player, "run")
+end
 
-		if respawn then
-			for _, player in present() do
-				pcall(player.LoadCharacter, player)
-			end
+-- Starts a run for the players waiting in `waiting`: builds its map, which
+-- takes some frames, then lets them in. Whoever picks during the build is let
+-- in with the rest.
+local function startRun()
+	if starting then
+		return
+	end
+	starting = true
+	dropRun()
+
+	perfRun = perfRequested()
+	local config = if perfRun then perfConfig() else Config
+	local seed = Random.new():NextInteger(1, 2 ^ 31 - 2)
+	local fresh = Run.new(config, seed)
+	if IS_STUDIO then
+		workspace:SetAttribute("RunSeed", seed)
+	end
+	-- The old map goes away under the characters while the new one is built.
+	for _, player in present() do
+		Characters.freeze(player)
+	end
+	ArenaBuilder.build(fresh.arena)
+
+	while true do
+		local player, class = next(waiting)
+		if player == nil then
+			break
 		end
-		local joined = present()
-		for _, player in joined do
-			joinRun(fresh, player)
+		waiting[player] = nil
+		if player.Parent == Players and phases[player] == "pick" then
+			joinRun(fresh, player, class)
 		end
-		if #joined > 0 then
-			Network.sendMapToAll(fresh)
-			stepAccumulator = 0
-			snapshotAccumulator = 0
-			summaryLeft = config.run.summarySeconds
-			run = fresh
+	end
+	-- Everyone else waits on the new map, out of the run.
+	for _, player in present() do
+		if not members[player.UserId] then
+			Characters.teleport(player, fresh.arena.startX, fresh.arena.startZ, GROUND_HEIGHT)
 		end
+	end
+	if next(fresh.players) ~= nil then
+		stepAccumulator = 0
+		snapshotAccumulator = 0
+		run = fresh
 	end
 	starting = false
 end
 
-local function onPlayerAdded(player: Player)
-	-- A respawned character appears at the origin; the run says where it belongs.
-	player.CharacterAdded:Connect(function()
-		local current = run
-		local core = if current then current.players[player.UserId] else nil
-		if current and core then
-			task.defer(teleport, current, player, core.x, core.z)
-		elseif current and #current.map.entries > 0 then
-			-- A spectator waits at an entry, out of the camps' way.
-			local entry = current.map.points[current.map.entries[1]]
-			task.defer(teleport, current, player, entry.x, entry.z)
-		elseif starting then
-			-- No baseplate holds a character that spawns while the map is
-			-- built; the run's teleport lets it go.
-			task.defer(function()
-				if starting then
-					Characters.freeze(player)
-				end
-			end)
-		end
-	end)
-
+-- A player in the pick phase chose `class`: they start a run, join the one
+-- that has just begun, or wait for the next one.
+local function pickClass(player: Player, class: string)
+	if phases[player] ~= "pick" then
+		return
+	end
 	if starting then
-		-- The run being set up picks the player up.
+		waiting[player] = class
 		return
 	end
 	local current = run
 	if current == nil then
-		startRun(false)
+		waiting[player] = class
+		startRun()
 		return
 	end
-	-- Everyone sees the map, spectators included.
-	Network.sendMap(player, current)
 	if
 		not current.ended
 		and not seen[player.UserId]
 		and current.time <= current.config.run.lateJoinSeconds
 	then
-		joinRun(current, player)
+		joinRun(current, player, class)
 	end
-	-- Anyone else waits for the next run.
+	-- Anyone else waits for the next run on the pick screen.
+end
+
+-- Studio only: the perf switch changed, so the run restarts with the same
+-- players in the same classes.
+local function restartRun()
+	local current = run
+	if current == nil or starting then
+		return
+	end
+	for id, player in members do
+		local core = current.players[id]
+		if core and player.Parent == Players then
+			waiting[player] = core.class
+			phases[player] = "pick"
+		end
+	end
+	startRun()
+end
+
+local function onPlayerAdded(player: Player)
+	-- A respawned character appears at a spawn; the run says where it belongs.
+	player.CharacterAdded:Connect(function()
+		task.defer(function()
+			local current = run
+			local core = if current then current.players[player.UserId] else nil
+			if current and core and members[player.UserId] then
+				Characters.teleport(player, core.x, core.z, GROUND_HEIGHT)
+			elseif members[player.UserId] then
+				-- Already put in place by its join.
+				return
+			elseif starting then
+				-- Nothing holds a character that spawns while the map is built;
+				-- the run's teleport lets it go.
+				Characters.freeze(player)
+			elseif current then
+				-- A player out of the run waits at the start.
+				Characters.teleport(
+					player,
+					current.arena.startX,
+					current.arena.startZ,
+					GROUND_HEIGHT
+				)
+			end
+		end)
+	end)
+	setPhase(player, "pick")
 end
 
 local function onPlayerRemoving(player: Player)
 	Characters.forget(player)
+	phases[player] = nil
+	waiting[player] = nil
 	members[player.UserId] = nil
 	local current = run
 	if current then
 		Run.removePlayer(current, player.UserId)
 		if next(current.players) == nil then
-			run = nil
-			pending = {}
+			dropRun()
 		end
 	end
 end
 
 local function selfViews(current: Types.Run): { [number]: Protocol.SelfView }
 	local views = {}
-	for id, player in current.players do
-		local class = Run.class(current, player)
-		local skills: { Protocol.SkillView } = {}
-		for index, active in class.actives do
-			table.insert(skills, {
-				id = active.id,
-				name = active.name,
-				readyIn = math.max(0, (player.skillReadyAt[index] or 0) - current.time),
-				cooldown = active.cooldownSeconds,
-			})
+	for id in members do
+		local core = current.players[id]
+		if core then
+			views[id] = Protocol.selfView(current, core)
 		end
-		local maxCharges = Run.dashMaxCharges(current, player)
-		views[id] = {
-			level = player.level,
-			xp = player.xp,
-			xpToNext = Progression.xpToNext(current.config, player.level),
-			kills = player.kills,
-			offer = player.offers[1],
-			perks = player.perks,
-			skills = skills,
-			dashCharges = player.dashCharges,
-			dashMaxCharges = maxCharges,
-			dashRechargeIn = if player.dashCharges < maxCharges
-				then math.max(0, player.dashRechargeAt - current.time)
-				else 0,
-			dashDistance = Run.dashDistance(current, player),
-			potions = player.potions,
-			potionCapacity = Life.potionCapacity(current, player),
-		}
 	end
 	return views
 end
@@ -255,57 +281,173 @@ local function gatherInputs(): { [number]: Types.PlayerInput }
 end
 
 local function onIntent(player: Player, intent: Protocol.Intent)
-	local current = run
-	if current == nil then
+	if intent.kind == "pickClass" then
+		pickClass(player, intent.class)
 		return
 	end
+	local current = run
 	local id = player.UserId
-	if intent.kind == "aim" then
-		Run.setAim(current, id, intent.angle)
-	elseif intent.kind == "fire" then
-		Run.setFiring(current, id, intent.held)
-	elseif intent.kind == "skill" then
-		Run.useSkill(current, id, intent.index, intent.aim, intent.aimDistance)
-	elseif intent.kind == "dash" then
-		Run.dash(current, id)
-	elseif intent.kind == "drink" then
-		Run.drink(current, id)
-	elseif intent.kind == "interact" then
-		Run.setInteracting(current, id, intent.held)
-	elseif intent.kind == "perk" then
-		Run.choosePerk(current, id, intent.index)
-	elseif intent.kind == "assist" then
-		Run.setAssist(current, id, intent.enabled)
+	if current == nil or not members[id] or current.players[id] == nil then
+		return
+	end
+	if intent.kind == "card" then
+		Run.chooseCard(current, id, intent.index)
+	elseif intent.kind == "utility" then
+		Run.useUtility(current, id, intent.index)
+	elseif intent.kind == "open" then
+		Run.setOpening(current, id, intent.held)
+	elseif intent.kind == "cast" then
+		Run.castSpell(current, id)
+	elseif intent.kind == "enter" then
+		Run.enterPortal(current, id)
+	end
+end
+
+local function sendSnapshot(current: Types.Run)
+	Network.sendWorld(current, enemyKinds, projectileKinds)
+	Network.sendEvents(pending, selfViews(current))
+	pending = {}
+end
+
+-- The run ended: everyone in it sees how it went.
+local function beginSummary(current: Types.Run)
+	-- The last events (the death, the extraction, the end) go out first.
+	sendSnapshot(current)
+	snapshotAccumulator = 0
+	local seconds = current.config.run.summarySeconds
+	summaryLeft = seconds
+	for id, player in members do
+		local core = current.players[id]
+		if core then
+			setPhase(player, "summary", {
+				reason = endReason or "ended",
+				extracted = core.state == "extracted",
+				time = current.time,
+				level = core.level,
+				kills = core.kills,
+				damageDone = core.damageDone,
+				class = core.class,
+				nextIn = seconds,
+			})
+		end
+	end
+end
+
+-- The summary is over: the run is forgotten and everyone picks a class again.
+local function endSummary()
+	local finished = members
+	dropRun()
+	for _, player in finished do
+		if player.Parent == Players then
+			Characters.dress(player, nil)
+			-- The faded character of a dead or extracted hero comes back whole.
+			task.spawn(function()
+				pcall(player.LoadCharacter, player)
+			end)
+		end
+	end
+	for _, player in present() do
+		setPhase(player, "pick")
+	end
+end
+
+local function drain(current: Types.Run)
+	for _, event in Run.drainEvents(current) do
+		if event.kind == "chestOpened" then
+			ArenaBuilder.setChestOpened(true)
+		elseif event.kind == "ended" then
+			endReason = event.reason
+		end
+		table.insert(pending, event)
 	end
 end
 
 local heartbeatFrames = 0
 local heartbeatClock = 0
 
-local function onHeartbeat(dt: number)
-	-- Measurements for the performance check, once per second.
+local function measure(dt: number)
 	heartbeatFrames += 1
 	heartbeatClock += dt
-	if heartbeatClock >= 1 then
+	if heartbeatClock < 1 then
+		return
+	end
+	if IS_STUDIO then
 		local current = run
 		workspace:SetAttribute("ServerHeartbeatHz", heartbeatFrames / heartbeatClock)
 		workspace:SetAttribute("EnemyCount", if current then #current.enemies else 0)
+		workspace:SetAttribute("RunTime", if current then current.time else 0)
 		-- Where the core thinks each player stands, for the lead to compare with
 		-- the character in Studio.
-		if current and IS_STUDIO then
+		if current then
 			for id, core in current.players do
-				local player = Players:GetPlayerByUserId(id)
+				local player = members[id]
 				if player then
 					player:SetAttribute("CoreX", core.x)
 					player:SetAttribute("CoreZ", core.z)
-					player:SetAttribute("CoreWalkable", Map.walkable(current.map, core.x, core.z))
-					player:SetAttribute("CorePoint", core.pointId)
 				end
 			end
 		end
-		heartbeatFrames = 0
-		heartbeatClock = 0
 	end
+	heartbeatFrames = 0
+	heartbeatClock = 0
+end
+
+-- Studio only: the lead's shortcuts for the playtest (plan, criterion 4).
+-- Setting the workspace attribute DebugSkipTo moves the run's clock there;
+-- DebugSpell gives every member the extraction spell; DebugAutoCards picks
+-- cards for them. Attributes never reach
+-- a live server's rules: the guard is RunService:IsStudio().
+local function applyDebug(current: Types.Run)
+	if not IS_STUDIO then
+		return
+	end
+	local skipTo = workspace:GetAttribute("DebugSkipTo")
+	if type(skipTo) == "number" and skipTo > current.time then
+		current.time = skipTo
+		workspace:SetAttribute("DebugSkipTo", nil)
+	end
+	-- DebugAutoCards takes the first card of every offer, so a long test
+	-- run never waits for a choice.
+	if workspace:GetAttribute("DebugAutoCards") == true then
+		for _, core in current.players do
+			if #core.offers > 0 then
+				Run.chooseCard(current, core.id, 1)
+			end
+		end
+	end
+	-- DebugGoToChest puts every member beside the chest.
+	if workspace:GetAttribute("DebugGoToChest") == true then
+		for _, core in current.players do
+			core.x = current.arena.chestX + 4
+			core.z = current.arena.chestZ
+		end
+		workspace:SetAttribute("DebugGoToChest", nil)
+	end
+	-- DebugNoHorde (perf runs only, whose config is a private copy) stops the
+	-- horde and removes its grunts and elites, so a boss can be watched alone.
+	if workspace:GetAttribute("DebugNoHorde") == true and perfRun then
+		current.config.horde.maxAlive = 0
+		current.config.horde.ringCountStart = 0
+		current.config.horde.ringCountGrowth = 0
+		for index = #current.enemies, 1, -1 do
+			local kind = current.config.enemies[current.enemies[index].kind]
+			if kind.role ~= "boss" and kind.role ~= "finalBoss" then
+				table.remove(current.enemies, index)
+			end
+		end
+		workspace:SetAttribute("DebugNoHorde", nil)
+	end
+	if workspace:GetAttribute("DebugSpell") == true then
+		for _, core in current.players do
+			core.hasSpell = true
+		end
+		workspace:SetAttribute("DebugSpell", nil)
+	end
+end
+
+local function onHeartbeat(dt: number)
+	-- Measurements for the performance check, once per second.
+	measure(dt)
 
 	local current = run
 	if current == nil then
@@ -313,6 +455,7 @@ local function onHeartbeat(dt: number)
 	end
 
 	if not current.ended then
+		applyDebug(current)
 		stepAccumulator += dt
 		local steps = 0
 		while
@@ -321,9 +464,7 @@ local function onHeartbeat(dt: number)
 			and not current.ended
 		do
 			Run.step(current, STEP_SECONDS, gatherInputs())
-			for _, event in Run.drainEvents(current) do
-				table.insert(pending, event)
-			end
+			drain(current)
 			stepAccumulator -= STEP_SECONDS
 			steps += 1
 		end
@@ -331,28 +472,35 @@ local function onHeartbeat(dt: number)
 			stepAccumulator %= STEP_SECONDS
 		end
 	end
-	MapBuilder.syncZones(current.map, current.zones)
 
 	for id, player in members do
 		local core = current.players[id]
 		if core then
-			Characters.apply(player, core.state, Run.walkSpeed(current, core))
-			Characters.hold(player, core.x, core.z, Map.heightAt(current.map, core.x, core.z))
+			local walkSpeed = if current.paused or core.state ~= "alive"
+				then 0
+				else Run.walkSpeed(current, core)
+			Characters.apply(player, core.state, walkSpeed)
+			Characters.hold(player, core.x, core.z, GROUND_HEIGHT)
 		end
+	end
+
+	local left = summaryLeft
+	if current.ended and left == nil then
+		beginSummary(current)
+		return
 	end
 
 	snapshotAccumulator += dt
 	if snapshotAccumulator >= SNAPSHOT_SECONDS then
 		snapshotAccumulator %= SNAPSHOT_SECONDS
-		Network.sendWorld(current, archetypeNames, projectileKinds)
-		Network.sendEvents(pending, selfViews(current))
-		pending = {}
+		sendSnapshot(current)
 	end
 
-	if current.ended then
-		summaryLeft -= dt
-		if summaryLeft <= 0 then
-			task.spawn(startRun, true)
+	if left then
+		left -= dt
+		summaryLeft = left
+		if left <= 0 then
+			endSummary()
 		end
 	end
 end
@@ -367,7 +515,7 @@ RunService.Heartbeat:Connect(onHeartbeat)
 -- Changing the perf test switch restarts the run at once.
 workspace:GetAttributeChangedSignal("PerfTest"):Connect(function()
 	if run ~= nil and perfRequested() ~= perfRun then
-		task.spawn(startRun, true)
+		task.spawn(restartRun)
 	end
 end)
 

@@ -1,6 +1,6 @@
 # A run is played by one party of up to four, or solo, and players never harm each other
 
-**Status:** proposed; once accepted it supersedes [ADR-0003](0003-hub-and-run-places.md), whose two places it keeps.
+**Status:** accepted on 2026-10-27; once accepted it supersedes [ADR-0003](0003-hub-and-run-places.md), whose two places it keeps.
 
 A run holds one party of one to four players who entered together; they share experience, revive one another and cannot harm each other, and there are no alliances, betrayal or fighting between players. The game is still two places in one universe: a hub, where players manage their stash and loadout and form a party, and a run place, where each run gets its own reserved server for its party and map, reached by teleport. We chose co-op over twelve players with alliances and betrayal because a survivors-like lives on a dense horde per player, which a server can give four players and not twelve, and because the user chose a game played with friends over one played against strangers.
 

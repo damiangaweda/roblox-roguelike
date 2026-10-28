@@ -1,455 +1,351 @@
 --!strict
 local Assert = require("./Assert")
-local Config = require("../src/shared/Config")
 local Fixtures = require("./Fixtures")
-local Map = require("../src/shared/Core/Map")
 local Protocol = require("../src/shared/Protocol")
-local Rng = require("../src/shared/Core/Rng")
 local Types = require("../src/shared/Core/Types")
 
--- A 3 x 2 map with one point, one path and one bush; mapView reads only its ground.
-local function smallMap(): Types.Map
+local function projectile(id: number, owner: "player" | "enemy", kind: string): Types.Projectile
 	return {
-		half = 8,
-		points = {
-			{
-				id = 1,
-				x = 1,
-				z = -2,
-				template = "entry",
-				radius = 6,
-				paths = { 1 },
-				neighbours = { 2 },
-				distance = 0,
-				level = 1,
-				isEntry = true,
-				campX = nil,
-				campZ = nil,
-				cover = { { x = 2, z = 2 } },
-				props = {},
-			},
-		},
-		paths = { { id = 1, a = 1, b = 2, halfWidth = 4 } },
-		entries = { 1 },
-		nextHop = {},
-		hops = {},
-		heights = { { 0, 1.25, 23.96 }, { 4, 4.04, 12.3 } },
-		heightCell = 8,
-		waterLevel = 4,
-		fieldCover = { { x = -3.5, z = 7 } },
-		pointCells = {},
+		id = id,
+		owner = owner,
+		source = 1,
+		kind = kind,
+		x = 0,
+		z = 0,
+		dirX = 1,
+		dirZ = 0,
+		speed = 50,
+		remaining = 20,
+		damage = 10,
+		radius = 0,
+		knockback = 0,
+		tags = {},
+		effect = nil,
+		targetId = nil,
+		critChance = 0,
 	}
 end
 
 return {
-	["fire intent takes a boolean"] = function()
-		local intent = Protocol.parseIntent("fire", true) :: any
-		Assert.equal(intent.kind, "fire")
-		Assert.equal(intent.held, true)
-		Assert.equal(Protocol.parseIntent("fire", 1), nil)
-		Assert.equal(Protocol.parseIntent("fire", true, 1), nil)
+	["every intent kind parses"] = function()
+		local config = Fixtures.config()
+		local pick = Protocol.parseIntent(config, "pickClass", "mage") :: any
+		Assert.equal(pick.kind, "pickClass")
+		Assert.equal(pick.class, "mage")
+		local card = Protocol.parseIntent(config, "card", 3) :: any
+		Assert.equal(card.kind, "card")
+		Assert.equal(card.index, 3)
+		local utility = Protocol.parseIntent(config, "utility", 1) :: any
+		Assert.equal(utility.kind, "utility")
+		Assert.equal(utility.index, 1)
+		local open = Protocol.parseIntent(config, "open", true) :: any
+		Assert.equal(open.kind, "open")
+		Assert.equal(open.held, true)
+		Assert.equal((Protocol.parseIntent(config, "open", false) :: any).held, false)
+		Assert.equal((Protocol.parseIntent(config, "cast") :: any).kind, "cast")
+		Assert.equal((Protocol.parseIntent(config, "enter") :: any).kind, "enter")
 	end,
 
-	["aim intent takes an angle"] = function()
-		local intent = Protocol.parseIntent("aim", -1.25) :: any
-		Assert.equal(intent.kind, "aim")
-		Assert.equal(intent.angle, -1.25)
-		Assert.equal(Protocol.parseIntent("aim", 7), nil)
-		Assert.equal(Protocol.parseIntent("aim", 0 / 0), nil)
-		Assert.equal(Protocol.parseIntent("aim", "1"), nil)
-		Assert.equal(Protocol.parseIntent("aim", 1, 2), nil)
+	["malformed intents are rejected"] = function()
+		local config = Fixtures.config()
+		Assert.equal(Protocol.parseIntent(config, "pickClass", "dragon"), nil)
+		Assert.equal(Protocol.parseIntent(config, "pickClass", 1), nil)
+		Assert.equal(Protocol.parseIntent(config, "pickClass", nil), nil)
+		for _, kind in { "card", "utility" } do
+			Assert.equal(Protocol.parseIntent(config, kind, 0), nil, kind .. " 0")
+			Assert.equal(Protocol.parseIntent(config, kind, 7), nil, kind .. " 7")
+			Assert.equal(Protocol.parseIntent(config, kind, 1.5), nil, kind .. " 1.5")
+			Assert.equal(Protocol.parseIntent(config, kind, "1"), nil, kind .. " string")
+			Assert.equal(Protocol.parseIntent(config, kind, 0 / 0), nil, kind .. " nan")
+			Assert.equal(Protocol.parseIntent(config, kind, math.huge), nil, kind .. " inf")
+			Assert.equal(Protocol.parseIntent(config, kind, 1, 2), nil, kind .. " trailing")
+		end
+		Assert.equal(Protocol.parseIntent(config, "open", 1), nil)
+		Assert.equal(Protocol.parseIntent(config, "open", "true"), nil)
+		Assert.equal(Protocol.parseIntent(config, "open", nil), nil)
+		Assert.equal(Protocol.parseIntent(config, "cast", 1), nil)
+		Assert.equal(Protocol.parseIntent(config, "enter", true), nil)
+		Assert.equal(Protocol.parseIntent(config, "damage", 100), nil)
+		Assert.equal(Protocol.parseIntent(config, nil), nil)
+		Assert.equal(Protocol.parseIntent(config, {}), nil)
 	end,
 
-	["skill intent takes a small index, an optional aim and an optional distance"] = function()
-		local plain = Protocol.parseIntent("skill", 2) :: any
-		Assert.equal(plain.kind, "skill")
-		Assert.equal(plain.index, 2)
-		Assert.equal(plain.aim, nil)
-		Assert.equal(plain.aimDistance, nil)
-		local aimed = Protocol.parseIntent("skill", 1, 0.5, 17.5) :: any
-		Assert.equal(aimed.aim, 0.5)
-		Assert.equal(aimed.aimDistance, 17.5)
-		local angled = Protocol.parseIntent("skill", 1, 3) :: any
-		Assert.equal(angled.aim, 3)
-		Assert.equal(angled.aimDistance, nil)
-		Assert.equal(Protocol.parseIntent("skill", 0), nil)
-		Assert.equal(Protocol.parseIntent("skill", 1.5), nil)
-		Assert.equal(Protocol.parseIntent("skill", 9), nil)
-		Assert.equal(Protocol.parseIntent("skill", "1"), nil)
-		Assert.equal(Protocol.parseIntent("skill", 1, 7), nil)
-		Assert.equal(Protocol.parseIntent("skill", 1, 0 / 0), nil)
-		Assert.equal(Protocol.parseIntent("skill", 1, 0, 0), nil)
-		Assert.equal(Protocol.parseIntent("skill", 1, 0, -5), nil)
-		Assert.equal(Protocol.parseIntent("skill", 1, 0, math.huge), nil)
-		Assert.equal(Protocol.parseIntent("skill", 1, 0, 5000), nil)
-		Assert.equal(Protocol.parseIntent("skill", 1, 0, "5"), nil)
-		Assert.equal(Protocol.parseIntent("fire", true, nil, 1), nil)
-	end,
-
-	["dash and drink take no arguments"] = function()
-		Assert.equal((Protocol.parseIntent("dash") :: any).kind, "dash")
-		Assert.equal((Protocol.parseIntent("drink") :: any).kind, "drink")
-		Assert.equal(Protocol.parseIntent("dash", 1), nil)
-		Assert.equal(Protocol.parseIntent("drink", true), nil)
-	end,
-
-	["interact and assist take a boolean"] = function()
-		Assert.equal((Protocol.parseIntent("interact", false) :: any).held, false)
-		Assert.equal((Protocol.parseIntent("assist", true) :: any).enabled, true)
-		Assert.equal(Protocol.parseIntent("interact", "yes"), nil)
-		Assert.equal(Protocol.parseIntent("assist", nil), nil)
-	end,
-
-	["perk intent takes a small whole index"] = function()
-		local intent = Protocol.parseIntent("perk", 2) :: any
-		Assert.equal(intent.kind, "perk")
-		Assert.equal(intent.index, 2)
-		Assert.equal(Protocol.parseIntent("perk", 0), nil)
-		Assert.equal(Protocol.parseIntent("perk", 1.5), nil)
-		Assert.equal(Protocol.parseIntent("perk", 17), nil)
-		Assert.equal(Protocol.parseIntent("perk", "1"), nil)
-		Assert.equal(Protocol.parseIntent("perk", 1, 2), nil)
-	end,
-
-	["unknown intents are rejected"] = function()
-		Assert.equal(Protocol.parseIntent("damage", 100), nil)
-		Assert.equal(Protocol.parseIntent("activeSkill", 1, 2), nil)
-		Assert.equal(Protocol.parseIntent(nil), nil)
-	end,
-
-	["enemies survive encoding"] = function()
+	["enemies survive encoding with their flags and phase"] = function()
 		local run = Fixtures.run(1)
-		local names = Protocol.archetypeNames(run.config)
-		local grunt = Fixtures.enemy(run, "grunt", 12.34, -56.78)
-		local leader = Fixtures.enemy(run, "campLeader", -1199.9, 1199.9)
+		local kinds = Protocol.enemyKinds(run.config)
+		Assert.truthy(table.find(kinds, "sproutImp"))
+		Assert.truthy(table.find(kinds, "thornback"))
+		local grunt = Fixtures.enemy(run, "sproutImp", 12.34, -56.78)
+		local boss = Fixtures.enemy(run, "thornback", -399.9, 399.9)
 		run.time = 5
-		grunt.chilledUntil = 6
-		grunt.brittleUntil = 7
 		grunt.facing = math.pi / 2
 		grunt.state = "telegraph"
 		grunt.health = grunt.maxHealth / 2
-		leader.burningUntil = 6
-		leader.buffedUntil = 6
-		leader.level = 3
-		leader.state = "chase"
-		grunt.boss = false
-		leader.boss = true
+		grunt.slowUntil = 6
+		grunt.stunnedUntil = 6
+		grunt.rootedUntil = 4
+		table.insert(grunt.dots, {
+			dps = 3,
+			until_ = 7,
+			nextTickAt = 5.5,
+			status = "burning",
+			source = 1,
+			tags = { "fire" },
+		})
+		table.insert(grunt.dots, {
+			dps = 3,
+			until_ = 4,
+			nextTickAt = 5.5,
+			status = "poisoned",
+			source = 1,
+			tags = { "poison" },
+		})
+		boss.state = "recover"
+		boss.phase = 2
+		boss.rootedUntil = 6
+		boss.fearedUntil = 6
+		boss.buffedUntil = 6
+		table.insert(boss.dots, {
+			dps = 3,
+			until_ = 7,
+			nextTickAt = 5.5,
+			status = "bleeding",
+			source = 1,
+			tags = { "bleed" },
+		})
 
-		local decoded = Protocol.decodeEnemies(Protocol.encodeEnemies(run, names), names)
-		Assert.truthy(decoded)
+		local decoded = Protocol.decodeEnemies(Protocol.encodeEnemies(run, kinds), kinds)
 		assert(decoded, "decoding failed")
 		Assert.equal(#decoded, 2)
-		Assert.equal(decoded[1].id, grunt.id)
-		Assert.equal(decoded[1].archetype, "grunt")
-		Assert.near(decoded[1].x, 12.3, 0.05)
-		Assert.near(decoded[1].z, -56.8, 0.05)
-		Assert.near(decoded[1].facing, math.pi / 2, 0.03)
-		Assert.equal(decoded[1].state, "telegraph")
-		Assert.near(decoded[1].health, 0.5, 0.01)
-		Assert.equal(decoded[1].chilled, true)
-		Assert.equal(decoded[1].burning, false)
-		Assert.equal(decoded[1].brittle, true)
-		Assert.equal(decoded[1].buffed, false)
-		Assert.equal(decoded[1].boss, false)
-		Assert.equal(decoded[2].archetype, "campLeader")
-		Assert.equal(decoded[2].level, 3)
-		Assert.near(decoded[2].x, -1199.9, 0.05)
-		Assert.near(decoded[2].z, 1199.9, 0.05)
-		Assert.equal(decoded[2].state, "chase")
-		Assert.equal(decoded[2].burning, true)
-		Assert.equal(decoded[2].buffed, true)
-		Assert.equal(decoded[2].chilled, false)
-		Assert.equal(decoded[2].boss, true)
-	end,
-
-	["the boss flag leaves the other flags alone"] = function()
-		local run = Fixtures.run(1)
-		local names = Protocol.archetypeNames(run.config)
-		local boss = Fixtures.enemy(run, "campLeader", 0, 0)
-		boss.boss = true
-		local decoded = Protocol.decodeEnemies(Protocol.encodeEnemies(run, names), names)
-		assert(decoded, "decoding failed")
-		Assert.equal(decoded[1].boss, true)
-		Assert.equal(decoded[1].chilled, false)
-		Assert.equal(decoded[1].burning, false)
-		Assert.equal(decoded[1].brittle, false)
-		Assert.equal(decoded[1].buffed, false)
+		local a, b = decoded[1], decoded[2]
+		Assert.equal(a.id, grunt.id)
+		Assert.equal(a.kind, "sproutImp")
+		Assert.near(a.x, 12.34, 0.1)
+		Assert.near(a.z, -56.78, 0.1)
+		Assert.near(a.facing, math.pi / 2, 0.03)
+		Assert.equal(a.state, "telegraph")
+		Assert.near(a.health, 0.5, 0.01)
+		Assert.equal(a.slowed, true)
+		Assert.equal(a.stunned, true)
+		Assert.equal(a.rooted, false, "expired")
+		Assert.equal(a.feared, false)
+		Assert.equal(a.burning, true)
+		Assert.equal(a.poisoned, false, "expired dot")
+		Assert.equal(a.bleeding, false)
+		Assert.equal(a.buffed, false)
+		Assert.equal(a.phase, 1)
+		Assert.equal(b.kind, "thornback")
+		Assert.near(b.x, -399.9, 0.1)
+		Assert.near(b.z, 399.9, 0.1)
+		Assert.equal(b.state, "recover")
+		Assert.near(b.health, 1, 1e-6)
+		Assert.equal(b.slowed, false)
+		Assert.equal(b.rooted, true)
+		Assert.equal(b.feared, true)
+		Assert.equal(b.bleeding, true)
+		Assert.equal(b.burning, false)
+		Assert.equal(b.buffed, true)
+		Assert.equal(b.phase, 2)
 	end,
 
 	["a malformed enemy buffer is rejected"] = function()
-		local names = Protocol.archetypeNames(Fixtures.config())
-		Assert.equal(Protocol.decodeEnemies("not a buffer", names), nil)
-		Assert.equal(Protocol.decodeEnemies(buffer.create(1), names), nil)
+		local run = Fixtures.run(1)
+		local kinds = Protocol.enemyKinds(run.config)
+		Assert.equal(Protocol.decodeEnemies("not a buffer", kinds), nil)
+		Assert.equal(Protocol.decodeEnemies(buffer.create(1), kinds), nil)
 		local short = buffer.create(2)
 		buffer.writeu16(short, 0, 3)
-		Assert.equal(Protocol.decodeEnemies(short, names), nil)
-		local empty = buffer.create(2)
-		Assert.equal(#(Protocol.decodeEnemies(empty, names) :: any), 0)
+		Assert.equal(Protocol.decodeEnemies(short, kinds), nil)
+		Assert.equal(#(Protocol.decodeEnemies(buffer.create(2), kinds) :: any), 0)
+		Fixtures.enemy(run, "sproutImp", 0, 0)
+		local data = Protocol.encodeEnemies(run, kinds)
+		buffer.writeu8(data, 2 + 4, #kinds + 1)
+		Assert.equal(Protocol.decodeEnemies(data, kinds), nil, "kind out of range")
+		buffer.writeu8(data, 2 + 4, 0)
+		Assert.equal(Protocol.decodeEnemies(data, kinds), nil, "kind 0")
+		local longer = buffer.create(buffer.len(data) + 1)
+		buffer.copy(longer, 0, Protocol.encodeEnemies(run, kinds))
+		Assert.equal(Protocol.decodeEnemies(longer, kinds), nil, "trailing byte")
 	end,
 
 	["projectiles survive encoding"] = function()
 		local run = Fixtures.run(1)
 		local kinds = Protocol.projectileKinds(run.config)
-		Assert.truthy(table.find(kinds, "fireball"))
-		Assert.truthy(table.find(kinds, "spitter"))
-		table.insert(run.projectiles, {
-			id = 7,
-			owner = "player",
-			source = 1,
-			kind = "fireball",
-			x = 10.26,
-			z = -3.14,
-			dirX = 0,
-			dirZ = 1,
-			speed = 50,
-			remaining = 20,
-			damage = 30,
-			radius = 7,
-			knockback = 4,
-			tags = { "fire" },
-			statusFactor = 1,
-		})
-		table.insert(run.projectiles, {
-			id = 8,
-			owner = "enemy",
-			source = 3,
-			kind = "spitter",
-			x = 0,
-			z = 0,
-			dirX = -1,
-			dirZ = 0,
-			speed = 32,
-			remaining = 20,
-			damage = 12,
-			radius = 0,
-			knockback = 0,
-			tags = {},
-			statusFactor = 1,
-		})
+		Assert.truthy(table.find(kinds, "rimeDart"), "a flying skill")
+		Assert.truthy(table.find(kinds, "spitter"), "a shooting enemy")
+		Assert.falsy(table.find(kinds, "hoarfrostRing"), "a nova does not fly")
+		Assert.falsy(table.find(kinds, "sproutImp"), "a grunt does not shoot")
+		local orb = projectile(7, "player", "emberOrb")
+		orb.x, orb.z = 10.26, -3.14
+		orb.dirX, orb.dirZ = 0, 1
+		orb.radius = 8
+		table.insert(run.projectiles, orb)
+		local spit = projectile(8, "enemy", "spitter")
+		spit.dirX, spit.dirZ = -1, 0
+		table.insert(run.projectiles, spit)
 		local decoded = Protocol.decodeProjectiles(Protocol.encodeProjectiles(run, kinds), kinds)
 		assert(decoded, "decoding failed")
 		Assert.equal(#decoded, 2)
 		Assert.equal(decoded[1].id, 7)
-		Assert.equal(decoded[1].owner, "player")
-		Assert.equal(decoded[1].kind, "fireball")
-		Assert.near(decoded[1].x, 10.3, 0.05)
-		Assert.near(decoded[1].z, -3.1, 0.05)
-		Assert.near(decoded[1].facing, math.pi / 2, 0.03)
-		Assert.equal(decoded[2].owner, "enemy")
+		Assert.equal(decoded[1].kind, "emberOrb")
+		Assert.near(decoded[1].x, 10.26, 0.1)
+		Assert.near(decoded[1].z, -3.14, 0.1)
+		Assert.near(decoded[1].angle, math.pi / 2, 0.03)
+		Assert.near(decoded[1].radius, 8, 0.1)
 		Assert.equal(decoded[2].kind, "spitter")
-		Assert.near(decoded[2].facing, math.pi, 0.03)
-		Assert.equal(Protocol.decodeProjectiles(buffer.create(5), kinds), nil)
+		Assert.near(decoded[2].angle, math.pi, 0.03)
+		Assert.equal(decoded[2].radius, 0)
 	end,
 
-	["the world view lists players in id order with potions and drinks"] = function()
-		local run = Fixtures.run(3)
-		run.players[3].potions = 2
-		run.players[2].drinkingUntil = 1.5
-		run.time = 1
-		local view = Protocol.worldView(run)
-		Assert.equal(#view.players, 3)
-		Assert.equal(view.players[1].id, 1)
-		Assert.equal(view.players[3].potions, 2)
-		Assert.near(view.players[2].drinkingFor, 0.5)
-		Assert.equal(view.players[1].drinkingFor, 0)
-		Assert.equal(#view.zones, #run.zones)
+	["a malformed projectile buffer is rejected"] = function()
+		local run = Fixtures.run(1)
+		local kinds = Protocol.projectileKinds(run.config)
+		Assert.equal(Protocol.decodeProjectiles(42, kinds), nil)
+		local short = buffer.create(2)
+		buffer.writeu16(short, 0, 1)
+		Assert.equal(Protocol.decodeProjectiles(short, kinds), nil)
+		table.insert(run.projectiles, projectile(1, "player", "rimeDart"))
+		local data = Protocol.encodeProjectiles(run, kinds)
+		buffer.writeu8(data, 2 + 4, #kinds + 1)
+		Assert.equal(Protocol.decodeProjectiles(data, kinds), nil, "kind out of range")
 	end,
 
-	["the world view carries the flood, zones, progress, clues, leader areas and chests"] = function()
+	["crystals survive encoding"] = function()
+		local run = Fixtures.run(1)
+		table.insert(run.crystals, { id = 3, x = 101.27, z = -0.04, xp = 12 })
+		table.insert(run.crystals, { id = 4, x = -250, z = 33.3, xp = 70000 })
+		local decoded = Protocol.decodeCrystals(Protocol.encodeCrystals(run))
+		assert(decoded, "decoding failed")
+		Assert.equal(#decoded, 2)
+		Assert.equal(decoded[1].id, 3)
+		Assert.near(decoded[1].x, 101.27, 0.1)
+		Assert.near(decoded[1].z, -0.04, 0.1)
+		Assert.equal(decoded[1].xp, 12)
+		Assert.near(decoded[2].x, -250, 0.1)
+		Assert.equal(decoded[2].xp, 65535, "capped")
+		Assert.equal(Protocol.decodeCrystals(nil), nil)
+		local short = buffer.create(5)
+		buffer.writeu16(short, 0, 1)
+		Assert.equal(Protocol.decodeCrystals(short), nil)
+	end,
+
+	["the world view lists players, areas, the chest, the compass and the portal"] = function()
 		local run = Fixtures.run(2)
-		run.time = 700
-		run.floodHalf = 123.5
-		run.players[1].clueProgress = 1.25
-		run.players[2].chestProgress = 0.5
-		run.zones = {
-			{ id = 1, pointId = 3, x = 10, z = -20, radius = 12, open = true, openedAt = 300 },
-			{ id = 2, pointId = 5, x = -400, z = 0, radius = 12, open = false, openedAt = 480 },
-		}
-		run.clues = {
-			{ id = 1, x = 5, z = 6, pointId = 2, campId = 4, found = true, read = true },
-			{ id = 2, x = -7, z = 8, pointId = 3, campId = 4, found = true, read = false },
-			{ id = 3, x = 9, z = -9, pointId = 4, campId = 2, found = false, read = false },
-		}
-		run.leaderAreas = {
-			[4] = { x = 50, z = 60, radius = 60 },
-			[2] = { x = -10, z = 20, radius = 0 },
-		}
-		run.chests = {
-			{ id = 1, x = 30, z = 40, pointId = 6, opened = true, patrolId = nil },
-			{ id = 2, x = -30, z = -40, pointId = 7, opened = false, patrolId = 9 },
-		}
+		run.time = 10
+		local player = run.players[2]
+		player.castingUntil = 13
+		player.openProgress = 0.5
+		player.sprintUntil = 12
+		player.barrier = 20
+		player.barrierUntil = 11
+		table.insert(run.areas, {
+			id = 50,
+			owner = "enemy",
+			source = 9,
+			kind = "thornback",
+			x = 4,
+			z = 5,
+			radius = 6,
+			damage = 3,
+			until_ = 14,
+			nextTickAt = 11,
+			tickSeconds = 1,
+			tags = {},
+			effect = nil,
+			critChance = 0,
+			knockback = 0,
+		})
+		Fixtures.enemy(run, "sproutImp", 0, 0)
+		local boss = Fixtures.enemy(run, "thornback", 20, 0)
+		run.compassOn = true
+		run.portal = { x = 1, z = 2, until_ = 25 }
+		run.finalBossDeadline = 40
 
 		local view = Protocol.worldView(run)
-		Assert.equal(view.floodHalf, 123.5)
-		Assert.equal(view.players[1].clueProgress, 1.25)
-		Assert.equal(view.players[1].chestProgress, 0)
-		Assert.equal(view.players[2].chestProgress, 0.5)
+		Assert.equal(view.time, 10)
+		Assert.equal(#view.players, 2)
+		Assert.equal(view.players[1].id, 1)
+		local seen = view.players[2]
+		Assert.equal(seen.id, 2)
+		Assert.equal(seen.class, "mage")
+		Assert.equal(seen.maxHealth, run.config.classes.mage.maxHealth)
+		Assert.near(seen.castingLeft, 3)
+		Assert.near(seen.openProgress, 0.5)
+		Assert.equal(seen.sprinting, true)
+		Assert.equal(seen.barrier, 20)
+		Assert.equal(view.players[1].castingLeft, 0)
+		Assert.equal(view.players[1].sprinting, false)
+		Assert.equal(#view.areas, 1)
+		Assert.equal(view.areas[1].areaKind, "thornback")
+		Assert.equal(view.areas[1].owner, "enemy")
+		Assert.near(view.areas[1].secondsLeft, 4)
+		Assert.near(view.chest.x, run.arena.chestX)
+		Assert.near(view.chest.z, run.arena.chestZ)
+		Assert.equal(view.chest.opened, false)
+		Assert.equal(view.compassOn, true)
+		local portal = view.portal
+		assert(portal, "the portal is listed")
+		Assert.near(portal.x, 1)
+		Assert.near(portal.secondsLeft, 15)
+		Assert.near(view.finalBossLeft :: number, 30)
+		Assert.equal(#view.bossIds, 1)
+		Assert.equal(view.bossIds[1], boss.id)
 
-		Assert.equal(#view.zones, 2)
-		Assert.equal(view.zones[1].id, 1)
-		Assert.equal(view.zones[1].open, true)
-		Assert.equal(view.zones[2].id, 2)
-		Assert.equal(view.zones[2].open, false)
-
-		-- An unfound clue is not sent.
-		Assert.equal(#view.clues, 2)
-		Assert.equal(view.clues[1].id, 1)
-		Assert.equal(view.clues[1].read, true)
-		Assert.equal(view.clues[2].x, -7)
-		Assert.equal(view.clues[2].z, 8)
-		Assert.equal(view.clues[2].id, 2)
-		Assert.equal(view.clues[2].read, false)
-		-- Which camp a clue points at is learned by reading it.
-		Assert.equal((view.clues[2] :: any).campId, nil)
-		Assert.equal((view.clues[2] :: any).pointId, nil)
-
-		Assert.equal(#view.leaderAreas, 2)
-		Assert.equal(view.leaderAreas[1].campId, 2)
-		Assert.equal(view.leaderAreas[1].radius, 0)
-		Assert.equal(view.leaderAreas[2].campId, 4)
-		Assert.equal(view.leaderAreas[2].x, 50)
-		Assert.equal(view.leaderAreas[2].z, 60)
-		Assert.equal(view.leaderAreas[2].radius, 60)
-
-		Assert.equal(#view.chests, 2)
-		Assert.equal(view.chests[1].opened, true)
-		Assert.equal(view.chests[2].id, 2)
-		Assert.equal(view.chests[2].x, -30)
-		Assert.equal(view.chests[2].opened, false)
-		Assert.equal((view.chests[2] :: any).patrolId, nil)
+		run.portal = nil
+		Assert.equal(Protocol.worldView(run).portal, nil)
 	end,
 
-	["the map view carries the ground, its heights to the tenth"] = function()
-		local view = Protocol.mapView(smallMap())
-		Assert.equal(view.rows, 2)
-		Assert.equal(view.cols, 3)
-		Assert.equal(view.half, 8)
-		Assert.equal(view.heightCell, 8)
-		Assert.equal(view.waterLevel, 4)
-		local heights = Protocol.decodeHeights(view)
-		assert(heights, "decoding failed")
-		Assert.equal(#heights, 2)
-		Assert.equal(#heights[1], 3)
-		Assert.near(heights[1][1], 0, 1e-9)
-		Assert.near(heights[1][2], 1.3, 1e-9)
-		Assert.near(heights[1][3], 24, 1e-9)
-		Assert.near(heights[2][2], 4, 1e-9)
-		Assert.near(heights[2][3], 12.3, 1e-9)
+	["the self view carries skills with ranks and readyIn"] = function()
+		local run = Fixtures.run(1)
+		local player = run.players[1]
+		run.time = 4
+		player.skills[1].rank = 3
+		player.skills[1].readyAt = 6.5
+		player.utilityReadyAt[2] = 10
+		player.passives.vigor = 2
+		player.hasSpell = true
+		local view = Protocol.selfView(run, player)
+		Assert.equal(view.level, 1)
+		Assert.truthy(view.xpToNext > 0)
+		Assert.equal(#view.skills, 1)
+		local skill = view.skills[1]
+		Assert.equal(skill.id, run.config.classes.mage.startSkill)
+		Assert.equal(skill.rank, 3)
+		Assert.near(skill.readyIn, 2.5)
+		Assert.equal(skill.cooldown, run.config.skills[skill.id].cooldownSeconds)
+		Assert.equal(#view.utilities, #run.config.utilities)
+		Assert.equal(view.utilities[1].readyIn, 0)
+		Assert.near(view.utilities[2].readyIn, 6)
+		Assert.equal(view.utilities[2].cooldown, run.config.utilities[2].cooldownSeconds)
+		Assert.equal(view.passives.vigor, 2)
+		Assert.equal(view.hasSpell, true)
+		Assert.equal(view.offer, nil)
+		Assert.truthy(view.stats.maxHealth > 0)
+		player.skills[1].readyAt = 1
+		Assert.equal(Protocol.selfView(run, player).skills[1].readyIn, 0)
 	end,
 
-	["the map view carries the layout of points and paths, nothing more"] = function()
-		local view = Protocol.mapView(smallMap())
-		local fields = {}
-		for key in view :: any do
-			table.insert(fields, key)
+	["private events go to their player only"] = function()
+		local private: { Types.Event } = {
+			{ kind = "offer", player = 2, cards = { { kind = "heal" } } },
+			{ kind = "cardTaken", player = 2, card = { kind = "heal" } },
+			{ kind = "levelUp", player = 2, level = 3 },
+			{ kind = "utility", player = 2, utility = "sprint" },
+		}
+		for _, event in private do
+			Assert.truthy(Protocol.isPrivate(event), event.kind)
+			Assert.equal(Protocol.eventPlayer(event), 2, event.kind)
 		end
-		table.sort(fields)
-		Assert.equal(
-			table.concat(fields, ","),
-			"cols,half,heightCell,heights,paths,points,rows,waterLevel"
-		)
-		Assert.equal(#view.points, 1)
-		local point = view.points[1]
-		Assert.equal(point.id, 1)
-		Assert.equal(point.x, 1)
-		Assert.equal(point.z, -2)
-		Assert.equal(point.radius, 6)
-		Assert.equal(point.isEntry, true)
-		-- No level, template or camp: the layout, not what holds it.
-		local pointFields = {}
-		for key in point :: any do
-			table.insert(pointFields, key)
+		local public: { Types.Event } = {
+			{ kind = "died", player = 2 },
+			{ kind = "chestOpened", player = 2 },
+			{ kind = "castStarted", player = 2, seconds = 5 },
+			{ kind = "portalClosed" },
+			{ kind = "playerHurt", player = 2, amount = 3, enemyId = nil, absorbed = 0 },
+		}
+		for _, event in public do
+			Assert.falsy(Protocol.isPrivate(event), event.kind)
 		end
-		table.sort(pointFields)
-		Assert.equal(table.concat(pointFields, ","), "id,isEntry,radius,x,z")
-		Assert.equal(#view.paths, 1)
-		Assert.equal(view.paths[1].a, 1)
-		Assert.equal(view.paths[1].b, 2)
-		local pathFields = {}
-		for key in view.paths[1] :: any do
-			table.insert(pathFields, key)
-		end
-		table.sort(pathFields)
-		Assert.equal(table.concat(pathFields, ","), "a,b")
-	end,
-
-	["a generated map's view lists every point and path"] = function()
-		local map = Map.generate(Config, Rng.new(7), 2)
-		local view = Protocol.mapView(map)
-		Assert.equal(#view.points, #map.points)
-		Assert.equal(#view.paths, #map.paths)
-		for index, point in map.points do
-			Assert.equal(view.points[index].id, point.id)
-			Assert.equal(view.points[index].isEntry, point.isEntry)
-		end
-	end,
-
-	["a map view whose heights do not match its grid is rejected"] = function()
-		local view = Protocol.mapView(smallMap())
-		view.heights = buffer.create(10)
-		Assert.equal(Protocol.decodeHeights(view), nil)
-		local other = Protocol.mapView(smallMap())
-		other.rows = 3
-		Assert.equal(Protocol.decodeHeights(other), nil)
-		local missing = Protocol.mapView(smallMap());
-		(missing :: any).heights = "not a buffer"
-		Assert.equal(Protocol.decodeHeights(missing), nil)
-	end,
-
-	["the client's heights match the core's at nodes and midpoints"] = function()
-		local map = Map.generate(Config, Rng.new(7), 2)
-		local view = Protocol.mapView(map)
-		local heights = Protocol.decodeHeights(view)
-		assert(heights, "decoding failed")
-		local function check(x: number, z: number)
-			local drawn =
-				Protocol.heightAt(heights, view.heightCell, view.half, view.waterLevel, x, z)
-			-- Heights travel rounded to a tenth of a stud.
-			Assert.near(drawn, Map.heightAt(map, x, z), 0.051)
-		end
-		local cell = map.heightCell
-		for row = 1, #map.heights do
-			for col = 1, #map.heights[1] do
-				local x = -map.half + (col - 1) * cell
-				local z = -map.half + (row - 1) * cell
-				check(x, z)
-				check(x + cell / 2, z + cell / 2)
-				check(x + cell / 3, z)
-			end
-		end
-	end,
-
-	["private events name their player"] = function()
-		Assert.truthy(Protocol.isPrivate({ kind = "offer", player = 4, perks = {} }))
-		Assert.truthy(Protocol.isPrivate({ kind = "pickedUp", player = 4, pickup = "potion" }))
-		Assert.truthy(Protocol.isPrivate({ kind = "knockback", player = 4, dx = 1, dz = 0 }))
-		Assert.falsy(Protocol.isPrivate({ kind = "died", player = 4 }))
-		Assert.falsy(Protocol.isPrivate({ kind = "flood" }))
-		Assert.truthy(
-			Protocol.isPrivate({ kind = "playerHurt", player = 4, amount = 1, enemyId = nil })
-		)
-		Assert.equal(Protocol.eventPlayer({ kind = "levelUp", player = 9, level = 2 }), 9)
-		Assert.equal(Protocol.eventPlayer({ kind = "ended" }), nil)
-	end,
-
-	["announcements, clues found and read and chests opened go to everyone"] = function()
-		Assert.falsy(
-			Protocol.isPrivate({ kind = "announcement", what = "zoneOpened", x = 1, z = 2, id = 1 })
-		)
-		Assert.falsy(Protocol.isPrivate({ kind = "announcement", what = "floodStarted" }))
-		Assert.falsy(Protocol.isPrivate({ kind = "clueFound", clueId = 1 }))
-		Assert.falsy(Protocol.isPrivate({
-			kind = "clueRead",
-			clueId = 1,
-			campId = 2,
-			playerId = 4,
-			remaining = 2,
-		}))
-		Assert.falsy(Protocol.isPrivate({
-			kind = "chestOpened",
-			chestId = 1,
-			playerId = 4,
-			reward = "potions",
-		}))
+		Assert.equal(Protocol.eventPlayer({ kind = "portalClosed" }), nil)
 	end,
 }
