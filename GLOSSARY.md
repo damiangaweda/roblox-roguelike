@@ -68,6 +68,14 @@ _Avoid_: Current, deep water, riverbed
 Water a player or enemy wades through slower: a stream's banks, its fords and a pond's rim.
 _Avoid_: Slow zone (in code only), shallow water, wading area
 
+**Pond**:
+A still water on the map: deep in the middle, which blocks like an obstacle, with shallows at its rim.
+_Avoid_: Lake, pool, puddle
+
+**Bank**:
+The shallows along a stream's channel on either side.
+_Avoid_: Shore, riverside, beach
+
 **Ford**:
 A place where a stream is shallows all the way across, so it can be crossed.
 _Avoid_: Crossing, bridge, gap

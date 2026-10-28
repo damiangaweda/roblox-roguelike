@@ -81,10 +81,13 @@ local groundHeights: { [number]: number } = {}
 
 -- The terrain's surface right under (x, z), or the flat height where no
 -- terrain is.
-local function castGround(x: number, z: number): number
+-- The ground's height under (x, z), or nil while the terrain there has not
+-- arrived yet (a miss is never cached: inside the map it only means the
+-- voxels have not replicated).
+local function castGround(x: number, z: number): number?
 	local origin = Vector3.new(x, GROUND_RAY_TOP, z)
 	local hit = workspace:Raycast(origin, Vector3.new(0, -GROUND_RAY_LENGTH, 0), groundParams)
-	return if hit then hit.Position.Y else FLAT_GROUND
+	return if hit then hit.Position.Y else nil
 end
 
 -- The ground's height under (x, z): the terrain's surface at the middle of
