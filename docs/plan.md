@@ -55,7 +55,7 @@ Aimed combat with the Elementalist ([ADR-0009](adr/0009-aimed-combat.md)), seven
 
 ### Stage 3b: the run's feel
 
-**Status:** accepted on 2026-10-28 together with ADR-0019 and ADR-0020; in progress on `feat/run-feel`.
+**Status:** accepted on 2026-10-28 together with ADR-0019 and ADR-0020; built on `feat/run-feel` (PR #10), criteria 1–3 met, 4–5 verified through the Studio MCP except the touch emulator, criterion 6 waits for the user's run.
 
 **Goal:** the solo run of stage 3, played by the user, is fun and looks intended: a dodge, a reason to cross the map, a forest that looks made, skills with faces and a HUD that stays visible. Everything else of stage 3 stays as it is.
 
