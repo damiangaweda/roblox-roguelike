@@ -1,6 +1,6 @@
 # Enemies are rigged Meshy models with walk, run and attack clips
 
-**Status:** proposed on 2026-10-28; once accepted it supersedes [ADR-0022](0022-enemies-are-generated-meshes.md).
+**Status:** accepted on 2026-10-28; it supersedes [ADR-0022](0022-enemies-are-generated-meshes.md).
 
 ADR-0022 drew every enemy as an unrigged generated mesh with procedural motion because rigging twenty-five kinds looked like the art stage's work. The Meshy trial changed the arithmetic: a stylized prompt gives a model that matches the forest's props, its auto-rig takes any biped or quadruped for five credits with a walk and a run, and an attack preset costs three more, so the whole roster was rigged in an evening (three kinds redesigned into quadrupeds so the rig would take). Every enemy kind is now a skinned MeshPart with bones, imported into Studio from the FBX, and plays three clips: walk and run chosen by its speed, attack on the attack event; what has no clip (sleep, hit, telegraph, death, the wraith's drift) stays procedural as in ADR-0022. We chose this over keeping procedural motion because the user judges the game by its look and asked for animation on every kind, and over hand-made or store animations because Meshy's clips come with the rig and fit each body.
 

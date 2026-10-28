@@ -1,6 +1,6 @@
 # Enemies are generated meshes without rigs
 
-**Status:** proposed on 2026-10-28; once accepted it supersedes [ADR-0010](0010-rigs-from-a-store-pack-first.md).
+**Status:** proposed on 2026-10-28 to supersede [ADR-0010](0010-rigs-from-a-store-pack-first.md); superseded before acceptance by [ADR-0024](0024-enemies-are-rigged-meshy-models-with-clips.md) on 2026-10-28, which also supersedes ADR-0010.
 
 ADR-0010 chose a store pack of rigged monsters first and generated creatures later, because nothing generated could be rigged or animated. Since then the map's props, the shrines and the chest became meshes generated with the Studio MCP and the user judged them the fastest way to a game that looks made, and asked for enemies the same way. Every enemy kind is now a generated, unrigged mesh drawn by the client at its scale; movement, attacks, telegraphs and deaths are shown by moving, tilting, scaling and fading the whole mesh and by the rings, lights and particles the effects already draw. We chose this over the store pack because the pack never got republished and its twenty monsters would not match the forest's own kinds, and over rigged generated creatures because rigging and animating twenty-five kinds is the art stage's work and the fight reads from silhouettes and telegraphs, not from limbs.
 
