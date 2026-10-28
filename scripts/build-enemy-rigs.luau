@@ -33,7 +33,16 @@ type Dumped = {
 			frames: {
 				{
 					t: number,
-					poses: { { name: string, parent: string, w: number, cf: { number }, es: string, ed: string } },
+					poses: {
+						{
+							name: string,
+							parent: string,
+							w: number,
+							cf: { number },
+							es: string,
+							ed: string,
+						}
+					},
 				}
 			},
 		},
@@ -46,7 +55,8 @@ end
 
 -- Attack plays once per attack event over the locomotion; walk and run loop.
 local LOOPS: { [string]: boolean } = { walking = true, running = true, attack = false }
-local PRIORITIES: { [string]: string } = { walking = "Movement", running = "Movement", attack = "Action" }
+local PRIORITIES: { [string]: string } =
+	{ walking = "Movement", running = "Movement", attack = "Action" }
 
 local function buildClip(clipName: string, clip): any
 	local sequence = Instance.new("KeyframeSequence")
@@ -67,7 +77,12 @@ local function buildClip(clipName: string, clip): any
 			pose.CFrame = toCFrame(p.cf)
 			pose.EasingStyle = (Enum.PoseEasingStyle :: any)[p.es]
 			pose.EasingDirection = (Enum.PoseEasingDirection :: any)[p.ed]
-			pose.Parent = if p.parent == "" then keyframe else byName[p.parent]
+			pose.Parent = if p.parent == ""
+				then keyframe
+				else assert(
+					byName[p.parent],
+					`{clipName}: pose {p.name} before its parent {p.parent}`
+				)
 			byName[p.name] = pose
 		end
 		keyframe.Parent = sequence
@@ -85,7 +100,8 @@ local function buildRig(d: Dumped): any
 	part.Size = Vector3.new(d.size[1], d.size[2], d.size[3])
 	-- The skin is deformed relative to the mesh's native size; without it a
 	-- MeshPart built from a file renders the skin at the wrong scale.
-	;(part :: any).InitialSize = Vector3.new(d.size[1], d.size[2], d.size[3])
+	local untyped: any = part
+	untyped.InitialSize = Vector3.new(d.size[1], d.size[2], d.size[3])
 	part.Anchored = true
 	part.CanCollide = false
 	part.CanQuery = false
@@ -97,7 +113,12 @@ local function buildRig(d: Dumped): any
 		local bone = Instance.new("Bone")
 		bone.Name = b.name
 		bone.CFrame = toCFrame(b.cf)
-		bone.Parent = if b.parent == "" then part else byName[b.parent]
+		bone.Parent = if b.parent == ""
+			then part
+			else assert(
+				byName[b.parent],
+				`{d.kind}: bone {b.name} before its parent {b.parent}`
+			)
 		byName[b.name] = bone
 	end
 	local controller = Instance.new("AnimationController")
@@ -126,16 +147,27 @@ for _, file in fs.readDir(dumpDir) do
 	if type(d) ~= "table" or type(d.kind) ~= "string" then
 		continue
 	end
+	-- EnemyView plays all three; a rig missing one is not written.
+	for clipName in LOOPS do
+		assert(d.clips[clipName], `{d.kind}: no {clipName} clip`)
+	end
 	local model = buildRig(d)
 	fs.writeFile(outDir .. "/" .. d.kind .. ".rbxm", roblox.serializeModel({ model }))
 	built += 1
-	print(("%s: %d bones, clips %s"):format(d.kind, #d.bones, table.concat((function()
-		local names = {}
-		for n in d.clips do
-			table.insert(names, n)
-		end
-		table.sort(names)
-		return names
-	end)(), ",")))
+	print(("%s: %d bones, clips %s"):format(
+		d.kind,
+		#d.bones,
+		table.concat(
+			(function()
+				local names = {}
+				for n in d.clips do
+					table.insert(names, n)
+				end
+				table.sort(names)
+				return names
+			end)(),
+			","
+		)
+	))
 end
 print(("built %d rigs into %s"):format(built, outDir))
