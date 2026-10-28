@@ -1365,7 +1365,7 @@ local Config: Types.Config = {
 			{
 				meshId = "rbxassetid://78001596990169",
 				textureId = "rbxassetid://89581060934702",
-				scale = 3,
+				scale = 2,
 				yOffset = 0,
 			},
 		},
@@ -1413,7 +1413,7 @@ local Config: Types.Config = {
 			{
 				meshId = "rbxassetid://85701500845752",
 				textureId = "rbxassetid://78892024846147",
-				scale = 1.4,
+				scale = 2.2,
 				yOffset = 0,
 			},
 		},
@@ -1421,7 +1421,7 @@ local Config: Types.Config = {
 			{
 				meshId = "rbxassetid://125471366291195",
 				textureId = "rbxassetid://134050172235837",
-				scale = 1,
+				scale = 1.6,
 				yOffset = 0,
 			},
 		},
@@ -1429,7 +1429,7 @@ local Config: Types.Config = {
 			{
 				meshId = "rbxassetid://111929074219784",
 				textureId = "rbxassetid://128331075410472",
-				scale = 1,
+				scale = 1.6,
 				yOffset = 0,
 			},
 		},
@@ -1437,7 +1437,7 @@ local Config: Types.Config = {
 			{
 				meshId = "rbxassetid://85743903322667",
 				textureId = "rbxassetid://71428052898405",
-				scale = 1,
+				scale = 1.6,
 				yOffset = 0,
 			},
 		},
@@ -1445,7 +1445,7 @@ local Config: Types.Config = {
 			{
 				meshId = "rbxassetid://118362653309604",
 				textureId = "rbxassetid://74187154815065",
-				scale = 1,
+				scale = 1.6,
 				yOffset = 0,
 			},
 		},
