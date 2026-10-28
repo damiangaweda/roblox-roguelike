@@ -1036,10 +1036,8 @@ local Config: Types.Config = {
 					radius = 1.5,
 					weight = 3,
 					footprint = {
-						{ dx = -6, dz = 0, radius = 1.5 },
-						{ dx = -2, dz = 0, radius = 1.5 },
-						{ dx = 2, dz = 0, radius = 1.5 },
-						{ dx = 6, dz = 0, radius = 1.5 },
+						{ dx = -3, dz = 0, radius = 1.5 },
+						{ dx = 3, dz = 0, radius = 1.5 },
 					},
 				},
 				{ id = "pond", radius = 11, weight = 0.6 },
@@ -1205,8 +1203,167 @@ local Config: Types.Config = {
 		greatOfferRanks = 2,
 		springRechargeSeconds = 180,
 	},
-	-- Filled as the meshes are published (stage 3b): kind -> variants.
-	props = {},
+	-- The forest's meshes, generated with the Studio MCP and published under
+	-- the owner's account (stage 3b): obstacle kind -> variants, and the
+	-- shrines, the chest and the portal by their own keys.
+	props = {
+		pine = {
+			{
+				meshId = "rbxassetid://134556219086855",
+				textureId = "rbxassetid://97260680051100",
+				scale = 1.3,
+				yOffset = 0,
+			},
+			{
+				meshId = "rbxassetid://98896018378309",
+				textureId = "rbxassetid://80821783400224",
+				scale = 1.5,
+				yOffset = 0,
+			},
+		},
+		oak = {
+			{
+				meshId = "rbxassetid://134108452664098",
+				textureId = "rbxassetid://76726940919653",
+				scale = 1.4,
+				yOffset = 0,
+			},
+			{
+				meshId = "rbxassetid://135341017659030",
+				textureId = "rbxassetid://93886118302237",
+				scale = 1.2,
+				yOffset = 0,
+			},
+		},
+		stump = {
+			{
+				meshId = "rbxassetid://86611941717787",
+				textureId = "rbxassetid://85594539609993",
+				scale = 1.2,
+				yOffset = 0,
+			},
+		},
+		rock = {
+			{
+				meshId = "rbxassetid://80502154918010",
+				textureId = "rbxassetid://73909649707441",
+				scale = 2,
+				yOffset = 0,
+			},
+		},
+		boulder = {
+			{
+				meshId = "rbxassetid://96976847723730",
+				textureId = "rbxassetid://139192831019512",
+				scale = 1.8,
+				yOffset = 0,
+			},
+		},
+		log = {
+			{
+				meshId = "rbxassetid://78001596990169",
+				textureId = "rbxassetid://89581060934702",
+				scale = 3,
+				yOffset = 0,
+			},
+		},
+		fence = {
+			{
+				meshId = "rbxassetid://83287335679028",
+				textureId = "rbxassetid://126726711977586",
+				scale = 1.4,
+				yOffset = 0,
+			},
+		},
+		chapel = {
+			{
+				meshId = "rbxassetid://119053733006555",
+				textureId = "rbxassetid://95005558929654",
+				scale = 1.5,
+				yOffset = 0,
+			},
+		},
+		tower = {
+			{
+				meshId = "rbxassetid://136187997302979",
+				textureId = "rbxassetid://120467866165576",
+				scale = 1.3,
+				yOffset = 0,
+			},
+		},
+		hut = {
+			{
+				meshId = "rbxassetid://116367906850144",
+				textureId = "rbxassetid://99315963574295",
+				scale = 1.8,
+				yOffset = 0,
+			},
+		},
+		well = {
+			{
+				meshId = "rbxassetid://81862051689760",
+				textureId = "rbxassetid://84575440262481",
+				scale = 1,
+				yOffset = 0,
+			},
+		},
+		stoneCircle = {
+			{
+				meshId = "rbxassetid://85701500845752",
+				textureId = "rbxassetid://78892024846147",
+				scale = 1.4,
+				yOffset = 0,
+			},
+		},
+		shrineBoon = {
+			{
+				meshId = "rbxassetid://125471366291195",
+				textureId = "rbxassetid://134050172235837",
+				scale = 1,
+				yOffset = 0,
+			},
+		},
+		shrinePact = {
+			{
+				meshId = "rbxassetid://111929074219784",
+				textureId = "rbxassetid://128331075410472",
+				scale = 1,
+				yOffset = 0,
+			},
+		},
+		shrineTrial = {
+			{
+				meshId = "rbxassetid://85743903322667",
+				textureId = "rbxassetid://71428052898405",
+				scale = 1,
+				yOffset = 0,
+			},
+		},
+		shrineSpring = {
+			{
+				meshId = "rbxassetid://118362653309604",
+				textureId = "rbxassetid://74187154815065",
+				scale = 1,
+				yOffset = 0,
+			},
+		},
+		chest = {
+			{
+				meshId = "rbxassetid://124124109819626",
+				textureId = "rbxassetid://76372908960944",
+				scale = 1.4,
+				yOffset = 0,
+			},
+		},
+		portal = {
+			{
+				meshId = "rbxassetid://70820691152381",
+				textureId = "rbxassetid://138616235010728",
+				scale = 1.8,
+				yOffset = 0,
+			},
+		},
+	},
 	-- Filled as the icons are uploaded (stage 3b).
 	icons = {},
 	extraction = {
