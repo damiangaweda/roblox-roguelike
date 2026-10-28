@@ -7,7 +7,7 @@
 -- movement of players and enemies and nothing else, so the queries here are
 -- the only collision the core has. Given the terrain's config (stage 3d,
 -- ADR-0023), the plateaus' cliffs and the stream's channel are obstacles too,
--- and shallow water is a slow zone.
+-- and the shallows are slow zones.
 
 local Geometry = require("./Geometry")
 local Terrain = require("./Terrain")
@@ -205,6 +205,33 @@ local function offPlateaus(layout: Layout, x: number, z: number, radius: number)
 	return true
 end
 
+-- Where the path to a lair on `plateau` ends: the foot of its first ramp.
+local function rampEnd(terrain: Types.TerrainConfig, plateau: Types.Plateau): (number, number)
+	return Terrain.rampFoot(plateau, plateau.ramps[1], terrain.rampWidth)
+end
+
+-- Whether the straight way from the start to (x, z) keeps off every plateau
+-- by its cliffs, a path's width and its sway; `own`, the plateau a lair's
+-- path climbs, only by its cliffs and a path's width, since the path ends at
+-- its ramp's foot where the sway is spent.
+local function pathOffPlateaus(layout: Layout, x: number, z: number, own: Types.Plateau?): boolean
+	local terrain = layout.terrain
+	if terrain == nil then
+		return true
+	end
+	local map = layout.map
+	for _, plateau in layout.plateaus do
+		local clear = plateau.radius + terrain.cliffRadius + map.pathWidth
+		if plateau ~= own then
+			clear += map.pathSway
+		end
+		if segmentDistance(plateau.x, plateau.z, 0, 0, x, z) < clear then
+			return false
+		end
+	end
+	return true
+end
+
 -- Adds terrain circles of `kind` as one group, the first the anchor: not a
 -- prop, so neither turned, scaled nor leaned.
 local function addTerrainGroup(layout: Layout, kind: string, circles: { Circle })
@@ -286,6 +313,7 @@ local function placeFits(layout: Layout, x: number, z: number, radius: number): 
 		or Geometry.distance(x, z, 0, 0) + radius > layout.inner
 		or Geometry.distance(x, z, layout.chestX, layout.chestZ) < map.chestClearRadius + radius
 		or not offPlateaus(layout, x, z, radius)
+		or not pathOffPlateaus(layout, x, z, nil)
 	then
 		return false
 	end
@@ -352,20 +380,28 @@ end
 
 -- Whether a lair's clearing of `radius` at (x, z) keeps the lairs' distances
 -- (ADR-0021): from the start, the chest and the other lairs, inside the edge,
--- with its path from the start clear of their clearings and theirs of its own.
+-- with its path from the start clear of their clearings and theirs of its own,
+-- and of the plateaus: a lair on `own` is reached at the foot of its ramp.
 local function lairFits(
 	layout: Layout,
 	lairs: Types.LairsConfig,
 	x: number,
 	z: number,
-	radius: number
+	radius: number,
+	own: Types.Plateau?
 ): boolean
 	local map = layout.map
 	local reach = map.pathWidth + map.pathSway
+	local endX, endZ = x, z
+	local terrain = layout.terrain
+	if own and terrain then
+		endX, endZ = rampEnd(terrain, own)
+	end
 	if
 		Geometry.distance(x, z, 0, 0) < lairs.startMinDistance
 		or Geometry.distance(x, z, 0, 0) + radius > layout.inner
 		or Geometry.distance(x, z, layout.chestX, layout.chestZ) < lairs.chestMinDistance
+		or not pathOffPlateaus(layout, endX, endZ, own)
 	then
 		return false
 	end
@@ -423,7 +459,7 @@ local function plateauFor(
 		if
 			not taken[plateau]
 			and plateau.radius >= kind.clearRadius + terrain.cliffRadius
-			and lairFits(layout, lairs, plateau.x, plateau.z, kind.clearRadius)
+			and lairFits(layout, lairs, plateau.x, plateau.z, kind.clearRadius, plateau)
 		then
 			table.insert(candidates, plateau)
 		end
@@ -717,7 +753,8 @@ local function composePlateaus(
 end
 
 -- The stream, kept out of the start's, the chest's, every place's and lair's
--- clearing and every plateau with its cliffs; its channel one obstacle group.
+-- clearing, every plateau with its cliffs and every ramp's mouth and foot;
+-- its channel one obstacle group.
 local function composeStream(
 	layout: Layout,
 	rng: Types.Rng,
@@ -737,6 +774,10 @@ local function composeStream(
 			z = plateau.z,
 			radius = plateau.radius + terrain.cliffRadius,
 		})
+	end
+	-- The ramps' mouths and feet: a stream there would seal the plateau.
+	for _, clear in layout.keepClear do
+		table.insert(clearings, clear)
 	end
 	local stream = Terrain.stream(terrain, rng, map.radius, clearings, map.placementAttempts)
 	layout.streamPoints = stream.points
@@ -777,7 +818,7 @@ local function describeTerrain(
 	stream: Types.Stream
 ): Types.Terrain
 	local map = layout.map
-	local slowZones = Terrain.banks(stream)
+	local slowZones = Terrain.shallows(stream)
 	local ponds: { Types.Pond } = {}
 	for _, obstacle in layout.obstacles do
 		if obstacle.kind == "pond" then
@@ -884,7 +925,7 @@ function Arena.generate(
 		local plateau = layout.lairPlateaus[place.id]
 		if plateau and terrain then
 			-- A lair on a plateau is reached by its first ramp: the path ends at its foot.
-			local x, z = Terrain.rampFoot(plateau, plateau.ramps[1], terrain.rampWidth)
+			local x, z = rampEnd(terrain, plateau)
 			local foot =
 				{ id = place.id, kind = place.kind, x = x, z = z, radius = 0, rotation = 0 }
 			table.insert(layout.paths, pathTo(map, rng, foot))
@@ -1008,17 +1049,17 @@ function Arena.blocking(
 	return nil
 end
 
--- How far along the segment from (fromX, fromZ) to (toX, toZ) a body of
--- `bodyRadius` travels before it touches an obstacle or the edge: the
--- segment's length when nothing is in the way. An obstacle the body already
--- overlaps does not hold it, so nothing is ever stuck.
-function Arena.reach(
+-- The obstacle kinds of the terrain (ADR-0023): what even a leap cannot pass.
+local TERRAIN_KINDS: { [string]: boolean } = { cliff = true, channel = true }
+
+local function reachPast(
 	arena: Types.Arena,
 	fromX: number,
 	fromZ: number,
 	toX: number,
 	toZ: number,
-	bodyRadius: number
+	bodyRadius: number,
+	terrainOnly: boolean
 ): number
 	local dx, dz = toX - fromX, toZ - fromZ
 	local length = math.sqrt(dx * dx + dz * dz)
@@ -1029,6 +1070,9 @@ function Arena.reach(
 	local best = length
 
 	for _, obstacle in arena.obstacles do
+		if terrainOnly and not TERRAIN_KINDS[obstacle.kind] then
+			continue
+		end
 		local reach = obstacle.radius + bodyRadius
 		local ox, oz = obstacle.x - fromX, obstacle.z - fromZ
 		local along = ox * ux + oz * uz
@@ -1060,6 +1104,34 @@ function Arena.reach(
 		end
 	end
 	return best
+end
+
+-- How far along the segment from (fromX, fromZ) to (toX, toZ) a body of
+-- `bodyRadius` travels before it touches an obstacle or the edge: the
+-- segment's length when nothing is in the way. An obstacle the body already
+-- overlaps does not hold it, so nothing is ever stuck.
+function Arena.reach(
+	arena: Types.Arena,
+	fromX: number,
+	fromZ: number,
+	toX: number,
+	toZ: number,
+	bodyRadius: number
+): number
+	return reachPast(arena, fromX, fromZ, toX, toZ, bodyRadius, false)
+end
+
+-- How far a body flying over the props (a leap) travels along the segment
+-- before a cliff, the channel or the edge holds it, as Arena.reach.
+function Arena.flight(
+	arena: Types.Arena,
+	fromX: number,
+	fromZ: number,
+	toX: number,
+	toZ: number,
+	bodyRadius: number
+): number
+	return reachPast(arena, fromX, fromZ, toX, toZ, bodyRadius, true)
 end
 
 -- The unit direction a body at (x, z) walks to get toward the target: straight

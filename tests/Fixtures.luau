@@ -6,6 +6,7 @@
 local Config = require("../src/shared/Config")
 local Lairs = require("../src/shared/Core/Lairs")
 local State = require("../src/shared/Core/State")
+local Terrain = require("../src/shared/Core/Terrain")
 local Types = require("../src/shared/Core/Types")
 
 local Fixtures = {}
@@ -42,13 +43,13 @@ function Fixtures.run(
 end
 
 -- Open ground: no obstacles stand in the way of a spec's positions, and no
--- shallow water slows them.
+-- shallows slow them.
 function Fixtures.clearObstacles(run: Types.Run)
 	run.arena.obstacles = {}
 	run.arena.terrain.slowZones = {}
 end
 
--- A slow zone (shallow water) of `radius` at (x, z).
+-- A slow zone (the shallows) of `radius` at (x, z).
 function Fixtures.slowZone(run: Types.Run, x: number, z: number, radius: number): Types.SlowZone
 	local zone = { x = x, z = z, radius = radius }
 	table.insert(run.arena.terrain.slowZones, zone)
@@ -78,26 +79,19 @@ function Fixtures.obstacle(
 	return obstacle
 end
 
--- A cliff ring round (x, z) of `radius` from the terrain's cliff circles,
--- with one ramp-wide gap facing `gapAngle` (radians): the circles whose arc
--- from the gap's middle is under half the ramp plus a circle's radius are
--- left out, so the opening is about a ramp wide.
+-- A cliff ring round (x, z) of `radius` with one ramp facing `gapAngle`
+-- (radians), its circles laid by the generator's rule (Terrain.cliffRing).
 function Fixtures.cliffRing(run: Types.Run, x: number, z: number, radius: number, gapAngle: number)
-	local terrain = run.config.terrain
-	local count = math.ceil(2 * math.pi * radius / terrain.cliffStep)
-	local opening = terrain.rampWidth / 2 + terrain.cliffRadius
-	for index = 0, count - 1 do
-		local angle = index * 2 * math.pi / count
-		local apart = math.abs((angle - gapAngle + math.pi) % (2 * math.pi) - math.pi)
-		if apart * radius >= opening then
-			Fixtures.obstacle(
-				run,
-				x + math.cos(angle) * radius,
-				z + math.sin(angle) * radius,
-				terrain.cliffRadius,
-				"cliff"
-			)
-		end
+	local plateau: Types.Plateau = {
+		id = 0,
+		x = x,
+		z = z,
+		radius = radius,
+		height = 0,
+		ramps = { gapAngle },
+	}
+	for _, circle in Terrain.cliffRing(run.config.terrain, plateau) do
+		Fixtures.obstacle(run, circle.x, circle.z, circle.radius, "cliff")
 	end
 end
 

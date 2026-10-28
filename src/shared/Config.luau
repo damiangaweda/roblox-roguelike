@@ -1443,6 +1443,10 @@ local Config: Types.Config = {
 		rampCountMin = 1,
 		rampCountMax = 2,
 		rampWidth = 14,
+		-- The first ramp faces the start, so a plateau is entered from the side
+		-- the run comes from.
+		rampStartConeDegrees = 45,
+		rampSpacingDegrees = 90,
 		cliffRadius = 3,
 		cliffStep = 5,
 		lairsOnPlateauMin = 1,
@@ -1453,6 +1457,8 @@ local Config: Types.Config = {
 		streamSway = 60,
 		fordCount = 3,
 		fordRadius = 7,
+		fordEndShare = 0.15,
+		fordSpacingShare = 0.25,
 		pondRimWidth = 4,
 		shallowFactor = 0.65,
 		rollingHeight = 3,

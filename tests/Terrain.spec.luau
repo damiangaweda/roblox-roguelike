@@ -2,12 +2,15 @@
 local Arena = require("../src/shared/Core/Arena")
 local Assert = require("./Assert")
 local Fixtures = require("./Fixtures")
+local Flow = require("../src/shared/Core/Flow")
 local Geometry = require("../src/shared/Core/Geometry")
 local Rng = require("../src/shared/Core/Rng")
 local Terrain = require("../src/shared/Core/Terrain")
 local Types = require("../src/shared/Core/Types")
 
 local SEEDS = 10
+-- The map's connectivity and the gaps' widths, over more seeds.
+local MANY_SEEDS = 60
 
 -- An arena with the lairs, the shrines and the terrain.
 local function terrainArenaOf(seed: number): (Types.Arena, Types.Config)
@@ -209,7 +212,10 @@ return {
 							-- The ramp's gap reaches a little past its arc between two circles.
 							if
 								Geometry.angleBetween(bearing, ramp) * plateau.radius
-								< config.terrain.rampWidth / 2 + config.terrain.cliffStep + body
+								< config.terrain.rampWidth / 2
+									+ config.terrain.cliffRadius
+									+ config.terrain.cliffStep
+									+ body
 							then
 								nearRamp = true
 							end
@@ -361,7 +367,7 @@ return {
 					for _, ford in stream.fords do
 						if
 							Geometry.distance(point.x, point.z, ford.x, ford.z)
-							< ford.radius + terrain.channelHalfWidth + config.player.radius
+							< ford.radius + 2 * terrain.channelHalfWidth + config.player.radius
 						then
 							nearFord = true
 						end
@@ -406,7 +412,7 @@ return {
 		end
 	end,
 
-	["shallow water lines the stream, covers the fords and rims the ponds"] = function()
+	["the shallows line the stream, cover the fords and rim the ponds"] = function()
 		local arena, config = terrainArenaOf(1)
 		local terrain = config.terrain
 		local stream = streamOf(arena)
@@ -508,5 +514,154 @@ return {
 			Assert.truthy(obstacle.kind ~= "cliff" and obstacle.kind ~= "channel")
 		end
 		Assert.equal(Arena.slowFactor(arena, config.terrain, 0, 0), 1)
+	end,
+
+	["a flood from the start reaches every plateau top and both sides of the stream"] = function()
+		for seed = 1, MANY_SEEDS do
+			local run = Fixtures.run(1, nil, seed)
+			Flow.update(run)
+			local flow = run.flow :: Types.Flow
+			local field = flow.fields[1]
+			local function reached(x: number, z: number): boolean
+				local cx = math.floor((x + flow.origin) / flow.cellSize)
+				local cz = math.floor((z + flow.origin) / flow.cellSize)
+				return field[cx + cz * flow.size + 1] >= 0
+			end
+			-- Only pockets between props stay unreached, never a region.
+			local free, unreached = 0, 0
+			for index, blocked in flow.blocked do
+				if not blocked then
+					free += 1
+					if field[index] < 0 then
+						unreached += 1
+					end
+				end
+			end
+			Assert.truthy(
+				unreached < free * 0.005,
+				"seed " .. seed .. ": unreached cells " .. unreached
+			)
+			local terrain = run.config.terrain
+			for _, plateau in run.arena.terrain.plateaus do
+				local found = false
+				for r = 0, plateau.radius - terrain.cliffRadius - 2, 2 do
+					for step = 0, 35 do
+						local angle = step * 2 * math.pi / 36
+						if
+							reached(
+								plateau.x + math.cos(angle) * r,
+								plateau.z + math.sin(angle) * r
+							)
+						then
+							found = true
+							break
+						end
+					end
+					if found then
+						break
+					end
+				end
+				Assert.truthy(found, "seed " .. seed .. ": a plateau top is sealed")
+			end
+			local stream = streamOf(run.arena)
+			local offset = terrain.channelHalfWidth + terrain.bankWidth + 4
+			local sides = { false, false }
+			for index = 2, #stream.points - 1, 4 do
+				local point = stream.points[index]
+				local nx, nz = across(stream.points, index)
+				for side, sign in { -1, 1 } do
+					if reached(point.x + sign * nx * offset, point.z + sign * nz * offset) then
+						sides[side] = true
+					end
+				end
+			end
+			Assert.truthy(
+				sides[1] and sides[2],
+				"seed " .. seed .. ": a side of the stream is sealed"
+			)
+		end
+	end,
+
+	["the narrowest ramp and ford lets the widest enemy through"] = function()
+		local config = Fixtures.config()
+		local widest = 0
+		for _, kind in config.enemies do
+			widest = math.max(widest, kind.radius)
+		end
+		local need = 2 * widest + 1
+		local terrain = config.terrain
+		local narrowestRamp, narrowestFord = math.huge, math.huge
+		for seed = 1, MANY_SEEDS do
+			local arena = terrainArenaOf(seed)
+			local byGroup: { [number]: { Types.Obstacle } } = {}
+			local channel: { Types.Obstacle } = {}
+			for _, obstacle in arena.obstacles do
+				if obstacle.kind == "cliff" then
+					local list = byGroup[obstacle.group] or {}
+					table.insert(list, obstacle)
+					byGroup[obstacle.group] = list
+				elseif obstacle.kind == "channel" then
+					table.insert(channel, obstacle)
+				end
+			end
+			for _, ring in byGroup do
+				for index, circle in ring do
+					local nextCircle = ring[index % #ring + 1]
+					local distance =
+						Geometry.distance(circle.x, circle.z, nextCircle.x, nextCircle.z)
+					if distance > terrain.cliffStep * 1.5 then
+						narrowestRamp = math.min(narrowestRamp, distance - 2 * terrain.cliffRadius)
+					end
+				end
+			end
+			local fords = 0
+			for index = 2, #channel do
+				local a, b = channel[index - 1], channel[index]
+				local distance = Geometry.distance(a.x, a.z, b.x, b.z)
+				if distance > terrain.channelStep * 3 then
+					fords += 1
+					narrowestFord = math.min(narrowestFord, distance - 2 * terrain.channelHalfWidth)
+				end
+			end
+			Assert.equal(fords, terrain.fordCount, "seed " .. seed .. ": fords")
+		end
+		Assert.truthy(
+			narrowestRamp >= need,
+			"the narrowest ramp: " .. narrowestRamp .. " < " .. need
+		)
+		Assert.truthy(
+			narrowestFord >= need,
+			"the narrowest ford: " .. narrowestFord .. " < " .. need
+		)
+	end,
+
+	["no path climbs a plateau but a plateau lair's own, at its ramp's foot"] = function()
+		for seed = 1, MANY_SEEDS do
+			local arena, config = terrainArenaOf(seed)
+			local terrain = config.terrain
+			for index, path in arena.paths do
+				local place = arena.places[index]
+				local own = plateauUnder(arena, place.x, place.z)
+				for _, point in path do
+					for _, plateau in arena.terrain.plateaus do
+						local distance = Geometry.distance(point.x, point.z, plateau.x, plateau.z)
+						Assert.truthy(
+							distance >= plateau.radius + terrain.cliffRadius,
+							"seed " .. seed .. ": a path into a plateau"
+						)
+					end
+				end
+				if own then
+					local last = path[#path]
+					local footX, footZ = Terrain.rampFoot(own, own.ramps[1], terrain.rampWidth)
+					Assert.near(
+						Geometry.distance(last.x, last.z, footX, footZ),
+						0,
+						1e-6,
+						"the path ends at the ramp"
+					)
+				end
+			end
+		end
 	end,
 }

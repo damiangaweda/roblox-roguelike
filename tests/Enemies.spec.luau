@@ -474,6 +474,26 @@ return {
 		Assert.near(event.x, 25)
 	end,
 
+	["a leap is held by the channel and a cliff but flies over a rock"] = function()
+		for _, kind in { "channel", "cliff", "rock" } do
+			local run = open()
+			Fixtures.place(run, 1, 25, 0)
+			local boss = fighter(run, "mossmaw", 0, 0)
+			boss.attack = 2
+			local radius = run.config.enemies.mossmaw.radius
+			for z = -30, 30, 6 do
+				Fixtures.obstacle(run, 12, z, 4, kind)
+			end
+			windUp(run, boss, attacked(run))
+			if kind == "rock" then
+				Assert.near(boss.x, 25, 1e-6, "over the rock")
+			else
+				Assert.truthy(boss.x <= 12 - 4 - radius + 1e-6, kind .. " crossed: " .. boss.x)
+			end
+			Assert.truthy(boss.x >= 0, "the leap went backwards")
+		end
+	end,
+
 	["a projectile attack fans its shots over the spread"] = function()
 		local run = open()
 		Fixtures.place(run, 1, 30, 0)
@@ -739,7 +759,7 @@ return {
 		Assert.truthy(closest <= range, string.format("closest %.1f", closest))
 	end,
 
-	["shallow water slows an enemy's walk by the shallow factor"] = function()
+	["the shallows slow an enemy's walk by the shallow factor"] = function()
 		local run = open()
 		local speed = run.config.enemies.sproutImp.speed
 		local dry = Fixtures.enemy(run, "sproutImp", 40, 0)

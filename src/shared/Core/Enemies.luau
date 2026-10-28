@@ -83,7 +83,7 @@ local function speedOf(run: Types.Run, enemy: Types.Enemy, kind: Types.EnemyKind
 	if enemy.phase == 2 and kind.phaseSpeedFactor then
 		speed *= kind.phaseSpeedFactor
 	end
-	-- Shallow water slows enemies as it slows heroes (ADR-0023).
+	-- The shallows slow enemies as they slow heroes (ADR-0023).
 	return speed * Arena.slowFactor(run.arena, run.config.terrain, enemy.x, enemy.z)
 end
 
@@ -427,8 +427,22 @@ local function land(
 	context: Context
 ): boolean
 	if attack.kind == "leap" then
-		enemy.x, enemy.z =
-			Arena.freeSpot(run.arena, enemy.aimX, enemy.aimZ, kind.radius, run.rng, FREE_SPOT_TRIES)
+		-- A leap flies over the props but not over a cliff or the channel
+		-- (ADR-0023): it lands where its flight is held, and stays put when
+		-- the free ground found there lies across one.
+		local fromX, fromZ = enemy.x, enemy.z
+		local length = Geometry.distance(fromX, fromZ, enemy.aimX, enemy.aimZ)
+		local flight = Arena.flight(run.arena, fromX, fromZ, enemy.aimX, enemy.aimZ, kind.radius)
+		local ux, uz = Geometry.normalize(enemy.aimX - fromX, enemy.aimZ - fromZ)
+		local toX, toZ = enemy.aimX, enemy.aimZ
+		if flight < length then
+			toX, toZ = fromX + ux * flight, fromZ + uz * flight
+		end
+		local x, z = Arena.freeSpot(run.arena, toX, toZ, kind.radius, run.rng, FREE_SPOT_TRIES)
+		local hop = Geometry.distance(fromX, fromZ, x, z)
+		if Arena.flight(run.arena, fromX, fromZ, x, z, kind.radius) >= hop - 1e-6 then
+			enemy.x, enemy.z = x, z
+		end
 	end
 	table.insert(run.events, {
 		kind = "enemyAttack",

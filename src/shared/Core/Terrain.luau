@@ -15,10 +15,6 @@ local Terrain = {}
 -- (as a share of channelStep) beyond which the channel would leak.
 local RELAX_PASSES = 32
 local MAX_GAP_SHARE = 1.5
--- The fords keep off the line's first and last share and a share of its
--- length from each other.
-local FORD_END_SHARE = 0.15
-local FORD_SPACING_SHARE = 0.25
 
 export type Circle = { x: number, z: number, radius: number }
 export type Point = { x: number, z: number }
@@ -44,8 +40,8 @@ function Terrain.randomInDisc(rng: Types.Rng, radius: number): (number, number)
 end
 
 -- The ramps' bearings: rampCountMin..rampCountMax, the first facing the start
--- within 45 degrees, every other at least 90 degrees from the rest (dropped
--- when no draw finds such a bearing).
+-- within rampStartConeDegrees, every other at least rampSpacingDegrees from
+-- the rest (dropped when no draw finds such a bearing).
 local function drawRamps(
 	config: Types.TerrainConfig,
 	rng: Types.Rng,
@@ -54,13 +50,15 @@ local function drawRamps(
 	attempts: number
 ): { number }
 	local count = rng:integer(config.rampCountMin, config.rampCountMax)
-	local ramps = { Geometry.angle(-x, -z) + (rng:next() * 2 - 1) * math.pi / 4 }
+	local cone = math.rad(config.rampStartConeDegrees)
+	local spacing = math.rad(config.rampSpacingDegrees)
+	local ramps = { Geometry.angle(-x, -z) + (rng:next() * 2 - 1) * cone }
 	for _ = 2, count do
 		for _ = 1, attempts do
 			local bearing = rng:next() * 2 * math.pi
 			local apart = true
 			for _, other in ramps do
-				if Geometry.angleBetween(bearing, other) < math.pi / 2 then
+				if Geometry.angleBetween(bearing, other) < spacing then
 					apart = false
 					break
 				end
@@ -126,14 +124,19 @@ function Terrain.plateaus(
 	return plateaus
 end
 
--- Whether the bearing lies on a ramp: within rampWidth/2 along the ring.
+-- Whether a cliff circle on the bearing would stand on a ramp: its centre
+-- within rampWidth/2 plus its own radius along the ring, so the gap between
+-- the circles either side is at least rampWidth.
 function Terrain.onRamp(
 	config: Types.TerrainConfig,
 	plateau: Types.Plateau,
 	bearing: number
 ): boolean
 	for _, ramp in plateau.ramps do
-		if Geometry.angleBetween(bearing, ramp) * plateau.radius < config.rampWidth / 2 then
+		if
+			Geometry.angleBetween(bearing, ramp) * plateau.radius
+			< config.rampWidth / 2 + config.cliffRadius
+		then
 			return true
 		end
 	end
@@ -310,8 +313,10 @@ local function drawLine(
 end
 
 -- The fords: fordCount points along the line, off its first and last
--- FORD_END_SHARE and FORD_SPACING_SHARE of its length from each other, each
--- found within `attempts` draws, else spread evenly.
+-- fordEndShare, and fordSpacingShare of its length from each other both
+-- along the line and straight across (a line that bends back must not bring
+-- two fords together), each found within `attempts` draws, else the draw
+-- with the most room.
 local function drawFords(
 	config: Types.TerrainConfig,
 	rng: Types.Rng,
@@ -324,43 +329,55 @@ local function drawFords(
 		lengths[index] = lengths[index - 1] + Geometry.distance(a.x, a.z, b.x, b.z)
 	end
 	local total = lengths[#lengths]
-	local span = 1 - 2 * FORD_END_SHARE
-	local shares: { number } = {}
-	for index = 1, config.fordCount do
-		local chosen = FORD_END_SHARE + span * (index - 0.5) / config.fordCount
-		for _ = 1, attempts do
-			local share = FORD_END_SHARE + span * rng:next()
-			local apart = true
-			for _, other in shares do
-				if math.abs(share - other) < FORD_SPACING_SHARE then
-					apart = false
-					break
-				end
-			end
-			if apart then
-				chosen = share
-				break
-			end
-		end
-		table.insert(shares, chosen)
-	end
-	table.sort(shares)
-	local fords: { Types.Ford } = {}
-	for _, share in shares do
+	-- The point at `share` of the line's length.
+	local function pointAt(share: number): Point
 		local at = share * total
 		for index = 2, #points do
 			if lengths[index] >= at then
 				local a, b = points[index - 1], points[index]
 				local piece = lengths[index] - lengths[index - 1]
 				local t = if piece < 1e-9 then 0 else (at - lengths[index - 1]) / piece
-				table.insert(fords, {
-					x = a.x + (b.x - a.x) * t,
-					z = a.z + (b.z - a.z) * t,
-					radius = config.fordRadius,
-				})
+				return { x = a.x + (b.x - a.x) * t, z = a.z + (b.z - a.z) * t }
+			end
+		end
+		local last = points[#points]
+		return { x = last.x, z = last.z }
+	end
+	local ends = config.fordEndShare
+	local span = 1 - 2 * ends
+	local spacing = config.fordSpacingShare
+	local chosen: { { share: number, point: Point } } = {}
+	for _ = 1, config.fordCount do
+		-- The draw farthest from the fords chosen, measured in spacings, kept
+		-- when none is a full spacing away.
+		local pick, pickRoom = nil, -math.huge
+		for _ = 1, math.max(attempts, 1) do
+			local share = ends + span * rng:next()
+			local point = pointAt(share)
+			local room = math.huge
+			for _, other in chosen do
+				room = math.min(
+					room,
+					math.abs(share - other.share) / spacing,
+					Geometry.distance(point.x, point.z, other.point.x, other.point.z)
+						/ (spacing * total)
+				)
+			end
+			if room > pickRoom then
+				pick, pickRoom = { share = share, point = point }, room
+			end
+			if room >= 1 then
 				break
 			end
 		end
+		table.insert(chosen, pick :: { share: number, point: Point })
+	end
+	table.sort(chosen, function(a, b)
+		return a.share < b.share
+	end)
+	local fords: { Types.Ford } = {}
+	for _, pick in chosen do
+		table.insert(fords, { x = pick.point.x, z = pick.point.z, radius = config.fordRadius })
 	end
 	return fords
 end
@@ -414,11 +431,22 @@ function Terrain.inFord(stream: Types.Stream, x: number, z: number): boolean
 end
 
 -- The deep channel: a circle of channelHalfWidth on every point of the line
--- but those within a ford.
+-- but those whose circle would reach into a ford, so a ford's gap is at
+-- least its diameter.
 function Terrain.channel(stream: Types.Stream): { Circle }
 	local circles: { Circle } = {}
 	for _, point in stream.points do
-		if not Terrain.inFord(stream, point.x, point.z) then
+		local open = false
+		for _, ford in stream.fords do
+			if
+				Geometry.distance(point.x, point.z, ford.x, ford.z)
+				< ford.radius + stream.channelHalfWidth
+			then
+				open = true
+				break
+			end
+		end
+		if not open then
 			table.insert(circles, { x = point.x, z = point.z, radius = stream.channelHalfWidth })
 		end
 	end
@@ -427,7 +455,7 @@ end
 
 -- The shallows: a circle of the channel and its bank on every point of the
 -- line, the fords included (a ford is shallow all across).
-function Terrain.banks(stream: Types.Stream): { Types.SlowZone }
+function Terrain.shallows(stream: Types.Stream): { Types.SlowZone }
 	local zones: { Types.SlowZone } = {}
 	for _, point in stream.points do
 		table.insert(zones, {

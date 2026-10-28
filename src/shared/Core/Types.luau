@@ -645,7 +645,7 @@ export type Lair = {
 
 -- The terrain's description (ADR-0023): what the rules read and the adapter
 -- sculpts. Cliffs and the stream's channel are obstacles (kinds "cliff" and
--- "channel"); shallow water is a slow zone.
+-- "channel"); the shallows are slow zones.
 export type Plateau = {
 	id: number,
 	x: number,
@@ -669,7 +669,7 @@ export type Stream = {
 
 export type Pond = { x: number, z: number, radius: number, rimWidth: number }
 
--- A circle of shallow water: heroes and enemies inside walk slower.
+-- A circle of the shallows: heroes and enemies inside walk slower.
 export type SlowZone = { x: number, z: number, radius: number }
 
 -- A disc the adapter flattens (the start, the chest, places, lairs, paths).
@@ -694,8 +694,12 @@ export type TerrainConfig = {
 	plateauStartDistance: number,
 	rampCountMin: number,
 	rampCountMax: number,
-	-- A ramp's width along the cliff ring, in studs.
+	-- A ramp's width: the free gap between the cliffs either side, in studs.
 	rampWidth: number,
+	-- The first ramp faces the start within this many degrees either side;
+	-- every other ramp keeps at least rampSpacingDegrees from the rest.
+	rampStartConeDegrees: number,
+	rampSpacingDegrees: number,
 	-- The cliff ring's circles: radius and the step between their centres.
 	cliffRadius: number,
 	cliffStep: number,
@@ -710,9 +714,13 @@ export type TerrainConfig = {
 	streamSway: number,
 	fordCount: number,
 	fordRadius: number,
+	-- The fords keep off the line's first and last fordEndShare of its
+	-- length, and fordSpacingShare of its length from each other.
+	fordEndShare: number,
+	fordSpacingShare: number,
 	-- The pond's shallow rim.
 	pondRimWidth: number,
-	-- Speed in shallow water, as a share of normal.
+	-- Speed in the shallows, as a share of normal.
 	shallowFactor: number,
 	-- The gentle rolling of the rest of the ground, in studs (look only).
 	rollingHeight: number,
