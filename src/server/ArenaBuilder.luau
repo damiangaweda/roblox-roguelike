@@ -347,7 +347,9 @@ local function newHeightmap(arena: Types.Arena): Heightmap
 		end
 	end
 	for _, pond in terrain.ponds do
-		for _, bucket in around(map, pond.x, pond.z, pond.radius + SHORE_LIP + FEATURE_FALLOFF) do
+		for _, bucket in
+			around(map, pond.x, pond.z, pond.radius + pond.rimWidth + SHORE_LIP + FEATURE_FALLOFF)
+		do
 			table.insert(bucket.ponds, pond)
 		end
 	end
@@ -470,12 +472,15 @@ local function sample(map: Heightmap, x: number, z: number): (number, number, bo
 	for _, pond in bucket.ponds do
 		local dx, dz = x - pond.x, z - pond.z
 		local d = math.sqrt(dx * dx + dz * dz)
+		-- Deep water inside the pond's radius (its blocking circle), the
+		-- shallows out to its rim.
+		local shore = pond.radius + pond.rimWidth
 		flat = math.max(
 			flat,
-			1 - smoothstep(pond.radius + SHORE_LIP, pond.radius + SHORE_LIP + FEATURE_FALLOFF, d)
+			1 - smoothstep(shore + SHORE_LIP, shore + SHORE_LIP + FEATURE_FALLOFF, d)
 		)
-		if d < pond.radius + SHORE_LIP then
-			cut = math.min(cut, waterFloor(d, pond.radius - pond.rimWidth, pond.radius))
+		if d < shore + SHORE_LIP then
+			cut = math.min(cut, waterFloor(d, pond.radius, shore))
 		end
 	end
 	-- The plateaus' rise, and what covers it.

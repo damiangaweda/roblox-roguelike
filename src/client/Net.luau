@@ -104,6 +104,9 @@ function Net.groundY(x: number?, z: number?): number
 		return known
 	end
 	local height = castGround((cellX + 0.5) * GROUND_CELL, (cellZ + 0.5) * GROUND_CELL)
+	if height == nil then
+		return FLAT_GROUND
+	end
 	groundHeights[key] = height
 	return height
 end
@@ -111,7 +114,7 @@ end
 -- The ground's height right under (x, z), uncached: for the few queries a
 -- cell's sample would mislead, such as a hero beside a cliff.
 function Net.groundYExact(x: number, z: number): number
-	return castGround(x, z)
+	return castGround(x, z) or FLAT_GROUND
 end
 
 function Net.pickClass(class: string)
