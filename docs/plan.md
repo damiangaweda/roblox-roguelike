@@ -117,9 +117,26 @@ Aimed combat with the Elementalist ([ADR-0009](adr/0009-aimed-combat.md)), seven
 
 ### Stage 4: co-op
 
-**Status:** outline; grilled for acceptance criteria before it starts.
+**Status:** outline with the lead's proposed answers (2026-10-28); grilled for acceptance criteria before it starts.
 
-A party of up to four in one run ([ADR-0016](adr/0016-co-op-party-of-up-to-four.md)); until the hub exists, the players who join the run place together are the party. Experience is shared: whoever picks up a crystal, everyone gains it, and each player chooses their own card. Downed and revive return for the party; a player who dies is out of the run. The horde spawns around every player within one shared budget and scales with the party's size. Threat: an enemy chases the player who holds the most threat towards it, which damage raises, and otherwise the nearest; a Warrior skill taunts, raising threat sharply, and other players' damage can take it back. The extraction portal stands for the whole party. Synergies between party members' tags. The performance check with four clients.
+**Goal:** up to four players share one run on the lairs map and the game stays fair, readable and fast for all of them.
+
+**Scope (proposed):**
+- **The party** ([ADR-0016](adr/0016-co-op-party-of-up-to-four.md)): until the hub exists, everyone in the run place when a run starts is the party (up to four; later joiners wait for the next run); the pick screen shows who is in and the run starts when everyone picked or after a configured countdown.
+- **Experience and cards:** a crystal anyone picks up gives experience to everyone; each player gets their own offer at each level-up, but the run never pauses: an offer stays open while the player keeps playing, with a configured time (proposal: 20 s) after which the first card is taken for them; the HUD shows the offer small until opened. The great offer of a lair goes to the whole party.
+- **Downed and revive:** at zero health a party member is downed (proposal: 25 s to bleed out, crawling slowly, not targeted); another member holds F beside them (proposal: 3 s, interrupted by a hit) to revive at a share of health (proposal: 40%); a downed member who bleeds out is dead and spectates. Alone (the last one standing) the hero dies as in solo.
+- **Threat:** an enemy chases the player with the most threat towards it; damage dealt raises threat (proposal: by the damage), a taunt raises it sharply (proposal: +500 and a 6 s hold); threat decays (proposal: 10%/s); without threat the nearest player. The Warrior's war roar taunts. Lair bosses and guards use threat within their reach.
+- **The horde in a party:** every lair's batch scales with the party (proposal: ×1 solo, ×1.6 duo, ×2.1 trio, ×2.5 quad) and the alive cap is one shared budget measured with four clients (open question of ADR-0019); strays despawn far from every member; wraiths spawn around every member.
+- **Synergies across members:** a status one member put on an enemy counts for another member's synergy.
+- **Extraction and doom:** the portal admits every member while it stands; killing the final boss extracts everyone alive; a downed member at extraction counts as extracted if revived in time.
+- **Performance:** the server holds 50 Hz with four clients at the cap; the client holds 50 FPS with four heroes on screen.
+
+**Acceptance criteria (proposed):**
+1. Core tests cover the party roster, shared experience with per-player offers and the offer timeout, downed/revive/bleed-out, threat (raise, taunt, decay, target choice), batch scaling by party size, cross-member synergies, the portal for several members, the final boss extracting all, doom with several members, all repeatable for a seed.
+2. Every number is configuration.
+3. The client sends only the intents of stages 3–3d plus revive (the F hold beside a downed member).
+4. A Studio playtest with two clients (the Studio test server): both pick, share experience, choose cards without a pause, one is downed and revived, a taunt pulls a boss, both extract; with four clients the server holds 50 Hz at the cap.
+5. The user plays with at least one other person and judges whether it is fun and fair.
 
 ### Stage 5: the hub, the profile and loot
 
