@@ -79,8 +79,8 @@ function Net.useUtility(index: number)
 end
 
 -- The open button went down (`held`) or up: holding it at the chest opens it.
-function Net.setOpening(held: boolean)
-	intentRemote:FireServer("open", held)
+function Net.setInteracting(held: boolean)
+	intentRemote:FireServer("interact", held)
 end
 
 -- Starts casting the extraction spell.

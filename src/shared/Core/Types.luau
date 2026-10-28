@@ -358,7 +358,16 @@ export type MapConfig = {
 	-- and weights, the minimum gap between them and the clear ground around
 	-- the start and the extraction chest.
 	obstacleCount: number,
-	obstacleKinds: { { id: string, radius: number, weight: number } },
+	-- A kind with a footprint takes one circle per entry, offset from the
+	-- prop's centre and turned with its rotation; without one, a single circle.
+	obstacleKinds: {
+		{
+			id: string,
+			radius: number,
+			weight: number,
+			footprint: { { dx: number, dz: number, radius: number } }?,
+		}
+	},
 	obstacleSpacing: number,
 	startClearRadius: number,
 	chestClearRadius: number,
@@ -476,6 +485,74 @@ export type ExtractionConfig = {
 	portalRadius: number,
 }
 
+-- A mesh drawn for an obstacle kind: its asset ids, the scale the builder
+-- applies to the published mesh and its height above the ground.
+export type PropConfig = {
+	meshId: string,
+	textureId: string,
+	scale: number,
+	yOffset: number,
+}
+
+export type ShrineKind = "boon" | "pact" | "trial" | "spring"
+
+-- A boon: one stat raised until the run ends (GLOSSARY: boon).
+export type BoonConfig = { id: string, name: string, stat: Stat, amount: number }
+
+-- A pact: one stat raised and one lowered until the run ends (GLOSSARY: pact).
+export type PactConfig = {
+	id: string,
+	name: string,
+	up: Stat,
+	upAmount: number,
+	down: Stat,
+	downAmount: number,
+}
+
+export type ShrinesConfig = {
+	-- Shrines on the map, dealt round-robin over `kinds` and shuffled.
+	count: number,
+	kinds: { ShrineKind },
+	-- The shrine's own footprint on the ground and how close a hero holds.
+	radius: number,
+	reach: number,
+	-- Minimum distance from the start, the chest and one another.
+	startMinDistance: number,
+	chestMinDistance: number,
+	spacing: number,
+	holdSeconds: number,
+	boons: { BoonConfig },
+	pacts: { PactConfig },
+	-- The trial's ring: grunts of the window plus elites, on a ring of this radius.
+	trialRingCount: number,
+	trialEliteCount: number,
+	trialRingRadius: number,
+	-- Ranks each card of the great offer is worth.
+	greatOfferRanks: number,
+	springRechargeSeconds: number,
+}
+
+-- A shrine of the run (GLOSSARY: shrine): where it stands, what it holds and
+-- whether it has been used. `boon` / `pact` name the draw made at generation.
+export type Shrine = {
+	id: number,
+	kind: ShrineKind,
+	x: number,
+	z: number,
+	radius: number,
+	used: boolean,
+	-- A spring: when it is back; other kinds never are.
+	readyAt: number,
+	boon: string?,
+	pact: string?,
+	-- A trial under way: the enemies it spawned still alive, and who started it.
+	trialEnemies: { number }?,
+	trialBy: number?,
+}
+
+-- Where a shrine goes, decided with the obstacles for the seed.
+export type ShrineSpot = { kind: ShrineKind, x: number, z: number }
+
 export type Config = {
 	run: {
 		durationSeconds: number,
@@ -493,6 +570,12 @@ export type Config = {
 		minDamage: number,
 		-- How far a crystal is drawn in from, before the pickup passive.
 		pickupRange: number,
+		-- The dash (GLOSSARY: dash): studs covered, over how long, charges
+		-- held and the cooldown that brings one charge back.
+		dashDistance: number,
+		dashSeconds: number,
+		dashCharges: number,
+		dashCooldownSeconds: number,
 	},
 	projectiles: {
 		touchMargin: number,
@@ -513,6 +596,12 @@ export type Config = {
 	cards: CardsConfig,
 	progression: ProgressionConfig,
 	extraction: ExtractionConfig,
+	shrines: ShrinesConfig,
+	-- The low-poly meshes the server builds the map from, by obstacle kind
+	-- (stage 3b): variants are picked by the obstacle's id.
+	props: { [string]: { PropConfig } },
+	-- Skill, passive and utility icons by id (an image asset).
+	icons: { [string]: string },
 	net: {
 		stepHz: number,
 		snapshotHz: number,
@@ -528,6 +617,10 @@ export type Obstacle = {
 	z: number,
 	radius: number,
 	rotation: number,
+	-- The prop this circle belongs to: a building takes several circles with
+	-- one group; the anchor circle is where the builder draws the prop.
+	group: number,
+	anchor: boolean,
 }
 
 export type Arena = {
@@ -538,6 +631,7 @@ export type Arena = {
 	startZ: number,
 	chestX: number,
 	chestZ: number,
+	shrineSpots: { ShrineSpot },
 }
 
 -- A damage-over-time stack on an enemy.
@@ -661,9 +755,10 @@ export type OwnedSkill = { id: string, rank: number, readyAt: number }
 
 export type Card =
 	{ kind: "skillRank", skill: string, rank: number }
-	| { kind: "newSkill", skill: string }
+	-- `rank` is the rank the card gives; a great offer's cards give more than one.
+	| { kind: "newSkill", skill: string, rank: number }
 	| { kind: "passiveRank", passive: string, rank: number }
-	| { kind: "newPassive", passive: string }
+	| { kind: "newPassive", passive: string, rank: number }
 	| { kind: "heal" }
 
 export type PlayerState = "alive" | "dead" | "extracted"
@@ -698,8 +793,20 @@ export type Player = {
 	kills: number,
 	moveBudget: number,
 	-- Whether the player holds the open button at the chest, and the hold so far.
-	opening: boolean,
+	-- The interact button held: opening the chest or activating a shrine.
+	interacting: boolean,
 	openProgress: number,
+	shrineId: number?,
+	shrineProgress: number,
+	-- Stat bonuses from boons and pacts, summed per stat as a share, and the
+	-- boons' and pacts' ids in the order taken.
+	bonuses: { [Stat]: number },
+	gifts: { string },
+	-- The dash: charges held, when the next one is back, until when the hero
+	-- is dashing (and untouchable).
+	dashCharges: number,
+	dashReadyAt: number,
+	dashUntil: number,
 	-- Set while casting the extraction spell; nil otherwise.
 	castingUntil: number?,
 	-- Whether the player holds the extraction spell.
@@ -799,6 +906,18 @@ export type Event =
 	| { kind: "portalOpened", x: number, z: number, seconds: number }
 	| { kind: "portalClosed" }
 	| { kind: "finalBossTimer", seconds: number }
+	| { kind: "dash", player: number, dx: number, dz: number }
+	| {
+		kind: "shrineActivated",
+		player: number,
+		shrineId: number,
+		shrineKind: ShrineKind,
+		-- The boon's or pact's id.
+		gift: string?,
+	}
+	| { kind: "trialStarted", shrineId: number, count: number }
+	| { kind: "trialCompleted", shrineId: number, player: number }
+	| { kind: "shrineReady", shrineId: number }
 
 export type Rng = {
 	-- A float in [0, 1).
@@ -835,6 +954,7 @@ export type Run = {
 	chestOpened: boolean,
 	compassOn: boolean,
 	portal: Portal?,
+	shrines: { Shrine },
 	-- The run stands still while a solo player chooses a card.
 	paused: boolean,
 	ended: boolean,

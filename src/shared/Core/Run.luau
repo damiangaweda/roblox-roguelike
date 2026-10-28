@@ -14,6 +14,7 @@ local Hero = require("./Hero")
 local Horde = require("./Horde")
 local Progression = require("./Progression")
 local Projectiles = require("./Projectiles")
+local Shrines = require("./Shrines")
 local State = require("./State")
 local Types = require("./Types")
 
@@ -63,11 +64,26 @@ function Run.useUtility(run: Types.Run, playerId: number, index: number): boolea
 	return Hero.useUtility(run, playerId, index)
 end
 
-function Run.setOpening(run: Types.Run, playerId: number, held: boolean)
+-- The interact button held or released: it opens the chest or activates a
+-- shrine, whichever is in reach (the chest first).
+function Run.setInteracting(run: Types.Run, playerId: number, held: boolean)
 	if run.ended then
 		return
 	end
 	Extraction.setOpening(run, playerId, held)
+	Shrines.setHolding(run, playerId, held)
+end
+
+-- A dash in direction (dx, dz), normalised here; nothing while paused.
+function Run.dash(run: Types.Run, playerId: number, dx: number, dz: number): boolean
+	if run.ended or run.paused then
+		return false
+	end
+	local player = run.players[playerId]
+	if player == nil then
+		return false
+	end
+	return Hero.dash(run, player, dx, dz)
 end
 
 function Run.castSpell(run: Types.Run, playerId: number): boolean
@@ -211,6 +227,7 @@ function Run.step(run: Types.Run, dt: number, inputs: { [number]: Types.PlayerIn
 	Hero.update(run, dt)
 	Progression.update(run, dt)
 	Extraction.update(run, dt)
+	Shrines.update(run, dt)
 	checkEnded(run)
 end
 

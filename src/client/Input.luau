@@ -110,11 +110,11 @@ function Input.interact(held: boolean)
 			Net.enterPortal()
 		elseif not opening then
 			opening = true
-			Net.setOpening(true)
+			Net.setInteracting(true)
 		end
 	elseif opening then
 		opening = false
-		Net.setOpening(false)
+		Net.setInteracting(false)
 	end
 end
 

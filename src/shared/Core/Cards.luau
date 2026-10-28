@@ -20,8 +20,9 @@ local function owns(player: Types.Player, skillId: string): Types.OwnedSkill?
 end
 
 -- Every card the player may be offered now, with its draw weight, in a fixed
--- order so the same seed draws the same cards.
-local function candidates(run: Types.Run, player: Types.Player): { Candidate }
+-- order so the same seed draws the same cards. `ranks` is what each card is
+-- worth: one at a level-up, more in a great offer (GLOSSARY: great offer).
+local function candidates(run: Types.Run, player: Types.Player, ranks: number): { Candidate }
 	local config = run.config
 	local cards = config.cards
 	local list: { Candidate } = {}
@@ -29,7 +30,11 @@ local function candidates(run: Types.Run, player: Types.Player): { Candidate }
 	for _, owned in player.skills do
 		if owned.rank < config.ranks.maxRank then
 			table.insert(list, {
-				card = { kind = "skillRank", skill = owned.id, rank = owned.rank + 1 },
+				card = {
+					kind = "skillRank",
+					skill = owned.id,
+					rank = math.min(owned.rank + ranks, config.ranks.maxRank),
+				},
 				weight = cards.weightSkillRank,
 			})
 		end
@@ -37,10 +42,14 @@ local function candidates(run: Types.Run, player: Types.Player): { Candidate }
 	if #player.skills < cards.maxSkills then
 		for _, skillId in config.classes[player.class].pool do
 			if owns(player, skillId) == nil then
-				table.insert(
-					list,
-					{ card = { kind = "newSkill", skill = skillId }, weight = cards.weightNewSkill }
-				)
+				table.insert(list, {
+					card = {
+						kind = "newSkill",
+						skill = skillId,
+						rank = math.min(ranks, config.ranks.maxRank),
+					},
+					weight = cards.weightNewSkill,
+				})
 			end
 		end
 	end
@@ -58,27 +67,32 @@ local function candidates(run: Types.Run, player: Types.Player): { Candidate }
 	end
 	for _, id in passiveIds do
 		local rank = player.passives[id] or 0
+		local maxRank = config.passives[id].maxRank
 		if rank > 0 then
-			if rank < config.passives[id].maxRank then
+			if rank < maxRank then
 				table.insert(list, {
-					card = { kind = "passiveRank", passive = id, rank = rank + 1 },
+					card = {
+						kind = "passiveRank",
+						passive = id,
+						rank = math.min(rank + ranks, maxRank),
+					},
 					weight = cards.weightPassiveRank,
 				})
 			end
 		elseif held < cards.maxPassives then
-			table.insert(
-				list,
-				{ card = { kind = "newPassive", passive = id }, weight = cards.weightNewPassive }
-			)
+			table.insert(list, {
+				card = { kind = "newPassive", passive = id, rank = math.min(ranks, maxRank) },
+				weight = cards.weightNewPassive,
+			})
 		end
 	end
 	return list
 end
 
 -- Up to offerSize distinct cards drawn by weight without replacement; the
--- heal card alone when nothing else is left.
-function Cards.draw(run: Types.Run, player: Types.Player): { Types.Card }
-	local pool = candidates(run, player)
+-- heal card alone when nothing else is left. `ranks` defaults to one.
+function Cards.draw(run: Types.Run, player: Types.Player, ranks: number?): { Types.Card }
+	local pool = candidates(run, player, ranks or 1)
 	if #pool == 0 then
 		return { { kind = "heal" } }
 	end
@@ -116,9 +130,10 @@ local function announce(run: Types.Run, player: Types.Player, offer: { Types.Car
 end
 
 -- Queues a fresh draw for the player; only the oldest offer is announced. A
--- solo run stands still until the player chooses.
-function Cards.offer(run: Types.Run, player: Types.Player)
-	local offer = Cards.draw(run, player)
+-- solo run stands still until the player chooses. A great offer passes the
+-- ranks its cards are worth.
+function Cards.offer(run: Types.Run, player: Types.Player, ranks: number?)
+	local offer = Cards.draw(run, player, ranks)
 	table.insert(player.offers, offer)
 	if #player.offers == 1 then
 		announce(run, player, offer)
@@ -132,20 +147,21 @@ local function apply(run: Types.Run, player: Types.Player, card: Types.Card)
 	if card.kind == "skillRank" then
 		local owned = owns(player, card.skill)
 		if owned ~= nil and owned.rank < run.config.ranks.maxRank then
-			owned.rank += 1
+			owned.rank = math.clamp(card.rank, owned.rank + 1, run.config.ranks.maxRank)
 		end
 	elseif card.kind == "newSkill" then
 		if owns(player, card.skill) == nil then
 			table.insert(player.skills, {
 				id = card.skill,
-				rank = 1,
+				rank = math.clamp(card.rank, 1, run.config.ranks.maxRank),
 				readyAt = run.time + run.config.ranks.firstCooldownSeconds,
 			})
 		end
 	elseif card.kind == "passiveRank" or card.kind == "newPassive" then
 		local rank = player.passives[card.passive] or 0
-		if rank < run.config.passives[card.passive].maxRank then
-			player.passives[card.passive] = rank + 1
+		local maxRank = run.config.passives[card.passive].maxRank
+		if rank < maxRank then
+			player.passives[card.passive] = math.clamp(card.rank, rank + 1, maxRank)
 		end
 	elseif card.kind == "heal" then
 		local maxHealth = Hero.stats(run, player).maxHealth

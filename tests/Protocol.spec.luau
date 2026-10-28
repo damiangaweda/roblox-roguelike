@@ -38,10 +38,10 @@ return {
 		local utility = Protocol.parseIntent(config, "utility", 1) :: any
 		Assert.equal(utility.kind, "utility")
 		Assert.equal(utility.index, 1)
-		local open = Protocol.parseIntent(config, "open", true) :: any
-		Assert.equal(open.kind, "open")
+		local open = Protocol.parseIntent(config, "interact", true) :: any
+		Assert.equal(open.kind, "interact")
 		Assert.equal(open.held, true)
-		Assert.equal((Protocol.parseIntent(config, "open", false) :: any).held, false)
+		Assert.equal((Protocol.parseIntent(config, "interact", false) :: any).held, false)
 		Assert.equal((Protocol.parseIntent(config, "cast") :: any).kind, "cast")
 		Assert.equal((Protocol.parseIntent(config, "enter") :: any).kind, "enter")
 	end,
@@ -60,9 +60,9 @@ return {
 			Assert.equal(Protocol.parseIntent(config, kind, math.huge), nil, kind .. " inf")
 			Assert.equal(Protocol.parseIntent(config, kind, 1, 2), nil, kind .. " trailing")
 		end
-		Assert.equal(Protocol.parseIntent(config, "open", 1), nil)
-		Assert.equal(Protocol.parseIntent(config, "open", "true"), nil)
-		Assert.equal(Protocol.parseIntent(config, "open", nil), nil)
+		Assert.equal(Protocol.parseIntent(config, "interact", 1), nil)
+		Assert.equal(Protocol.parseIntent(config, "interact", "true"), nil)
+		Assert.equal(Protocol.parseIntent(config, "interact", nil), nil)
 		Assert.equal(Protocol.parseIntent(config, "cast", 1), nil)
 		Assert.equal(Protocol.parseIntent(config, "enter", true), nil)
 		Assert.equal(Protocol.parseIntent(config, "damage", 100), nil)

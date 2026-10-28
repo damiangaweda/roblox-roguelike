@@ -114,7 +114,7 @@ local function joinRun(current: Types.Run, player: Player, class: string)
 	local core = Run.addPlayer(current, player.UserId, class)
 	seen[player.UserId] = true
 	-- A dead or extracted character from the last run comes back whole.
-	pcall(player.LoadCharacter, player)
+	pcall(player.LoadCharacterAsync, player)
 	if player.Parent ~= Players then
 		Run.removePlayer(current, player.UserId)
 		return
@@ -294,8 +294,10 @@ local function onIntent(player: Player, intent: Protocol.Intent)
 		Run.chooseCard(current, id, intent.index)
 	elseif intent.kind == "utility" then
 		Run.useUtility(current, id, intent.index)
-	elseif intent.kind == "open" then
-		Run.setOpening(current, id, intent.held)
+	elseif intent.kind == "interact" then
+		Run.setInteracting(current, id, intent.held)
+	elseif intent.kind == "dash" then
+		Run.dash(current, id, intent.dx, intent.dz)
 	elseif intent.kind == "cast" then
 		Run.castSpell(current, id)
 	elseif intent.kind == "enter" then
@@ -342,7 +344,7 @@ local function endSummary()
 			Characters.dress(player, nil)
 			-- The faded character of a dead or extracted hero comes back whole.
 			task.spawn(function()
-				pcall(player.LoadCharacter, player)
+				pcall(player.LoadCharacterAsync, player)
 			end)
 		end
 	end

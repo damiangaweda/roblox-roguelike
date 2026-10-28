@@ -155,7 +155,7 @@ return {
 		local run = Fixtures.run()
 		local player = run.players[1]
 		run.time = 10
-		player.offers = { { { kind = "newSkill", skill = "emberOrb" } } }
+		player.offers = { { { kind = "newSkill", skill = "emberOrb", rank = 1 } } }
 		run.paused = true
 		Assert.truthy(Cards.choose(run, 1, 1))
 		local owned = player.skills[#player.skills]
@@ -176,7 +176,7 @@ return {
 		}
 		Assert.truthy(Cards.choose(run, 1, 1))
 		Assert.equal(player.skills[1].rank, 2)
-		player.offers = { { { kind = "newPassive", passive = "hide" } } }
+		player.offers = { { { kind = "newPassive", passive = "hide", rank = 1 } } }
 		Assert.truthy(Cards.choose(run, 1, 1))
 		Assert.equal(player.passives.hide, 1)
 		player.offers = { { { kind = "passiveRank", passive = "hide", rank = 2 } } }

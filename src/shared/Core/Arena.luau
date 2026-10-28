@@ -83,6 +83,8 @@ function Arena.generate(map: Types.MapConfig, rng: Types.Rng): Types.Arena
 					z = z,
 					radius = kind.radius,
 					rotation = rng:next() * 2 * math.pi,
+					group = index,
+					anchor = true,
 				})
 				break
 			end
@@ -96,6 +98,7 @@ function Arena.generate(map: Types.MapConfig, rng: Types.Rng): Types.Arena
 		startZ = 0,
 		chestX = chestX,
 		chestZ = chestZ,
+		shrineSpots = {},
 	}
 end
 

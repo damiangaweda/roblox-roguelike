@@ -22,8 +22,9 @@ function Hero.stats(run: Types.Run, player: Types.Player): Types.HeroStats
 			sums[passive.stat] = (sums[passive.stat] or 0) + passive.perRank * rank
 		end
 	end
+	-- Boons and pacts add to the same shares (GLOSSARY: boon, pact).
 	local function sum(stat: Types.Stat): number
-		return sums[stat] or 0
+		return (sums[stat] or 0) + (player.bonuses[stat] or 0)
 	end
 
 	return {
@@ -49,17 +50,50 @@ function Hero.walkSpeed(run: Types.Run, player: Types.Player): number
 	return speed
 end
 
+-- Whether nothing can hurt the hero now: a dash is under way (GLOSSARY: dash).
+function Hero.untouchable(run: Types.Run, player: Types.Player): boolean
+	return player.dashUntil > run.time
+end
+
+-- Dashes in direction (dx, dz): config.player.dashDistance over dashSeconds,
+-- carried like a knockback and stopped by obstacles and the wall, untouchable
+-- for the dash. Returns false with no charge, while dead, or with no direction.
+function Hero.dash(run: Types.Run, player: Types.Player, dx: number, dz: number): boolean
+	local config = run.config.player
+	if player.state ~= "alive" or player.dashCharges < 1 or (dx == 0 and dz == 0) then
+		return false
+	end
+	local nx, nz = Geometry.normalize(dx, dz)
+	if player.dashCharges == config.dashCharges then
+		player.dashReadyAt = run.time + config.dashCooldownSeconds
+	end
+	player.dashCharges -= 1
+	player.dashUntil = run.time + config.dashSeconds
+	player.facing = math.atan2(nz, nx)
+	player.knockX = nx * config.dashDistance / config.dashSeconds
+	player.knockZ = nz * config.dashDistance / config.dashSeconds
+	player.knockUntil = player.dashUntil
+	table.insert(run.events, {
+		kind = "dash",
+		player = player.id,
+		dx = nx * config.dashDistance,
+		dz = nz * config.dashDistance,
+	})
+	return true
+end
+
 -- Damages an alive hero by `amount` (the attacker's multipliers already in):
 -- the barrier absorbs first, armour cuts what is left down to minDamage. A hit
--- interrupts the extraction spell's cast and the chest opening. `reflected`
--- is the thorns the caller returns to the attacker.
+-- interrupts the extraction spell's cast, the chest opening and a shrine's
+-- hold. Nothing lands on an untouchable hero. `reflected` is the thorns the
+-- caller returns to the attacker.
 function Hero.damage(
 	run: Types.Run,
 	player: Types.Player,
 	amount: number,
 	enemyId: number?
 ): { taken: number, reflected: number }
-	if player.state ~= "alive" or amount <= 0 then
+	if player.state ~= "alive" or amount <= 0 or Hero.untouchable(run, player) then
 		return { taken = 0, reflected = 0 }
 	end
 
@@ -88,6 +122,7 @@ function Hero.damage(
 		table.insert(run.events, { kind = "castInterrupted", player = player.id })
 	end
 	player.openProgress = 0
+	player.shrineProgress = 0
 
 	local reflected = if player.thornsUntil > run.time then player.thorns else 0
 
@@ -185,6 +220,13 @@ function Hero.update(run: Types.Run, dt: number)
 
 		if player.barrier > 0 and player.barrierUntil <= run.time then
 			player.barrier = 0
+		end
+
+		-- One dash charge back per cooldown, the next cooldown from then.
+		local dashConfig = run.config.player
+		while player.dashCharges < dashConfig.dashCharges and player.dashReadyAt <= run.time do
+			player.dashCharges += 1
+			player.dashReadyAt += dashConfig.dashCooldownSeconds
 		end
 
 		-- The last step of a knockback covers only what is left of it; an

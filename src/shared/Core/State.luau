@@ -11,7 +11,7 @@ local State = {}
 function State.newRun(config: Types.Config, seed: number): Types.Run
 	local map = config.maps[config.map]
 	local rng = Rng.new(seed)
-	return {
+	local run: Types.Run = {
 		config = config,
 		map = map,
 		rng = rng,
@@ -34,10 +34,49 @@ function State.newRun(config: Types.Config, seed: number): Types.Run
 		chestOpened = false,
 		compassOn = false,
 		portal = nil,
+		shrines = {},
 		paused = false,
 		ended = false,
 		events = {},
 	}
+	for _, spot in run.arena.shrineSpots do
+		table.insert(run.shrines, State.newShrine(run, spot))
+	end
+	return run
+end
+
+-- A shrine at its spot; a boon's or pact's gift is drawn now, so the same
+-- seed deals the same shrines.
+function State.newShrine(run: Types.Run, spot: Types.ShrineSpot): Types.Shrine
+	local shrines = run.config.shrines
+	local shrine: Types.Shrine = {
+		id = State.nextId(run),
+		kind = spot.kind,
+		x = spot.x,
+		z = spot.z,
+		radius = shrines.radius,
+		used = false,
+		readyAt = 0,
+		boon = nil,
+		pact = nil,
+		trialEnemies = nil,
+		trialBy = nil,
+	}
+	if spot.kind == "boon" and #shrines.boons > 0 then
+		shrine.boon = shrines.boons[run.rng:integer(1, #shrines.boons)].id
+	elseif spot.kind == "pact" and #shrines.pacts > 0 then
+		shrine.pact = shrines.pacts[run.rng:integer(1, #shrines.pacts)].id
+	end
+	return shrine
+end
+
+function State.shrineById(run: Types.Run, id: number): Types.Shrine?
+	for _, shrine in run.shrines do
+		if shrine.id == id then
+			return shrine
+		end
+	end
+	return nil
 end
 
 function State.nextId(run: Types.Run): number
@@ -81,8 +120,15 @@ function State.newPlayer(run: Types.Run, id: number, class: string): Types.Playe
 		moveBudget = classConfig.walkSpeed
 			* run.config.player.moveTolerance
 			* run.config.player.moveBurstSeconds,
-		opening = false,
+		interacting = false,
 		openProgress = 0,
+		shrineId = nil,
+		shrineProgress = 0,
+		bonuses = {},
+		gifts = {},
+		dashCharges = run.config.player.dashCharges,
+		dashReadyAt = 0,
+		dashUntil = 0,
 		castingUntil = nil,
 		hasSpell = false,
 		hurtAt = -math.huge,

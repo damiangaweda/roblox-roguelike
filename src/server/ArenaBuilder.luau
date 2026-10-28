@@ -400,6 +400,8 @@ local function buildTreeLine(arena: Types.Arena, parent: Instance, random: Rando
 				z = math.sin(angle) * (radius + wobble),
 				radius = TREE_LINE_RADIUS * random:NextNumber(0.85, 1.2),
 				rotation = angle,
+				group = 0,
+				anchor = true,
 			}
 			buildTree(obstacle, ring == 1, line, random)
 			count += 1
