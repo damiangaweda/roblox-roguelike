@@ -50,30 +50,34 @@ function State.newRun(config: Types.Config, seed: number): Types.Run
 	return run
 end
 
+-- The lair kind of `id`; an unknown id is a configuration error.
+local function lairKindById(config: Types.Config, id: string): Types.LairKindConfig
+	for _, kind in config.lairs.kinds do
+		if kind.id == id then
+			return kind
+		end
+	end
+	error("unknown lair kind " .. id)
+end
+
 -- A lair at its spot, asleep, its first release delayed by its own offset
 -- (drawn here, so the same seed staggers the lairs the same way); the boss
 -- and the guard are spawned by the Lairs module.
 function State.newLair(run: Types.Run, spot: Types.LairSpot): Types.Lair
 	local lairs = run.config.lairs
-	local kind: Types.LairKindConfig? = nil
-	for _, candidate in lairs.kinds do
-		if candidate.id == spot.kind then
-			kind = candidate
-		end
-	end
-	local interval = if kind then kind.intervalSeconds else 10
+	local kind = lairKindById(run.config, spot.kind)
 	return {
 		id = State.nextId(run),
 		kind = spot.kind,
 		x = spot.x,
 		z = spot.z,
-		radius = if kind then kind.radius else 45,
+		radius = kind.radius,
 		rotation = spot.rotation,
 		bossId = nil,
 		guardIds = {},
 		asleep = true,
 		silenced = false,
-		nextBatchAt = run.rng:next() * interval * lairs.offsetShare,
+		nextBatchAt = run.rng:next() * kind.intervalSeconds * lairs.offsetShare,
 		owed = 0,
 		stirredAt = 0,
 	}
@@ -89,12 +93,7 @@ function State.lairById(run: Types.Run, id: number): Types.Lair?
 end
 
 function State.lairKind(run: Types.Run, lair: Types.Lair): Types.LairKindConfig
-	for _, kind in run.config.lairs.kinds do
-		if kind.id == lair.kind then
-			return kind
-		end
-	end
-	error("unknown lair kind " .. lair.kind)
+	return lairKindById(run.config, lair.kind)
 end
 
 -- A shrine at its spot; its boon or pact is drawn now, so the same

@@ -3,8 +3,9 @@
 -- hero around the obstacles, hit on contact (grunts and wraiths) or wind up an
 -- attack the players can read, land it and recover (elites and bosses), then
 -- push apart from the crowd. A lair's boss and guard (ADR-0021) do nothing
--- while asleep, and awake they target only heroes within the lair's reach and
--- never leave its radius. Enemies are plain data; nothing here moves a Humanoid.
+-- while asleep, and awake they target only heroes within the lair's reach,
+-- never leave its radius and walk home when no hero is in reach. Enemies are
+-- plain data; nothing here moves a Humanoid.
 
 local Arena = require("./Arena")
 local Damage = require("./Damage")
@@ -640,6 +641,23 @@ local function chase(
 	end
 end
 
+-- A woken boss or guard with no hero in reach walks back to its lair's
+-- centre and waits there, out of reach of a hero shooting from outside.
+local function walkHome(
+	run: Types.Run,
+	enemy: Types.Enemy,
+	kind: Types.EnemyKindConfig,
+	lair: Types.Lair,
+	dt: number
+)
+	local distance = Geometry.distance(enemy.x, enemy.z, lair.x, lair.z)
+	if distance <= 1e-6 then
+		return
+	end
+	face(enemy, lair.x, lair.z)
+	walk(run, enemy, kind, lair.x, lair.z, math.min(speedOf(run, enemy, kind) * dt, distance))
+end
+
 local function enterPhase(run: Types.Run, enemy: Types.Enemy, kind: Types.EnemyKindConfig)
 	if
 		kind.phaseHealthShare
@@ -682,7 +700,8 @@ local function stepEnemy(run: Types.Run, enemy: Types.Enemy, dt: number, context
 		recover(run, enemy, attack)
 	end
 
-	local target = nearestPlayer(run, enemy, context, Lairs.leashOf(run, enemy))
+	local lair = Lairs.leashOf(run, enemy)
+	local target = nearestPlayer(run, enemy, context, lair)
 	enemy.target = if target then target.id else nil
 
 	if stunned then
@@ -716,6 +735,8 @@ local function stepEnemy(run: Types.Run, enemy: Types.Enemy, dt: number, context
 		end
 	elseif target then
 		chase(run, enemy, kind, target, dt, rooted)
+	elseif lair and not rooted then
+		walkHome(run, enemy, kind, lair, dt)
 	end
 end
 

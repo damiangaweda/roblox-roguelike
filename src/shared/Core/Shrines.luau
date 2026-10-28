@@ -27,8 +27,12 @@ local SCALED: { [Types.Stat]: boolean } = {
 
 -- Whether the shrine can be activated now: unused and, for a spring, back;
 -- a trial being fought cannot.
+-- A trial does not start while the final boss rises: nothing spawns then.
 local function usable(run: Types.Run, shrine: Types.Shrine): boolean
-	return not shrine.used and shrine.readyAt <= run.time and shrine.trialEnemies == nil
+	return not shrine.used
+		and shrine.readyAt <= run.time
+		and shrine.trialEnemies == nil
+		and not (shrine.kind == "trial" and run.finalRiseAt ~= nil)
 end
 
 -- The shrine within the config's reach of the player, if any; the chest wins

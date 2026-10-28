@@ -58,11 +58,6 @@ function Lairs.spawnKind(run: Types.Run, kindId: string, x: number, z: number): 
 	)
 end
 
--- Whether the enemy is a lair's guard: an elite tied to a lair.
-function Lairs.isGuard(run: Types.Run, enemy: Types.Enemy): boolean
-	return enemy.lairId ~= nil and State.kind(run, enemy).role == "elite"
-end
-
 -- Enemies alive that count toward the alive cap: neither bosses, guards nor wraiths.
 function Lairs.aliveCount(run: Types.Run): number
 	local count = 0
@@ -118,11 +113,13 @@ local function nearestLair(run: Types.Run, x: number, z: number, living: boolean
 end
 
 -- The grunt kinds spawned near (x, z) by a trial or a summon: the nearest
--- living lair's, else the nearest lair's, else the roster's weakest.
+-- living lair's unlocked ones, else the nearest lair's, else the roster's
+-- weakest.
 function Lairs.gruntKinds(run: Types.Run, x: number, z: number): { string }
 	local lair = nearestLair(run, x, z, true) or nearestLair(run, x, z, false)
 	if lair then
-		return State.lairKind(run, lair).grunts
+		local kind = State.lairKind(run, lair)
+		return table.move(kind.grunts, 1, Lairs.unlockedGrunts(run, kind), 1, {})
 	end
 	return if #run.map.roster > 0 then { run.map.roster[1] } else {}
 end
@@ -233,8 +230,9 @@ local function sleep(run: Types.Run, lair: Types.Lair)
 end
 
 -- The lair's boss is dead (Damage.kill): the lair is silenced for good, its
--- killer gets the great offer, and the last lair's fall starts the final
--- boss's rise there, unless doom has begun. Its guard fights on until dead.
+-- killer gets the great offer, its guard is gone (no crystals, food or kills:
+-- the lair is safe ground), and the last lair's fall starts the final boss's
+-- rise there, unless doom has begun.
 function Lairs.silence(run: Types.Run, lair: Types.Lair, killer: number)
 	if lair.silenced then
 		return
@@ -243,6 +241,15 @@ function Lairs.silence(run: Types.Run, lair: Types.Lair, killer: number)
 	lair.asleep = false
 	lair.bossId = nil
 	lair.owed = 0
+	for _, id in lair.guardIds do
+		local guard = State.enemyById(run, id)
+		if guard then
+			-- Zero health, so a pass over a copy of run.enemies skips it.
+			guard.health = 0
+			State.removeEnemy(run, guard)
+		end
+	end
+	lair.guardIds = {}
 	table.insert(run.events, { kind = "lairSilenced", lairId = lair.id, player = killer })
 	local player = run.players[killer]
 	if player and player.state == "alive" then
@@ -275,12 +282,17 @@ end
 local function release(run: Types.Run, lair: Types.Lair)
 	local lairs = run.config.lairs
 	local kind = State.lairKind(run, lair)
+	local owed = lair.owed
 	local size = math.floor(
 		lairs.batchStart + (lairs.batchEnd - lairs.batchStart) * Lairs.progress(run) + 0.5
-	) + lair.owed
-	lair.owed = 0
+	) + owed
 	local count = math.min(size, math.max(run.config.horde.maxAlive - Lairs.aliveCount(run), 0))
-	if count <= 0 or #kind.grunts == 0 then
+	if #kind.grunts == 0 then
+		count = 0
+	end
+	-- What the cap held back stays owed, up to what was owed before.
+	lair.owed = math.min(owed, size - count)
+	if count <= 0 then
 		return
 	end
 	local unlocked = Lairs.unlockedGrunts(run, kind)

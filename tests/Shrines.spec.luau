@@ -226,7 +226,8 @@ return {
 			if table.find(run.map.elites, enemy.kind) then
 				elites += 1
 			else
-				Assert.truthy(table.find(grunts, enemy.kind) ~= nil, "a lair's grunt")
+				-- Early in the run only the lair's weakest kind is unlocked.
+				Assert.equal(enemy.kind, grunts[1], "the lair's unlocked grunt")
 			end
 			Assert.near(
 				Geometry.distance(enemy.x, enemy.z, shrine.x, shrine.z),
@@ -239,6 +240,24 @@ return {
 		Assert.equal(Assert.findEvent(events, "trialStarted").count, total)
 		Assert.equal(Assert.findEvent(events, "shrineActivated").given, nil)
 		Assert.equal(Shrines.inReach(run, run.players[1]), nil, "no hold while it is fought")
+	end,
+
+	["no trial starts while the final boss rises"] = function()
+		local run = openRun()
+		run.finalRiseAt = run.time + 100
+		local shrine = Fixtures.shrine(run, "trial", 60, 0)
+		Fixtures.place(run, 1, shrine.x + 2, shrine.z)
+		Assert.equal(Shrines.inReach(run, run.players[1]), nil, "not usable")
+		Run.setInteracting(run, 1, true)
+		advance(run, run.config.shrines.holdSeconds * 2)
+		Assert.equal(run.players[1].shrineProgress, 0, "the hold does not run")
+		Assert.equal(shrine.trialEnemies, nil)
+		Assert.falsy(shrine.used)
+		Assert.equal(#run.enemies, 0)
+		-- Once it has risen the trial works again.
+		run.finalRiseAt = nil
+		advance(run, run.config.shrines.holdSeconds + 0.1)
+		Assert.truthy(shrine.trialEnemies ~= nil, "the trial started")
 	end,
 
 	["a trial's ring is held to the cap, the elites first"] = function()

@@ -169,6 +169,37 @@ return {
 		Assert.equal(b.phase, 2)
 	end,
 
+	["an asleep enemy keeps its phase and its sleep through encoding"] = function()
+		local run = Fixtures.run(1)
+		local kinds = Protocol.enemyKinds(run.config)
+		local asleep = Fixtures.enemy(run, "thornback", 10, 0)
+		asleep.asleep = true
+		asleep.phase = 2
+		local awake = Fixtures.enemy(run, "mossmaw", -10, 0)
+		awake.phase = 2
+		local grunt = Fixtures.enemy(run, "sproutImp", 0, 10)
+		local encoded = Protocol.encodeEnemies(run, kinds)
+		local decoded = Protocol.decodeEnemies(encoded, kinds)
+		assert(decoded, "decoding failed")
+		Assert.equal(#decoded, 3)
+		Assert.equal(decoded[1].id, asleep.id)
+		Assert.equal(decoded[1].asleep, true)
+		Assert.equal(decoded[1].phase, 2)
+		Assert.equal(decoded[2].asleep, false)
+		Assert.equal(decoded[2].phase, 2)
+		Assert.equal(decoded[3].id, grunt.id)
+		Assert.equal(decoded[3].asleep, false)
+		Assert.equal(decoded[3].phase, 1)
+		-- The sleep is the phase byte's top bit (128).
+		-- Records follow the 2-byte count; the phase byte is the 14th of each.
+		local size = (buffer.len(encoded) - 2) / 3
+		local function phaseByte(index: number): number
+			return buffer.readu8(encoded, 2 + (index - 1) * size + 13)
+		end
+		Assert.equal(phaseByte(1), 128 + 2)
+		Assert.equal(phaseByte(2), 2)
+	end,
+
 	["a malformed enemy buffer is rejected"] = function()
 		local run = Fixtures.run(1)
 		local kinds = Protocol.enemyKinds(run.config)

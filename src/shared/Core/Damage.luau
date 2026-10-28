@@ -3,7 +3,8 @@
 -- stacks, the class synergies, the shieldbearer's block, and kills with their
 -- crystal and food (stage 3; ADR-0013). Damage to an asleep boss or guard
 -- wakes its lair, and a lair's boss's death silences it (ADR-0021). A wraith
--- takes no status and no knockback and leaves nothing. Every number comes
+-- takes damage over time but no control, knockback or execute, and leaves
+-- nothing. Every number comes
 -- from run.config.
 
 local Geometry = require("./Geometry")
@@ -109,9 +110,6 @@ local function addDot(
 	source: number,
 	tags: { Types.Tag }
 )
-	if isWraith(run, enemy) then
-		return
-	end
 	table.insert(enemy.dots, {
 		dps = dps,
 		until_ = run.time + seconds,

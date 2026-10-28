@@ -218,6 +218,45 @@ spec["a lair releases its batch at its interval, its kinds in turn, one batch a 
 	Assert.near(lair.nextBatchAt, run.time + kind.intervalSeconds)
 end
 
+spec["trials and summons take only a lair's unlocked grunts"] = function()
+	local run = open()
+	local lair = Fixtures.lair(run, "brambleNest", 200, 0)
+	local kind = State.lairKind(run, lair)
+	local early = Lairs.gruntKinds(run, 190, 0)
+	Assert.equal(#early, 1)
+	Assert.equal(early[1], kind.grunts[1])
+	run.time = run.config.run.durationSeconds / 2
+	local middle = Lairs.gruntKinds(run, 190, 0)
+	Assert.equal(#middle, 2)
+	Assert.equal(middle[2], kind.grunts[2])
+	Assert.equal(#kind.grunts, 3, "the kind's list is untouched")
+end
+
+spec["owed strays the cap holds back stay owed"] = function()
+	local run = open()
+	local lairs = run.config.lairs
+	local lair = Fixtures.lair(run, "brambleNest", 200, 0, 0)
+	Lairs.update(run, 0)
+	-- Room for 2 under the cap; the batch is batchStart + 3 owed.
+	run.config.horde.maxAlive = 2
+	lair.owed = 3
+	lair.nextBatchAt = run.time
+	Lairs.update(run, 0)
+	Assert.equal(#released(run, lair), 2)
+	Assert.equal(lair.owed, math.min(3, lairs.batchStart + 3 - 2))
+	-- With room for all but one, only that one stays owed.
+	run.config.horde.maxAlive = 2 + lairs.batchStart + 3 - 1
+	lair.owed = 3
+	lair.nextBatchAt = run.time
+	Lairs.update(run, 0)
+	Assert.equal(lair.owed, 1)
+	-- With room for the whole batch nothing stays owed.
+	run.config.horde.maxAlive = 1000
+	lair.nextBatchAt = run.time
+	Lairs.update(run, 0)
+	Assert.equal(lair.owed, 0)
+end
+
 spec["every lair kind lists its grunts weakest first"] = function()
 	local config = Fixtures.config()
 	local roster = config.maps[config.map].roster
@@ -413,6 +452,41 @@ spec["the boss and guard stay in the lair and fight only heroes within its reach
 	Assert.truthy(edge > lair.radius * 0.5, "it walked toward the hero: " .. edge)
 end
 
+spec["a boss with no hero in reach walks home, out of a skill's range from outside"] = function()
+	local run = open()
+	local lair = Fixtures.lair(run, "brambleNest", 200, 0)
+	run.config.classes.mage.maxHealth = 1e6
+	run.players[1].health = 1e6
+	Lairs.update(run, 0)
+	Fixtures.wake(run, lair)
+	local sleeper = boss(run, lair)
+	-- Pulled to the lair's edge toward the hero, who then stands 91 studs from
+	-- the centre: beyond the reach (90), within 72 of the boss at the edge.
+	sleeper.x, sleeper.z = 200 - lair.radius, 0
+	Assert.equal(Lairs.reach(run, lair), 90)
+	local heroX = 200 - 91
+	Fixtures.place(run, 1, heroX, 0)
+	Assert.truthy(Geometry.distance(sleeper.x, sleeper.z, heroX, 0) < 72)
+	-- The hero keeps shooting it every two seconds, which keeps the lair awake.
+	local nextShot = 0
+	for _ = 1, 400 do
+		run.time += 0.05
+		if run.time >= nextShot then
+			Damage.hit(run, sleeper, hitBy(1, heroX, 0))
+			nextShot += 2
+		end
+		Lairs.update(run, 0.05)
+		Enemies.step(run, 0.05)
+	end
+	Assert.falsy(lair.asleep, "the shots keep it awake")
+	Assert.equal(sleeper.target, nil, "no hero in reach")
+	local home = Geometry.distance(sleeper.x, sleeper.z, lair.x, lair.z)
+	-- Its guard crowds the centre too, so it stands near it, not on it.
+	Assert.truthy(home < lair.radius * 0.25, "home at the centre: " .. home)
+	local away = Geometry.distance(sleeper.x, sleeper.z, heroX, 0)
+	Assert.truthy(away > 72, "out of a 72-stud skill's reach: " .. away)
+end
+
 spec["the lair sleeps when every hero has left, the boss regaining its share"] = function()
 	local run = open()
 	local lairs = run.config.lairs
@@ -488,7 +562,11 @@ spec["the boss's death silences the lair with a great offer and food"] = functio
 	Assert.equal(food.heal, math.huge)
 	Assert.near(food.x, x)
 	Assert.near(food.z, z)
-	Assert.equal(#guards(run, lair), State.lairKind(run, lair).guardCount, "the guard fights on")
+	Assert.equal(#guards(run, lair), 0, "the guard is gone")
+	Assert.equal(#lair.guardIds, 0)
+	Assert.equal(#events(run, "kill"), 1, "the boss's kill only")
+	Assert.equal(#run.crystals, 1, "the boss's crystal only")
+	Assert.equal(run.players[1].kills, 1)
 	Assert.falsy(Assert.findEvent(run.events, "finalRising"), "a lair still lives")
 	Assert.falsy(second.silenced)
 	-- No more batches.
@@ -601,7 +679,7 @@ spec["doom starts at the end time, stops the lairs and sends wraiths at every he
 	Assert.equal(#events(run, "doomStarted"), 1, "once")
 end
 
-spec["a wraith takes no control or knockback and leaves nothing"] = function()
+spec["a wraith takes damage over time but no control or knockback, and leaves nothing"] = function()
 	local run = open()
 	local wraith = Fixtures.enemy(run, "wraith", 10, 0)
 	Damage.applyStatus(run, wraith, "stunned", 5)
@@ -617,7 +695,7 @@ spec["a wraith takes no control or knockback and leaves nothing"] = function()
 	Assert.equal(wraith.stunnedUntil, 0)
 	Assert.equal(wraith.slowFactor, 1)
 	Assert.equal(wraith.fearedUntil, 0)
-	Assert.equal(#wraith.dots, 0)
+	Assert.equal(#wraith.dots, 1, "damage over time still burns")
 	local push = hitBy(1, 0, 0)
 	push.knockback = 10
 	Damage.hit(run, wraith, push)
