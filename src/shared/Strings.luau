@@ -21,6 +21,10 @@ local Strings = {
 	healthWithBarrier = "%d / %d  +%d",
 	-- Level, experience, experience to the next level.
 	experience = "Level %d  -  %d / %d XP",
+	-- At the left end of the experience bar: the level.
+	level = "Level %d",
+	-- At its right end: experience and experience to the next level.
+	experienceShort = "%d / %d XP",
 	kills = "Kills: %d",
 	levelUp = "Level %d",
 	-- A passive in the column on the right: its name, rank and max rank.
@@ -46,6 +50,11 @@ local Strings = {
 	},
 	notices = {
 		interrupted = "Interrupted!",
+		trialStarted = "Trial!",
+		trialCompleted = "Trial complete",
+		-- The boon's or pact's name, then what it gave (shrineDetails' gains).
+		given = "%s: %s",
+		springUsed = "Fully restored",
 	},
 	-- Under the clock: the time left as m:ss, and whole seconds.
 	mapClosesIn = "The map closes in %s",
@@ -53,32 +62,72 @@ local Strings = {
 
 	-- What each button is called in a prompt: a key, or a touch button's label.
 	keys = {
-		interact = "E",
-		cast = "F",
-		utilities = { "1", "2", "3" },
+		interact = "F",
+		dash = "Space",
+		utilities = { "Q", "E", "R" },
+		cards = { "1", "2", "3" },
 	},
 	buttons = {
 		interact = "USE",
-		cast = "CAST",
+		dash = "DASH",
 	},
 	-- The key or button's label.
 	prompts = {
 		open = "Hold %s to open",
 		cast = "Press %s to cast the extraction spell",
 		portal = "Press %s to enter the portal",
+		-- Under a shrine's name.
+		hold = "Hold %s",
 	},
 	bars = {
 		opening = "Opening...",
 		casting = "Casting...",
+		activating = "Activating...",
+	},
+
+	-- What a shrine in reach is called; a boon or a pact goes by its own name.
+	shrines = {
+		boon = "Boon",
+		pact = "Pact",
+		trial = "Trial",
+		spring = "Spring",
+	},
+	-- Under a shrine's name: what it does and what it costs.
+	shrineDetails = {
+		-- The gain (a boon's `percentUp` or `flatUp`).
+		boon = "%s until the run ends",
+		-- The gain, then the cost.
+		pact = "%s, %s",
+		-- The enemies in the ring, then the ranks each card is worth.
+		trial = "Fight a ring of %d enemies for a great offer (cards worth %d ranks)",
+		-- The recharge, as m:ss.
+		spring = "Full heal, utilities and dash ready; back in %s",
+		-- A spring still recharging: the time left, as m:ss.
+		springBack = "Back in %s",
+		-- The number, then the stat's name (stats).
+		percentUp = "+%s%% %s",
+		percentDown = "-%s%% %s",
+		flatUp = "+%s %s",
+		flatDown = "-%s %s",
 	},
 
 	cards = {
 		title = "Level up! Choose a card",
+		-- A trial's reward: every card is worth more than one rank.
+		greatTitle = "Great offer",
 		newSkill = "New skill",
+		-- A great offer's new skill: the rank it arrives at.
+		newSkillRank = "New skill, rank %d",
 		-- The rank.
 		skillRank = "Rank %d",
+		-- The rank, then the ranks it adds.
+		skillRanks = "Rank %d  (+%d ranks)",
 		newPassive = "New passive",
+		-- A great offer's new passive: the rank it arrives at.
+		newPassiveRank = "New passive, rank %d",
 		passiveRank = "Passive rank %d",
+		-- The rank, then the ranks it adds.
+		passiveRanks = "Passive rank %d  (+%d ranks)",
 		heal = "Full heal",
 		-- The share of max health restored, in percent.
 		healText = "Restores %d%% of your health",

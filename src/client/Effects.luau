@@ -1,7 +1,8 @@
 --!strict
 -- Combat and world effects: skills, hits, statuses, state.bursts, areas, totems,
 -- telegraphs, projectiles, crystals, food, the chest's state.beam, the extraction
--- spell and its state.portal. Everything here is drawn from events and snapshots
+-- spell and its state.portal, a dash's afterimages and a shrine's activation
+-- (the server draws the shrines themselves). Everything here is drawn from events and snapshots
 -- the server sent; nothing is decided on the client (AGENTS.md rule 1).
 -- Every effect comes from a pool with a cap, particles are thrown in state.bursts
 -- from pooled hosts and state.lights are capped, so the frame budget holds however
@@ -443,7 +444,7 @@ OBJECT.TOTEM_TURN = 0.8
 
 -- Crystals: small floating neon state.gems, spinning and bobbing; state.collected ones
 -- fly to the hero, then sparkle.
-OBJECT.GEM_SIZE = Vector3.new(0.7, 0.7, 0.7)
+OBJECT.GEM_SIZE = Vector3.new(1.4, 1.4, 1.4)
 OBJECT.GEM_BIG = 1.3
 OBJECT.GEM_RISE = 1.1
 OBJECT.GEM_BOB = 0.25
@@ -485,6 +486,30 @@ OBJECT.SPRINT_LINE_LENGTH = 4
 OBJECT.SPRINT_LINE_WIDTH = 0.15
 OBJECT.SPRINT_LINE_SECONDS_LIVE = 0.22
 OBJECT.SPRINT_MIN_SPEED = 2
+-- A dash: translucent afterimages of the hero left along the way in its
+-- class's colour, each fading out, and a puff where it set off.
+OBJECT.DASH_IMAGES = 4
+OBJECT.DASH_IMAGE_SIZE = Vector3.new(2, 4.5, 1)
+OBJECT.DASH_IMAGE_SECONDS = 0.3
+OBJECT.DASH_IMAGE_FADE = 0.55
+DRAW.AFTERIMAGE_POOL = 24
+
+-- A shrine's activation: a column of light, a widening ring, motes and a
+-- flash in its kind's colour.
+PALETTE.SHRINE_TINTS = {
+	boon = rgb(255, 200, 60, 255, 245, 200),
+	pact = rgb(200, 30, 50, 255, 170, 170),
+	trial = rgb(150, 80, 240, 230, 210, 255),
+	spring = rgb(70, 220, 240, 220, 255, 255),
+} :: { [string]: Tint }
+OBJECT.SHRINE_COLUMN_HEIGHT = 40
+OBJECT.SHRINE_COLUMN_WIDTH = 4
+OBJECT.SHRINE_COLUMN_FADE = 0.25
+OBJECT.SHRINE_RING_DIAMETER = 18
+OBJECT.SHRINE_RING_STUDS = 0.6
+OBJECT.SHRINE_MOTES = 24
+OBJECT.SHRINE_LIGHT_RANGE = 30
+OBJECT.SHRINE_SECONDS = 1
 
 -- The extraction spell's cast: a ring under the hero and motes swirling round it.
 OBJECT.CAST_RING_DIAMETER = 7
@@ -1325,6 +1350,15 @@ end, function(slot, alpha)
 	if light then
 		light.Brightness = slot.from * (1 - alpha) * (1 - alpha)
 	end
+end)
+
+-- Afterimages: blocks the size of a hero that fade from `fade` to clear.
+state.afterimages = newPool(DRAW.AFTERIMAGE_POOL, function()
+	local part = newEffectPart()
+	part.Size = OBJECT.DASH_IMAGE_SIZE
+	return { part = part }
+end, function(slot, alpha)
+	slot.part.Transparency = slot.fade + (1 - slot.fade) * alpha
 end)
 
 -- The pop of a damage number: up past its size, then back.
@@ -4240,6 +4274,124 @@ function fx.onUtility(player: number, utilityId: string)
 	end
 end
 
+-- A player's view in the latest snapshot.
+function fx.playerView(player: number): Protocol.PlayerView?
+	local latest = Net.latest
+	if latest == nil then
+		return nil
+	end
+	for _, view in latest.world.players do
+		if view.id == player then
+			return view
+		end
+	end
+	return nil
+end
+
+-- Afterimages left along a dash, one every share of its time: where the
+-- character stands then (so a wall that stops it stops them), or along
+-- (dx, dz) from the snapshot's position without a character.
+function fx.onDash(player: number, dx: number, dz: number)
+	local view = fx.playerView(player)
+	local root = characterRoot(player)
+	local from = if root
+		then root.Position
+		elseif view then groundAt(view.x, view.z, SKILL.HERO_RISE)
+		else nil
+	if from == nil or not onScreen(from) then
+		return
+	end
+	local class = if view then Config.classes[view.class] else nil
+	local color = if class then fromHex(class.colour) else PALETTE.WHITE
+	local delta = Vector3.new(dx, 0, dz)
+	if delta.Magnitude < 1e-3 then
+		return
+	end
+	local facing = CFrame.lookAt(Vector3.zero, delta).Rotation
+	emit("puff", PALETTE.DUST_COLOR, from - SHAPE.UP * 2, WORLD.KNOCK_PUFFS, Vector3.new(2, 1, 2))
+	local images = OBJECT.DASH_IMAGES
+	for index = 0, images - 1 do
+		task.delay(Config.player.dashSeconds * index / images, function()
+			local now = characterRoot(player)
+			local at = if now then now.Position else from + delta * (index / images)
+			local slot = start(state.afterimages, OBJECT.DASH_IMAGE_SECONDS, at)
+			slot.fade = OBJECT.DASH_IMAGE_FADE
+			slot.part.Color = color
+			slot.part.CFrame = CFrame.new(at) * facing
+			state.afterimages.animate(slot, 0)
+		end)
+	end
+end
+
+-- Where a shrine stands: its view in the latest snapshot, or the model the
+-- server drew for it.
+function fx.shrinePosition(shrineId: number): Vector3?
+	local latest = Net.latest
+	local shrines = if latest then latest.world.shrines else nil
+	if type(shrines) == "table" then
+		for _, shrine in shrines do
+			if shrine.id == shrineId then
+				return groundAt(shrine.x, shrine.z, 0)
+			end
+		end
+	end
+	local world = workspace:FindFirstChild("World")
+	local folder = if world then world:FindFirstChild("Shrines") else nil
+	local model = if folder then folder:FindFirstChild("Shrine_" .. shrineId) else nil
+	if model and model:IsA("PVInstance") then
+		local position = model:GetPivot().Position
+		return groundAt(position.X, position.Z, 0)
+	end
+	return nil
+end
+
+-- A burst of the shrine's kind's colour where it stands.
+function fx.onShrineActivated(shrineId: number, kind: string)
+	local ground = fx.shrinePosition(shrineId)
+	if ground == nil or not onScreen(ground) then
+		return
+	end
+	local tint = PALETTE.SHRINE_TINTS[kind] or PALETTE.GOLD
+	local seconds = OBJECT.SHRINE_SECONDS
+	showStreak(
+		state.streaks,
+		ground,
+		ground + SHAPE.UP * OBJECT.SHRINE_COLUMN_HEIGHT,
+		tint.color,
+		OBJECT.SHRINE_COLUMN_WIDTH,
+		OBJECT.SHRINE_COLUMN_FADE,
+		seconds,
+		"fade"
+	)
+	showRing(
+		ground.X,
+		ground.Z,
+		tint.color,
+		2,
+		OBJECT.SHRINE_RING_DIAMETER,
+		OBJECT.SHRINE_RING_STUDS,
+		0.2,
+		0,
+		seconds
+	)
+	showGlow(
+		ground + SHAPE.UP * 2,
+		tint.core,
+		1,
+		OBJECT.SHRINE_RING_DIAMETER * 0.4,
+		0.3,
+		seconds * 0.4
+	)
+	emit("motes", tint.core, ground + SHAPE.UP * 3, OBJECT.SHRINE_MOTES, Vector3.new(4, 4, 4))
+	showLight(
+		ground + SHAPE.UP * 4,
+		tint.color,
+		SKILL.EXPLOSION_LIGHT_BRIGHTNESS,
+		OBJECT.SHRINE_LIGHT_RANGE,
+		seconds
+	)
+end
+
 function fx.chestPosition(): Vector3?
 	local latest = Net.latest
 	if latest == nil then
@@ -4315,6 +4467,10 @@ function fx.onEvents(events: { Types.Event }, _self: Protocol.SelfView?)
 					Vector3.new(2, 1, 2)
 				)
 			end
+		elseif event.kind == "dash" then
+			fx.onDash(event.player, event.dx, event.dz)
+		elseif event.kind == "shrineActivated" then
+			fx.onShrineActivated(event.shrineId, event.shrineKind)
 		elseif event.kind == "healed" then
 			local at = fx.atHero(event.player)
 			if at then

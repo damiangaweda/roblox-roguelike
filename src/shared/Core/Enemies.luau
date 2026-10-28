@@ -100,7 +100,7 @@ local function hurt(run: Types.Run, enemy: Types.Enemy, player: Types.Player, am
 end
 
 -- Pushes a hero `studs` away from (fromX, fromZ), or along (dirX, dirZ)
--- when standing on it.
+-- when standing on it. A dashing hero is not pushed off their dash.
 local function knock(
 	run: Types.Run,
 	player: Types.Player,
@@ -110,7 +110,7 @@ local function knock(
 	dirX: number?,
 	dirZ: number?
 )
-	if studs <= 0 then
+	if studs <= 0 or Hero.untouchable(run, player) then
 		return
 	end
 	local dx, dz = player.x - fromX, player.z - fromZ
@@ -516,6 +516,8 @@ local function stepCharge(
 		if
 			player.state == "alive"
 			and not enemy.chargedPlayers[player.id]
+			-- A rush through a dashing hero misses them and may still catch them after.
+			and not Hero.untouchable(run, player)
 			and segmentDistance(player.x, player.z, fromX, fromZ, enemy.x, enemy.z) <= width
 		then
 			enemy.chargedPlayers[player.id] = true
@@ -562,6 +564,8 @@ local function stepGrunt(
 	if
 		distance <= touching + run.config.horde.contactMargin
 		and enemy.contactReadyAt <= run.time
+		-- Contact against a dashing hero is not spent: it lands when the dash ends.
+		and not Hero.untouchable(run, target)
 	then
 		enemy.contactReadyAt = run.time + run.config.horde.contactSeconds
 		hurt(run, enemy, target, scaled(run, enemy, kind.damage))

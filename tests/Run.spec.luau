@@ -185,4 +185,41 @@ return {
 		local player = Run.addPlayer(run, 7, "nothing")
 		Assert.equal(player.class, "archer")
 	end,
+
+	["a dash covers its distance over its time"] = function()
+		local run = Fixtures.run()
+		Fixtures.clearObstacles(run)
+		run.nextSpawnAt = math.huge
+		local player = run.players[1]
+		local config = run.config.player
+		Assert.truthy(Run.dash(run, 1, 0, 2))
+		local event = Assert.findEvent(Run.drainEvents(run), "dash")
+		Assert.equal(event.player, 1)
+		Assert.near(event.dx, 0, 1e-9)
+		Assert.near(event.dz, config.dashDistance, 1e-9)
+		local dt = 0.05
+		for _ = 1, math.round(config.dashSeconds / dt) - 1 do
+			Run.step(run, dt, {})
+			Assert.truthy(player.dashUntil > run.time, "untouchable during the dash")
+		end
+		Run.step(run, dt, {})
+		Assert.near(player.z, config.dashDistance, 1e-6)
+		Assert.near(player.x, 0, 1e-6)
+		Assert.falsy(player.dashUntil > run.time, "over")
+		for _ = 1, 10 do
+			Run.step(run, dt, {})
+		end
+		Assert.near(player.z, config.dashDistance, 1e-6, "no drift after")
+	end,
+
+	["a dash is refused while the run waits for a card"] = function()
+		local run = Fixtures.run()
+		run.paused = true
+		Assert.falsy(Run.dash(run, 1, 1, 0))
+		Assert.equal(run.players[1].dashCharges, run.config.player.dashCharges)
+		Assert.equal(Fixtures.count(Run.drainEvents(run), "dash"), 0)
+		run.paused = false
+		Assert.falsy(Run.dash(run, 99, 1, 0), "an unknown player")
+		Assert.truthy(Run.dash(run, 1, 1, 0))
+	end,
 }

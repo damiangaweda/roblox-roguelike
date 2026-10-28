@@ -15,7 +15,7 @@ local Extraction = {}
 function Extraction.setOpening(run: Types.Run, playerId: number, held: boolean)
 	local player = run.players[playerId]
 	if player then
-		player.opening = held
+		player.interacting = held
 	end
 end
 
@@ -52,7 +52,7 @@ function Extraction.enterPortal(run: Types.Run, playerId: number): boolean
 		return false
 	end
 	player.state = "extracted"
-	player.opening = false
+	player.interacting = false
 	player.openProgress = 0
 	player.castingUntil = nil
 	table.insert(run.events, { kind = "extracted", player = player.id })
@@ -73,7 +73,7 @@ function Extraction.update(run: Types.Run, dt: number)
 
 		-- The hold at the chest: one opener gets the spell, once per run.
 		local holding = alive
-			and player.opening
+			and player.interacting
 			and not run.chestOpened
 			and Geometry.distance(player.x, player.z, arena.chestX, arena.chestZ)
 				<= config.openRadius

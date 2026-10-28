@@ -26,9 +26,11 @@ export type Intent =
 	{ kind: "pickClass", class: string }
 	| { kind: "card", index: number }
 	| { kind: "utility", index: number }
-	| { kind: "open", held: boolean }
+	| { kind: "interact", held: boolean }
 	| { kind: "cast" }
 	| { kind: "enter" }
+	-- A dash in a direction; the run normalises it.
+	| { kind: "dash", dx: number, dz: number }
 
 -- More than any offer's cards or the utility buttons; the run checks the real count.
 local MAX_INDEX = 6
@@ -45,6 +47,19 @@ end
 -- whether the intent applies now (an offer waiting, a cooldown, the chest in
 -- reach) is the run's to check.
 function Protocol.parseIntent(config: Types.Config, kind: any, a: any, b: any): Intent?
+	if kind == "dash" then
+		local max = config.player.dashInputMax
+		if
+			isFiniteNumber(a)
+			and isFiniteNumber(b)
+			and (a ~= 0 or b ~= 0)
+			and math.abs(a) <= max
+			and math.abs(b) <= max
+		then
+			return { kind = "dash", dx = a, dz = b }
+		end
+		return nil
+	end
 	if b ~= nil then
 		return nil
 	end
@@ -60,9 +75,9 @@ function Protocol.parseIntent(config: Types.Config, kind: any, a: any, b: any): 
 		if isSmallIndex(a, MAX_INDEX) then
 			return { kind = "utility", index = a }
 		end
-	elseif kind == "open" then
+	elseif kind == "interact" then
 		if type(a) == "boolean" then
-			return { kind = "open", held = a }
+			return { kind = "interact", held = a }
 		end
 	elseif kind == "cast" then
 		if a == nil then
@@ -394,6 +409,8 @@ export type PlayerView = {
 	castingLeft: number,
 	-- Seconds held at the chest.
 	openProgress: number,
+	shrineProgress: number,
+	dashing: boolean,
 	sprinting: boolean,
 }
 
@@ -421,6 +438,21 @@ export type ChestView = { x: number, z: number, opened: boolean }
 
 export type PortalView = { x: number, z: number, secondsLeft: number }
 
+-- A shrine as every client sees it: its kind from afar, the id of the boon or
+-- pact it gives up close
+-- (nil for a trial or a spring), whether it is spent and, for a spring, when
+-- it is back. `trial` is true while its ring is being fought.
+export type ShrineView = {
+	id: number,
+	kind: Types.ShrineKind,
+	x: number,
+	z: number,
+	given: string?,
+	used: boolean,
+	readyIn: number,
+	trial: boolean,
+}
+
 export type WorldView = {
 	time: number,
 	paused: boolean,
@@ -437,6 +469,7 @@ export type WorldView = {
 	finalBossLeft: number?,
 	-- The bosses alive, drawn with their health bars.
 	bossIds: { number },
+	shrines: { ShrineView },
 }
 
 local function secondsLeft(run: Types.Run, until_: number): number
@@ -459,7 +492,9 @@ function Protocol.worldView(run: Types.Run): WorldView
 			barrier = if player.barrierUntil > run.time then player.barrier else 0,
 			castingLeft = if castingUntil then secondsLeft(run, castingUntil) else 0,
 			openProgress = player.openProgress,
+			shrineProgress = player.shrineProgress,
 			sprinting = player.sprintUntil > run.time,
+			dashing = player.dashUntil > run.time,
 		})
 	end
 	local areas = table.create(#run.areas)
@@ -488,6 +523,19 @@ function Protocol.worldView(run: Types.Run): WorldView
 	for _, food in run.foods do
 		table.insert(foods, { id = food.id, x = food.x, z = food.z })
 	end
+	local shrines = table.create(#run.shrines)
+	for _, shrine in run.shrines do
+		table.insert(shrines, {
+			id = shrine.id,
+			kind = shrine.kind,
+			x = shrine.x,
+			z = shrine.z,
+			given = shrine.boon or shrine.pact,
+			used = shrine.used,
+			readyIn = secondsLeft(run, shrine.readyAt),
+			trial = shrine.trialEnemies ~= nil,
+		})
+	end
 	local portal = run.portal
 	local deadline = run.finalBossDeadline
 	local bossIds = {}
@@ -511,6 +559,7 @@ function Protocol.worldView(run: Types.Run): WorldView
 			else nil,
 		finalBossLeft = if deadline then secondsLeft(run, deadline) else nil,
 		bossIds = bossIds,
+		shrines = shrines,
 	}
 end
 
@@ -543,6 +592,11 @@ export type SelfView = {
 	utilities: { UtilityView },
 	hasSpell: boolean,
 	stats: Types.HeroStats,
+	dashCharges: number,
+	-- Seconds until the next dash charge is back; 0 with every charge held.
+	dashReadyIn: number,
+	-- The boons and pacts taken, by id, in the order taken.
+	shrinesTaken: { string },
 }
 
 function Protocol.selfView(run: Types.Run, player: Types.Player): SelfView
@@ -564,17 +618,23 @@ function Protocol.selfView(run: Types.Run, player: Types.Player): SelfView
 			cooldown = utility.cooldownSeconds,
 		})
 	end
+	local oldest = player.offers[1]
 	return {
 		level = player.level,
 		xp = player.xp,
 		xpToNext = Progression.xpToNext(config, player.level),
 		kills = player.kills,
-		offer = player.offers[1],
+		offer = if oldest then oldest.cards else nil,
 		skills = skills,
 		passives = table.clone(player.passives),
 		utilities = utilities,
 		hasSpell = player.hasSpell,
 		stats = Hero.stats(run, player),
+		dashCharges = player.dashCharges,
+		dashReadyIn = if player.dashCharges < config.player.dashCharges
+			then secondsLeft(run, player.dashReadyAt)
+			else 0,
+		shrinesTaken = table.clone(player.shrinesTaken),
 	}
 end
 

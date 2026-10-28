@@ -349,16 +349,31 @@ export type EnemyKindConfig = {
 
 export type BossScheduleEntry = { kind: string, atSeconds: number }
 
+-- A prop of a place's kit: an obstacle kind at an offset from the place's
+-- centre, turned with the place, and its own extra rotation.
+export type PlaceProp = { kind: string, dx: number, dz: number, rotation: number? }
+
+-- A kind of place (stage 3b): a kit of props on a clearing of `radius`, kept
+-- free of every other prop.
+export type PlaceKind = { id: string, radius: number, weight: number, props: { PlaceProp } }
+
 -- One map: its ground, obstacles, roster and bosses (ADR-0014, ADR-0015).
 export type MapConfig = {
 	id: string,
 	name: string,
 	radius: number,
-	-- Obstacles: how many the scatter tries to place, their kinds with radii
-	-- and weights, the minimum gap between them and the clear ground around
-	-- the start and the extraction chest.
-	obstacleCount: number,
-	obstacleKinds: { { id: string, radius: number, weight: number } },
+	-- Obstacles: their kinds with radii and weights, the minimum gap between
+	-- them and the clear ground around the start and the extraction chest.
+	-- A kind with a footprint takes one circle per entry, offset from the
+	-- prop's centre and turned with its rotation; without one, a single circle.
+	obstacleKinds: {
+		{
+			id: string,
+			radius: number,
+			weight: number,
+			footprint: { { dx: number, dz: number, radius: number } }?,
+		}
+	},
 	obstacleSpacing: number,
 	startClearRadius: number,
 	chestClearRadius: number,
@@ -366,6 +381,35 @@ export type MapConfig = {
 	-- The chest lies at least this far from the start and this far inside the edge.
 	chestMinDistance: number,
 	edgeMargin: number,
+	-- The composition (stage 3b). Places: how many, their kinds, the gap
+	-- between their centres and their least distance from the start.
+	placeCount: number,
+	placeKinds: { PlaceKind },
+	placeSpacing: number,
+	placeStartDistance: number,
+	-- Groves: how many, their radii and tree counts, the gap kept from places'
+	-- clearings and other groves, and the share of a grove's radius inside
+	-- which its density is full.
+	groveCount: number,
+	groveRadiusMin: number,
+	groveRadiusMax: number,
+	groveTreesMin: number,
+	groveTreesMax: number,
+	groveSpacing: number,
+	groveCore: number,
+	-- Leftovers: how many sparse props, and their kinds by weight.
+	scatterCount: number,
+	scatterKinds: { { id: string, weight: number } },
+	-- Paths: the open ground kept on either side of a path, and how far it sways.
+	pathWidth: number,
+	pathSway: number,
+	-- How strongly the north (-z) favours pines: the pine share of a tree at z
+	-- is 0.5 + northShare * (-z / radius), clamped to [0.1, 0.9].
+	northShare: number,
+	-- Every prop's size varies by up to this share either way, and it leans by
+	-- up to this many degrees.
+	scaleVariation: number,
+	leanDegrees: number,
 	-- Grunt kinds from weakest to strongest.
 	roster: { string },
 	-- Elite kinds the horde may spawn.
@@ -476,6 +520,77 @@ export type ExtractionConfig = {
 	portalRadius: number,
 }
 
+-- A mesh drawn for an obstacle kind: its asset ids, the scale the builder
+-- applies to the published mesh and its height above the ground.
+export type PropConfig = {
+	meshId: string,
+	textureId: string,
+	scale: number,
+	yOffset: number,
+}
+
+export type ShrineKind = "boon" | "pact" | "trial" | "spring"
+
+-- A boon: one stat raised until the run ends (GLOSSARY: boon).
+export type BoonConfig = { id: string, name: string, stat: Stat, amount: number }
+
+-- A pact: one stat raised and one lowered until the run ends (GLOSSARY: pact).
+export type PactConfig = {
+	id: string,
+	name: string,
+	up: Stat,
+	upAmount: number,
+	down: Stat,
+	downAmount: number,
+}
+
+export type ShrinesConfig = {
+	-- Shrines on the map, dealt round-robin over `kinds` and shuffled.
+	count: number,
+	kinds: { ShrineKind },
+	-- The shrine's own footprint on the ground and how close a hero holds.
+	radius: number,
+	reach: number,
+	-- Minimum distance from the start, the chest and one another.
+	startMinDistance: number,
+	chestMinDistance: number,
+	spacing: number,
+	holdSeconds: number,
+	boons: { BoonConfig },
+	pacts: { PactConfig },
+	-- The trial's ring: grunts of the window plus elites, on a ring of this radius.
+	trialRingCount: number,
+	trialEliteCount: number,
+	trialRingRadius: number,
+	-- Ranks each card of the great offer is worth.
+	greatOfferRanks: number,
+	springRechargeSeconds: number,
+	-- A pact never lowers a stat that multiplies a base below this share, so
+	-- the stat stays at least (1 + pactMinShare) of its base.
+	pactMinShare: number,
+}
+
+-- A shrine of the run (GLOSSARY: shrine): where it stands, what it holds and
+-- whether it has been used. `boon` / `pact` name the draw made at generation.
+export type Shrine = {
+	id: number,
+	kind: ShrineKind,
+	x: number,
+	z: number,
+	radius: number,
+	used: boolean,
+	-- A spring: when it is back; other kinds never are.
+	readyAt: number,
+	boon: string?,
+	pact: string?,
+	-- A trial under way: the enemies it spawned still alive, and who started it.
+	trialEnemies: { number }?,
+	trialBy: number?,
+}
+
+-- Where a shrine goes, decided with the obstacles for the seed.
+export type ShrineSpot = { kind: ShrineKind, x: number, z: number }
+
 export type Config = {
 	run: {
 		durationSeconds: number,
@@ -493,6 +608,14 @@ export type Config = {
 		minDamage: number,
 		-- How far a crystal is drawn in from, before the pickup passive.
 		pickupRange: number,
+		-- The dash (GLOSSARY: dash): studs covered, over how long, charges
+		-- held and the cooldown that brings one charge back.
+		dashDistance: number,
+		dashSeconds: number,
+		dashCharges: number,
+		dashCooldownSeconds: number,
+		-- The largest |dx| or |dz| a dash intent may carry.
+		dashInputMax: number,
 	},
 	projectiles: {
 		touchMargin: number,
@@ -513,6 +636,12 @@ export type Config = {
 	cards: CardsConfig,
 	progression: ProgressionConfig,
 	extraction: ExtractionConfig,
+	shrines: ShrinesConfig,
+	-- The low-poly meshes the server builds the map from, by obstacle kind
+	-- (stage 3b): variants are picked by the obstacle's id.
+	props: { [string]: { PropConfig } },
+	-- Skill, passive and utility icons by id (an image asset).
+	icons: { [string]: string },
 	net: {
 		stepHz: number,
 		snapshotHz: number,
@@ -528,7 +657,29 @@ export type Obstacle = {
 	z: number,
 	radius: number,
 	rotation: number,
+	-- The prop this circle belongs to: a building takes several circles with
+	-- one group; the anchor circle is where the builder draws the prop.
+	group: number,
+	anchor: boolean,
+	-- The prop's look, the same for every circle of a group: its size factor
+	-- and how far it leans (radians); the circles keep the kind's sizes.
+	scale: number,
+	lean: number,
 }
+
+-- A place on the map: its kit drawn at (x, z) turned by `rotation`, on a
+-- clearing of `radius`.
+export type Place = {
+	id: number,
+	kind: string,
+	x: number,
+	z: number,
+	radius: number,
+	rotation: number,
+}
+
+-- A path of open ground: a polyline from the start to a place's clearing.
+export type Path = { { x: number, z: number } }
 
 export type Arena = {
 	radius: number,
@@ -538,6 +689,9 @@ export type Arena = {
 	startZ: number,
 	chestX: number,
 	chestZ: number,
+	shrineSpots: { ShrineSpot },
+	places: { Place },
+	paths: { Path },
 }
 
 -- A damage-over-time stack on an enemy.
@@ -661,9 +815,10 @@ export type OwnedSkill = { id: string, rank: number, readyAt: number }
 
 export type Card =
 	{ kind: "skillRank", skill: string, rank: number }
-	| { kind: "newSkill", skill: string }
+	-- `rank` is the rank the card gives; a great offer's cards give more than one.
+	| { kind: "newSkill", skill: string, rank: number }
 	| { kind: "passiveRank", passive: string, rank: number }
-	| { kind: "newPassive", passive: string }
+	| { kind: "newPassive", passive: string, rank: number }
 	| { kind: "heal" }
 
 export type PlayerState = "alive" | "dead" | "extracted"
@@ -681,8 +836,9 @@ export type Player = {
 	skills: { OwnedSkill },
 	-- Passive id to its rank.
 	passives: { [string]: number },
-	-- Offers waiting for a choice, oldest first.
-	offers: { { Card } },
+	-- Offers waiting for a choice, oldest first, each with the ranks its
+	-- cards are worth (one at a level-up, more in a great offer).
+	offers: { { cards: { Card }, ranks: number } },
 	-- Utility cooldowns, by button index.
 	utilityReadyAt: { number },
 	sprintUntil: number,
@@ -698,8 +854,20 @@ export type Player = {
 	kills: number,
 	moveBudget: number,
 	-- Whether the player holds the open button at the chest, and the hold so far.
-	opening: boolean,
+	-- The interact button held: opening the chest or activating a shrine.
+	interacting: boolean,
 	openProgress: number,
+	shrineId: number?,
+	shrineProgress: number,
+	-- The shares boons and pacts add, summed per stat, and the boons' and
+	-- pacts' ids in the order taken.
+	shrineShares: { [Stat]: number },
+	shrinesTaken: { string },
+	-- The dash: charges held, when the next one is back, until when the hero
+	-- is dashing (and untouchable).
+	dashCharges: number,
+	dashReadyAt: number,
+	dashUntil: number,
 	-- Set while casting the extraction spell; nil otherwise.
 	castingUntil: number?,
 	-- Whether the player holds the extraction spell.
@@ -799,6 +967,18 @@ export type Event =
 	| { kind: "portalOpened", x: number, z: number, seconds: number }
 	| { kind: "portalClosed" }
 	| { kind: "finalBossTimer", seconds: number }
+	| { kind: "dash", player: number, dx: number, dz: number }
+	| {
+		kind: "shrineActivated",
+		player: number,
+		shrineId: number,
+		shrineKind: ShrineKind,
+		-- The boon's or pact's id.
+		given: string?,
+	}
+	| { kind: "trialStarted", shrineId: number, count: number }
+	| { kind: "trialCompleted", shrineId: number, player: number }
+	| { kind: "shrineReady", shrineId: number }
 
 export type Rng = {
 	-- A float in [0, 1).
@@ -835,6 +1015,7 @@ export type Run = {
 	chestOpened: boolean,
 	compassOn: boolean,
 	portal: Portal?,
+	shrines: { Shrine },
 	-- The run stands still while a solo player chooses a card.
 	paused: boolean,
 	ended: boolean,

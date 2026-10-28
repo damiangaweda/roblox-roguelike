@@ -1,7 +1,11 @@
 --!strict
 local Assert = require("./Assert")
+local Casting = require("../src/shared/Core/Casting")
+local Enemies = require("../src/shared/Core/Enemies")
 local Fixtures = require("./Fixtures")
 local Hero = require("../src/shared/Core/Hero")
+local Projectiles = require("../src/shared/Core/Projectiles")
+local State = require("../src/shared/Core/State")
 local Types = require("../src/shared/Core/Types")
 
 -- Advances the clock and the hero rules by `seconds` in steps of `dt`.
@@ -10,6 +14,16 @@ local function advance(run: Types.Run, seconds: number, dt: number)
 		run.time += dt
 		Hero.update(run, dt)
 	end
+end
+
+-- A hero on open ground at the centre, in a dash that lasts `seconds`
+-- without moving them, so every hit can be aimed at them.
+local function dashing(seconds: number): (Types.Run, Types.Player)
+	local run = Fixtures.run()
+	Fixtures.clearObstacles(run)
+	local player = run.players[1]
+	player.dashUntil = run.time + seconds
+	return run, player
 end
 
 -- The index of the utility of `kind` among the three buttons.
@@ -135,15 +149,17 @@ return {
 		Assert.equal(Fixtures.count(run.events, "playerHurt"), 1)
 	end,
 
-	["a hit interrupts the cast and the chest opening"] = function()
+	["a hit interrupts the cast and a shrine's hold, not the chest opening"] = function()
 		local run = Fixtures.run()
 		local player = run.players[1]
 		player.castingUntil = 5
 		player.openProgress = 1.2
+		player.shrineProgress = 0.7
 		run.time = 1
 		Hero.damage(run, player, 3)
 		Assert.equal(player.castingUntil, nil)
-		Assert.equal(player.openProgress, 0)
+		Assert.equal(player.openProgress, 1.2)
+		Assert.equal(player.shrineProgress, 0)
 		Assert.equal(player.hurtAt, 1)
 		Assert.equal(Fixtures.count(run.events, "castInterrupted"), 1)
 		Hero.damage(run, player, 3)
@@ -262,5 +278,169 @@ return {
 		Hero.knock(run, player, 10, 0)
 		advance(run, 1, 0.05)
 		Assert.near(player.x, edge, 1e-6)
+	end,
+
+	["a dash spends a charge; with none left it is refused"] = function()
+		local run = Fixtures.run()
+		Fixtures.clearObstacles(run)
+		local player = run.players[1]
+		local config = run.config.player
+		Assert.equal(player.dashCharges, config.dashCharges)
+		for _ = 1, config.dashCharges do
+			Assert.truthy(Hero.dash(run, player, 1, 0))
+		end
+		Assert.equal(player.dashCharges, 0)
+		Assert.falsy(Hero.dash(run, player, 1, 0), "no charge left")
+		Assert.falsy(Hero.dash(run, player, 0, 0), "no direction")
+		player.dashCharges = 1
+		Assert.falsy(Hero.dash(run, player, 1e-12, 0), "too short to normalise")
+		Assert.falsy(Hero.dash(run, player, 1e300, 1e300), "too long to normalise")
+		Assert.falsy(Hero.dash(run, player, 0 / 0, 1), "not a number")
+		Assert.equal(player.dashCharges, 1, "a refused dash spends nothing")
+		player.state = "dead"
+		Assert.falsy(Hero.dash(run, player, 1, 0), "dead")
+	end,
+
+	["dash charges come back one per cooldown"] = function()
+		local run = Fixtures.run()
+		Fixtures.clearObstacles(run)
+		local player = run.players[1]
+		local config = run.config.player
+		Hero.dash(run, player, 1, 0)
+		Hero.dash(run, player, -1, 0)
+		advance(run, config.dashCooldownSeconds - 0.1, 0.05)
+		Assert.equal(player.dashCharges, 0, "not yet")
+		advance(run, 0.2, 0.05)
+		Assert.equal(player.dashCharges, 1, "one back")
+		advance(run, config.dashCooldownSeconds, 0.05)
+		Assert.equal(player.dashCharges, 2, "both back")
+		advance(run, config.dashCooldownSeconds * 3, 0.05)
+		Assert.equal(player.dashCharges, config.dashCharges, "never above the charges")
+	end,
+
+	["a dash is stopped by an obstacle and by the wall"] = function()
+		local run = Fixtures.run()
+		Fixtures.clearObstacles(run)
+		local player = run.players[1]
+		local radius = run.config.player.radius
+		table.insert(run.arena.obstacles, {
+			id = 1,
+			kind = "rock",
+			x = 8,
+			z = 0,
+			radius = 2,
+			rotation = 0,
+			group = 1,
+			anchor = true,
+		})
+		Hero.dash(run, player, 1, 0)
+		advance(run, 0.5, 0.05)
+		Assert.near(player.x, 8 - 2 - radius, 1e-2)
+		Assert.near(player.z, 0, 1e-6)
+
+		local edge = run.arena.radius - radius
+		Fixtures.place(run, 1, edge - 5, 0)
+		Hero.dash(run, player, 1, 0)
+		advance(run, 0.5, 0.05)
+		Assert.near(player.x, edge, 1e-6)
+	end,
+
+	["a dashing hero takes no contact hit and the grunt's hit waits"] = function()
+		local run, player = dashing(1)
+		local grunt = Fixtures.enemy(run, "greyWolf", 3, 0)
+		grunt.contactReadyAt = 0
+		local health = player.health
+		for _ = 1, 9 do
+			run.time += 0.1
+			Enemies.step(run, 0.1)
+		end
+		Assert.equal(player.health, health)
+		Assert.equal(Fixtures.count(run.events, "playerHurt"), 0)
+		Assert.truthy(grunt.contactReadyAt <= run.time, "the contact was not spent")
+		-- The dash over, the waiting hit lands at once.
+		run.time += 0.2
+		Enemies.step(run, 0.1)
+		Assert.truthy(player.health < health, "hit after the dash")
+	end,
+
+	["a dashing hero takes no attack and no knockback"] = function()
+		local run, player = dashing(30)
+		Fixtures.place(run, 1, 4, 0)
+		local brute = Fixtures.enemy(run, "brute", 0, 0)
+		brute.attackReadyAt = 0
+		local boss = Fixtures.enemy(run, "thornback", -30, 0)
+		boss.attackReadyAt = 0
+		local health = player.health
+		for _ = 1, 100 do
+			run.time += 0.1
+			Enemies.step(run, 0.1)
+		end
+		Assert.truthy(Fixtures.count(run.events, "enemyAttack") > 0, "they attacked")
+		Assert.equal(player.health, health)
+		Assert.equal(Fixtures.count(run.events, "playerHurt"), 0)
+		Assert.equal(Fixtures.count(run.events, "knockback"), 0)
+		Assert.equal(player.knockUntil, 0)
+		Assert.falsy(boss.chargedPlayers[player.id], "a charge through a dash does not count")
+	end,
+
+	["a shot flies through a dashing hero"] = function()
+		local run, player = dashing(5)
+		local health = player.health
+		local shot: Types.Projectile = {
+			id = State.nextId(run),
+			owner = "enemy",
+			source = 7,
+			kind = "spitter",
+			x = 20,
+			z = 0,
+			dirX = -1,
+			dirZ = 0,
+			speed = 30,
+			remaining = 30,
+			damage = 12,
+			radius = 0,
+			knockback = 3,
+			tags = {},
+			effect = nil,
+			targetId = nil,
+			critChance = 0,
+		}
+		table.insert(run.projectiles, shot)
+		for _ = 1, 8 do
+			run.time += 0.1
+			Projectiles.step(run, 0.1)
+		end
+		Assert.equal(player.health, health)
+		Assert.equal(player.knockUntil, 0)
+		Assert.truthy(shot.x < -1, "past the hero: " .. shot.x)
+	end,
+
+	["an area does not hurt a dashing hero"] = function()
+		local run, player = dashing(5)
+		local health = player.health
+		table.insert(run.areas, {
+			id = State.nextId(run),
+			owner = "enemy",
+			source = 7,
+			kind = "hollowShade",
+			x = 0,
+			z = 0,
+			radius = 5,
+			damage = 10,
+			until_ = 2,
+			nextTickAt = 0.1,
+			tickSeconds = 0.1,
+			tags = {},
+			effect = nil,
+			critChance = 0,
+			knockback = 0,
+		})
+		for _ = 1, 10 do
+			run.time += 0.1
+			Casting.update(run, 0.1)
+		end
+		Assert.equal(player.health, health)
+		Assert.equal(Hero.damage(run, player, 50, nil).taken, 0)
+		Assert.truthy(Hero.untouchable(run, player))
 	end,
 }
