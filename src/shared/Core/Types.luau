@@ -698,6 +698,9 @@ export type Config = {
 	props: { [string]: { PropConfig } },
 	-- Skill, passive and utility icons by id (an image asset).
 	icons: { [string]: string },
+	-- Every enemy kind's mesh (ADR-0022), by kind id; a kind without one is
+	-- drawn from parts.
+	enemyMeshes: { [string]: PropConfig },
 	net: {
 		stepHz: number,
 		snapshotHz: number,

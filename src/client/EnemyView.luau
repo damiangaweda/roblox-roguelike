@@ -5,7 +5,12 @@
 -- local character's range are parked and cost nothing per frame. A lair's
 -- sleeping boss and guard (ADR-0021) lie dimmed in a faint glow of the lair's
 -- colour; the wire carries no sleep flag, so the lair view decides it.
+--
+-- A kind with an entry in Config.enemyMeshes (ADR-0022) is drawn as one
+-- pooled mesh in place of its pieces, once the mesh has loaded; a kind
+-- without one, or whose mesh failed, keeps its pieces.
 
+local InsertService = game:GetService("InsertService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -427,8 +432,8 @@ local PREWARM_MODELS = 240
 -- the map, until they come back in range. The same range as Effects.
 local VIEW_RANGE = 160
 local PARKED = CFrame.new(0, -10000, 0)
--- Roblox draws at most 31 Highlights; the nearest buffed enemies in range get
--- the green rim, the rest keep only their tint.
+-- Roblox draws at most 31 Highlights; the boss and elite meshes in range and
+-- then the nearest buffed enemies get one, the rest keep only their tint.
 local MAX_RIMS = 24
 -- A boss stands inside a red glow as tall as its scaled look times
 -- AURA_SHARE, pulsing between two transparencies, with a red light.
@@ -454,6 +459,57 @@ local SLEEP_LIGHT_BRIGHTNESS = 0.6
 -- A telegraph's length before the event that names it arrives.
 local DEFAULT_TELEGRAPH = 0.5
 
+-- A mesh (ADR-0022) has no pieces to pose, and a textured mesh ignores its
+-- Color: it moves, tilts, scales and fades as a whole, and shows its tints
+-- through a Highlight (bosses and elites) or a ring at its feet (the rest).
+-- The walk: a hop of this share of its height and a lean of up to this much
+-- toward where it moves, both at the kind's full speed, so many steps a second.
+local WALK_BOB_SHARE = 0.05
+local WALK_LEAN = math.rad(8)
+local WALK_STEPS_HZ = 2.4
+-- How fast the drawn velocity follows the measured one, per second.
+local WALK_SMOOTHING = 10
+-- The telegraph: a rise by this share of its height, rearing back.
+local MESH_RISE_SHARE = 0.12
+local MESH_REAR = math.rad(6)
+-- The attack: a lunge forward by this share of its depth and back, leaning in.
+local MESH_LUNGE_SHARE = 0.35
+local MESH_LUNGE_SECONDS = 0.15
+local MESH_LUNGE_LEAN = math.rad(12)
+-- The charge: tipped forward.
+local MESH_CHARGE_TILT = math.rad(16)
+-- A mesh without a Highlight pops this much bigger in the hit flash.
+local MESH_HIT_POP = 1.08
+-- A dead mesh tips over forward by this much while it fades.
+local MESH_DEATH_TIP = math.rad(85)
+-- A sleeping mesh is dimmed by transparency, since its colour does not show.
+local MESH_SLEEP_TRANSPARENCY = 0.4
+-- A boss's or elite's Highlight: the fill's transparency for a status, a hit
+-- flash and the end of the telegraph.
+local SHELL_STATUS_FILL = 0.6
+local SHELL_FLASH_FILL = 0.3
+local SHELL_TELEGRAPH_FILL = 0.45
+local SHELL_TELEGRAPH_COLOR = Color3.fromRGB(255, 240, 200)
+-- The share of the telegraph's glow that throbs with its pulse.
+local SHELL_TELEGRAPH_PULSE = 0.35
+-- The status ring of a mesh without a Highlight: as wide as its footprint
+-- times this share, with a small light of the status's colour.
+local STATUS_RING_SHARE = 1.2
+local STATUS_RING_THICKNESS = 0.2
+local STATUS_RING_RISE = 0.6
+local STATUS_RING_TRANSPARENCY = 0.35
+local STATUS_LIGHT_BRIGHTNESS = 1
+local STATUS_LIGHT_RANGE = 6
+-- Meshes cloned for each kind by its role once its mesh has loaded.
+local PREWARM_MESHES: { [string]: number } =
+	{ grunt = 30, elite = 6, boss = 1, finalBoss = 1, wraith = 4 }
+-- The telegraph swell and the idle hover of a mesh, by look, as that look's
+-- pieces swell and hover.
+local MESH_SWELL: { [string]: number } = { exploder = 1.4 }
+local MESH_HOVER: { [string]: number } = { wraith = 0.3 }
+-- A kind whose mesh does not face -Z: its turn about up, radians, by kind id.
+local MESH_FACING: { [string]: number } = {}
+
 -- Enemies are drawn one snapshot interval behind the newest data, so there is
 -- always a next position to glide to.
 local interval = 1 / Config.net.snapshotHz
@@ -467,8 +523,10 @@ end
 type Rig = {
 	look: Look,
 	model: Model,
-	-- The look's pieces in order, then the chevrons.
-	parts: { Part },
+	kindId: string,
+	-- The look's pieces in order, then the chevrons; a mesh rig's one piece
+	-- is its mesh.
+	parts: { BasePart },
 	roles: { Role },
 	-- Each chevron's place on its piece.
 	chevronOffsets: { CFrame },
@@ -528,6 +586,31 @@ type Rig = {
 	-- Asleep in its lair, in the lair's colour; the pose it lies in (identity awake).
 	sleepColor: Color3?,
 	pose: CFrame,
+	-- Drawn as its kind's mesh rather than pieces.
+	mesh: MeshPart?,
+	-- A boss's or elite's mesh shows its tints in its Highlight (the rim),
+	-- and the fill and outline last written to it.
+	shell: boolean,
+	shellColor: Color3?,
+	shellFill: number,
+	shellOutline: number,
+	-- The mesh's transparency apart from the death's fade.
+	meshTransparency: number,
+	-- The status ring of a mesh without a Highlight, the colour it shows,
+	-- and the colour the latest snapshot asks for.
+	ring: Part?,
+	ringColor: Color3?,
+	statusColor: Color3?,
+	-- The mesh's walk: its drawn velocity, the root's position last frame,
+	-- the steps taken and the kind's speed.
+	velocity: Vector3,
+	lastPosition: Vector3?,
+	walkPhase: number,
+	walkSpeed: number,
+	-- The mesh's telegraph swell, idle hover and turn to its front.
+	swell: number,
+	hover: number,
+	turn: CFrame,
 }
 
 type Dying = { rig: Rig, at: number, locals: { CFrame } }
@@ -540,6 +623,11 @@ local freeGlows: { Part } = {}
 local freeModels: { Model } = {}
 local freeRims: { Highlight } = {}
 local freeAuras: { Part } = {}
+local freeRings: { Part } = {}
+-- Each kind's loaded mesh, the look drawn from it and its free clones.
+local meshTemplates: { [string]: MeshPart } = {}
+local meshLooks: { [string]: Look } = {}
+local freeMeshes: { [string]: { MeshPart } } = {}
 local rigs: { [number]: Rig } = {}
 local dying: { Dying } = {}
 local firstTelegraphs: { [string]: number } = {}
@@ -551,7 +639,9 @@ local departedAt: { [number]: number } = {}
 -- Reused every frame for the bulk move.
 local moveParts: { BasePart } = {}
 local moveFrames: { CFrame } = {}
--- Reused every snapshot: the buffed enemies in range, and those given a rim.
+-- Reused every snapshot: the boss and elite meshes in range, the buffed
+-- enemies in range, and those given a rim.
+local shellCandidates: { Rig } = {}
 local rimCandidates: { Rig } = {}
 local rimmed: { [Rig]: boolean } = {}
 
@@ -588,9 +678,9 @@ local function take(role: Role): Part
 	return part
 end
 
-local function give(role: Role, part: Part)
+local function give(role: Role, part: BasePart)
 	part.Parent = nil
-	table.insert(poolOf(role), part)
+	table.insert(poolOf(role), part :: Part)
 end
 
 -- The telegraph of the kind's first attack.
@@ -611,6 +701,69 @@ end
 local function rootFrame(x: number, z: number, facing: number): CFrame
 	-- The front is -Z; the facing is measured from +X toward +Z.
 	return CFrame.new(x, Net.groundY(), z) * CFrame.Angles(0, -facing - math.pi / 2, 0)
+end
+
+local function assetId(id: string): string
+	if id ~= "" and tonumber(id) ~= nil then
+		return "rbxassetid://" .. id
+	end
+	return id
+end
+
+-- A look of one piece, the mesh: its native size times its entry's scale,
+-- its base `yOffset` above the ground, the chevrons on its top toward the back.
+local function meshLookOf(template: MeshPart, entry: Types.PropConfig): Look
+	local size = template.Size * entry.scale
+	return {
+		pieces = {
+			{
+				role = "body",
+				shape = BLOCK,
+				size = size,
+				color = WHITE,
+				offset = CFrame.new(0, entry.yOffset + size.Y / 2, 0),
+			},
+		},
+		chevrons = {
+			on = 1,
+			at = Vector3.new(0, size.Y / 2 + 0.1, size.Z * 0.2),
+			scale = math.max(1, size.X / 3),
+		},
+	}
+end
+
+-- Loads kind `kindId`'s mesh and clones its pool; until it has loaded, or
+-- when it fails, the kind is drawn from parts.
+local function loadMesh(kindId: string, entry: Types.PropConfig)
+	local ok, result = pcall(function(): MeshPart
+		return InsertService:CreateMeshPartAsync(
+			assetId(entry.meshId),
+			Enum.CollisionFidelity.Box,
+			Enum.RenderFidelity.Automatic
+		)
+	end)
+	if not ok then
+		warn(`EnemyView: the mesh of {kindId} ({entry.meshId}) did not load, using parts: {result}`)
+		return
+	end
+	local template: MeshPart = result
+	template.Name = kindId
+	template.Anchored = true
+	template.CanCollide = false
+	template.CanQuery = false
+	template.CanTouch = false
+	template.CastShadow = true
+	if entry.textureId ~= "" then
+		template.TextureID = assetId(entry.textureId)
+	end
+	local kind = Config.enemies[kindId]
+	local pool: { MeshPart } = {}
+	for _ = 1, if kind then PREWARM_MESHES[kind.role] or 0 else 0 do
+		table.insert(pool, template:Clone())
+	end
+	freeMeshes[kindId] = pool
+	meshLooks[kindId] = meshLookOf(template, entry)
+	meshTemplates[kindId] = template
 end
 
 -- `count` chevrons (up to `MAX_CHEVRONS`; 0 for none), replacing any it had.
@@ -743,6 +896,99 @@ local function layout(rig: Rig, now: number, pulse: number, dt: number)
 	end
 end
 
+-- Lays out a mesh rig into `rig.frames`: the walk's hop and lean, the
+-- telegraph's rise, the attack's lunge and the charge's tilt all move the one
+-- mesh, pivoting at its feet.
+local function layoutMesh(rig: Rig, now: number, pulse: number, dt: number)
+	local mesh = rig.mesh :: MeshPart
+	local piece = rig.look.pieces[1]
+	local size = piece.size * rig.size
+	local height = size.Y
+
+	-- The walk, from how far the drawn root moved since the last frame.
+	local position = rig.root.Position
+	local last = rig.lastPosition
+	local measured = if last and dt > 0 then (position - last) / dt else Vector3.zero
+	rig.lastPosition = position
+	rig.velocity = rig.velocity:Lerp(measured, math.min(1, dt * WALK_SMOOTHING))
+	local moving = rig.root:VectorToObjectSpace(rig.velocity)
+	local forward = -moving.Z / rig.walkSpeed
+	local side = moving.X / rig.walkSpeed
+	local pace = math.sqrt(forward * forward + side * side)
+	if pace > 1 then
+		forward, side, pace = forward / pace, side / pace, 1
+	end
+	rig.walkPhase += dt * WALK_STEPS_HZ * pace
+	local bob = WALK_BOB_SHARE * height * pace * math.abs(math.sin(rig.walkPhase * math.pi))
+	if rig.hover > 0 then
+		bob += rig.hover * rig.size * math.sin((now * BOB_HZ + rig.phase) * 2 * math.pi)
+	end
+
+	local progress = 0
+	local telegraphAt = rig.telegraphAt
+	if telegraphAt then
+		progress = math.clamp((now - telegraphAt) / rig.telegraphSeconds, 0, 1)
+	end
+	local chargeAt = rig.chargeAt
+	local endedAt = rig.endedAt
+	local since = if endedAt then now - endedAt else math.huge
+	local rise, rear, push, tilt = 0, 0, 0, 0
+	if chargeAt then
+		local snap = math.min(1, (now - chargeAt) / STRIKE_SNAP)
+		rise = MESH_RISE_SHARE * height * rig.reached * (1 - snap)
+		tilt = MESH_CHARGE_TILT * snap
+	elseif telegraphAt then
+		rise = MESH_RISE_SHARE * height * progress
+		rear = MESH_REAR * progress
+	elseif since < SETTLE_END then
+		local settle = math.max(0, 1 - since / SETTLE_SECONDS)
+		rise = MESH_RISE_SHARE * height * rig.reached * settle
+		rear = MESH_REAR * rig.reached * settle
+		if rig.struck and since < MESH_LUNGE_SECONDS then
+			local out = math.sin(math.pi * since / MESH_LUNGE_SECONDS)
+			push = MESH_LUNGE_SHARE * size.Z * out
+			tilt = MESH_LUNGE_LEAN * out
+		end
+	end
+
+	local scale = 1
+	if telegraphAt and rig.swell ~= 1 then
+		scale = 1 + (rig.swell - 1) * progress * (1 - SWELL_PULSE + SWELL_PULSE * pulse)
+	end
+	if rig.flashUntil > now and not rig.shell then
+		scale *= MESH_HIT_POP
+	end
+	if scale ~= rig.scales[1] then
+		rig.scales[1] = scale
+		mesh.Size = size * scale
+	end
+	-- Stands on the ground as it grows.
+	local lift = piece.offset.Position.Y * rig.size + (scale - 1) * height / 2
+
+	local lean = CFrame.Angles(-(WALK_LEAN * forward + tilt - rear), 0, -WALK_LEAN * side)
+	local body = rig.root
+		* rig.pose
+		* CFrame.new(0, 0, -push)
+		* lean
+		* CFrame.new(0, lift + rise + bob, 0)
+	rig.frames[1] = body * rig.turn
+	for step, offset in rig.chevronOffsets do
+		if scale ~= 1 then
+			offset = CFrame.new(offset.Position * (scale - 1)) * offset
+		end
+		rig.frames[1 + step] = body * offset
+	end
+end
+
+-- Lays out a rig of either kind.
+local function place(rig: Rig, now: number, pulse: number, dt: number)
+	if rig.mesh then
+		layoutMesh(rig, now, pulse, dt)
+	else
+		layout(rig, now, pulse, dt)
+	end
+end
+
 -- How tall a look stands: the top of its highest piece resting on the ground.
 local function heightOf(look: Look): number
 	local top = 0
@@ -773,6 +1019,59 @@ local function newAura(): Part
 	light.Shadows = false
 	light.Parent = aura
 	return aura
+end
+
+local function newRing(): Part
+	local ring = Instance.new("Part")
+	ring.Name = "StatusRing"
+	ring.Anchored = true
+	ring.CanCollide = false
+	ring.CanQuery = false
+	ring.CanTouch = false
+	ring.CastShadow = false
+	ring.Shape = Enum.PartType.Cylinder
+	ring.Material = Enum.Material.Neon
+	ring.Transparency = STATUS_RING_TRANSPARENCY
+	local light = Instance.new("PointLight")
+	light.Brightness = STATUS_LIGHT_BRIGHTNESS
+	light.Range = STATUS_LIGHT_RANGE
+	light.Shadows = false
+	light.Parent = ring
+	return ring
+end
+
+local function ringFrame(rig: Rig): CFrame
+	return (rig.root + Vector3.new(0, STATUS_RING_RISE, 0)) * CFrame.Angles(0, 0, math.pi / 2)
+end
+
+-- Shows a mesh's status ring in `color`, or takes it back when nil.
+local function setRing(rig: Rig, color: Color3?)
+	local ring = rig.ring
+	if color then
+		if ring == nil then
+			local fresh = table.remove(freeRings) or newRing()
+			local footprint = rig.look.pieces[1].size
+			local diameter = math.max(footprint.X, footprint.Z) * rig.size * STATUS_RING_SHARE
+			fresh.Size = Vector3.new(STATUS_RING_THICKNESS, diameter, diameter)
+			fresh.CFrame = if rig.parked then PARKED else ringFrame(rig)
+			fresh.Parent = rig.model
+			rig.ring = fresh
+			ring = fresh
+		end
+		if ring and rig.ringColor ~= color then
+			rig.ringColor = color
+			ring.Color = color
+			local light = ring:FindFirstChildOfClass("PointLight")
+			if light then
+				light.Color = color
+			end
+		end
+	elseif ring then
+		ring.Parent = nil
+		table.insert(freeRings, ring)
+		rig.ring = nil
+		rig.ringColor = nil
+	end
 end
 
 -- Gives the boss its glow or takes it back.
@@ -838,7 +1137,14 @@ end
 
 local function spawnRig(id: number, enemy: Protocol.EnemyView): Rig
 	local kind = Config.enemies[enemy.kind]
-	local look, blend = lookOf(kind)
+	local template: MeshPart? = meshTemplates[enemy.kind]
+
+	local look, blend
+	if template then
+		look, blend = meshLooks[enemy.kind], 0
+	else
+		look, blend = lookOf(kind)
+	end
 	local size = if kind then kind.scale else 1
 	local tint = if kind then fromHex(kind.colour) else WHITE
 	local boss = isBoss(kind)
@@ -847,6 +1153,7 @@ local function spawnRig(id: number, enemy: Protocol.EnemyView): Rig
 	local rig: Rig = {
 		look = look,
 		model = model,
+		kindId = enemy.kind,
 		parts = {},
 		roles = {},
 		chevronOffsets = {},
@@ -886,13 +1193,39 @@ local function spawnRig(id: number, enemy: Protocol.EnemyView): Rig
 		distance = 0,
 		sleepColor = nil,
 		pose = CFrame.identity,
+		mesh = nil,
+		shell = template ~= nil and kind ~= nil and (boss or kind.role == "elite"),
+		shellColor = nil,
+		shellFill = -1,
+		shellOutline = -1,
+		meshTransparency = 0,
+		ring = nil,
+		ringColor = nil,
+		statusColor = nil,
+		velocity = Vector3.zero,
+		lastPosition = nil,
+		walkPhase = 0,
+		walkSpeed = if kind then math.max(kind.speed, 1) else 1,
+		swell = if kind then MESH_SWELL[kind.look] or 1 else 1,
+		hover = if kind then MESH_HOVER[kind.look] or 0 else 0,
+		turn = CFrame.Angles(0, MESH_FACING[enemy.kind] or 0, 0),
 	}
 	for index, piece in look.pieces do
-		local part = take(piece.role)
-		part.Shape = piece.shape
-		local scaled = piece.size * size
-		part.Size = Vector3.new(scaled.X, scaled.Y, scaled.Z * rig.stretch)
-		part.Transparency = piece.transparency or 0
+		local part: BasePart
+		if template then
+			local mesh = table.remove(freeMeshes[enemy.kind]) or template:Clone()
+			mesh.Size = piece.size * size
+			mesh.Transparency = 0
+			rig.mesh = mesh
+			part = mesh
+		else
+			local fresh = take(piece.role)
+			fresh.Shape = piece.shape
+			local scaled = piece.size * size
+			fresh.Size = Vector3.new(scaled.X, scaled.Y, scaled.Z * rig.stretch)
+			fresh.Transparency = piece.transparency or 0
+			part = fresh
+		end
 		part.Parent = model
 		rig.parts[index] = part
 		rig.roles[index] = piece.role
@@ -910,7 +1243,7 @@ local function spawnRig(id: number, enemy: Protocol.EnemyView): Rig
 	end
 	model.PrimaryPart = rig.parts[1]
 	-- Appears where it is, not where a stale pooled part was.
-	layout(rig, os.clock(), 0, 0)
+	place(rig, os.clock(), 0, 0)
 	for index, part in rig.parts do
 		part.CFrame = rig.frames[index]
 	end
@@ -942,11 +1275,20 @@ local function setRim(rig: Rig, on: boolean)
 	local rim = rig.rim
 	if on and rim == nil then
 		local fresh = table.remove(freeRims) or newRim()
-		-- Adorns its parent, the enemy's model.
+		-- A pooled Highlight may come from a boss's or elite's mesh.
+		fresh.FillTransparency = 1
+		fresh.OutlineColor = BUFFED_COLOR
+		fresh.OutlineTransparency = if rig.shell then 1 else 0
+		rig.shellColor = nil
+		rig.shellFill = 1
+		rig.shellOutline = fresh.OutlineTransparency
+		-- Adorns the mesh, or its parent, the enemy's model.
+		fresh.Adornee = rig.mesh
 		fresh.Parent = rig.model
 		rig.rim = fresh
 	elseif not on and rim then
 		rim.Parent = nil
+		rim.Adornee = nil
 		table.insert(freeRims, rim)
 		rig.rim = nil
 	end
@@ -1021,8 +1363,14 @@ local function materialOf(piece: Piece, enemy: Protocol.EnemyView): Enum.Materia
 end
 
 local function recycle(rig: Rig)
+	local mesh = rig.mesh
 	for index, part in rig.parts do
-		give(rig.roles[index], part)
+		if mesh and index == 1 then
+			mesh.Parent = nil
+			table.insert(freeMeshes[rig.kindId], mesh)
+		else
+			give(rig.roles[index], part)
+		end
 	end
 	rig.model.PrimaryPart = nil
 	rig.model.Parent = nil
@@ -1039,6 +1387,7 @@ local function kill(id: number, rig: Rig, now: number)
 	rigs[id] = nil
 	setRim(rig, false)
 	setAura(rig, false)
+	setRing(rig, nil)
 	if rig.parked then
 		-- Out of sight: no collapse to draw.
 		departed[id] = groundPosition(rig)
@@ -1067,21 +1416,44 @@ local function viewCenter(): Vector3?
 	return if camera then camera.CFrame.Position else nil
 end
 
--- Gives the green rim to the nearest `MAX_RIMS` buffed enemies in range and
--- takes it from every other.
+local function nearer(a: Rig, b: Rig): boolean
+	return a.distance < b.distance
+end
+
+-- Of the `MAX_RIMS` Highlights, gives one to the boss and elite meshes in
+-- range first (bosses, then the nearest elites: it is their only tint), the
+-- rest as the green rim to the nearest buffed enemies, and takes it from every
+-- other. A mesh without a Highlight shows its status as a ring at its feet.
 local function assignRims()
-	if #rimCandidates > MAX_RIMS then
-		table.sort(rimCandidates, function(a: Rig, b: Rig): boolean
-			return a.distance < b.distance
-		end)
+	table.sort(shellCandidates, function(a: Rig, b: Rig): boolean
+		if a.boss ~= b.boss then
+			return a.boss
+		end
+		return a.distance < b.distance
+	end)
+	local shells = math.min(#shellCandidates, MAX_RIMS)
+	for index = 1, shells do
+		rimmed[shellCandidates[index]] = true
 	end
-	for index = 1, math.min(#rimCandidates, MAX_RIMS) do
+	local budget = MAX_RIMS - shells
+	if #rimCandidates > budget then
+		table.sort(rimCandidates, nearer)
+	end
+	for index = 1, math.min(#rimCandidates, budget) do
 		rimmed[rimCandidates[index]] = true
 	end
 	for _, rig in rigs do
 		setRim(rig, rimmed[rig] == true)
+		if rig.mesh then
+			local color = rig.statusColor
+			if rig.rim and (rig.shell or color == BUFFED_COLOR) then
+				color = nil
+			end
+			setRing(rig, color)
+		end
 	end
 	table.clear(rimmed)
+	table.clear(shellCandidates)
 	table.clear(rimCandidates)
 end
 
@@ -1179,9 +1551,13 @@ local function sync(snapshot: Net.Snapshot)
 			rig.distance = 0
 		end
 		rig.culled = rig.distance > range
-		-- The boss's glow says more than the green rim.
-		if enemy.buffed and not rig.boss and not rig.culled then
-			table.insert(rimCandidates, rig)
+		if not rig.culled then
+			if rig.shell then
+				table.insert(shellCandidates, rig)
+			elseif enemy.buffed and not rig.boss then
+				-- The boss's glow says more than the green rim.
+				table.insert(rimCandidates, rig)
+			end
 		end
 
 		setState(rig, enemy.state, now)
@@ -1192,6 +1568,11 @@ local function sync(snapshot: Net.Snapshot)
 				then CFrame.new(0, -SLEEP_SINK * rig.size, 0) * CFrame.Angles(0, 0, SLEEP_TILT)
 				else CFrame.identity
 			setAura(rig, rig.boss or sleepColor ~= nil)
+			local mesh = rig.mesh
+			if mesh then
+				rig.meshTransparency = if sleepColor then MESH_SLEEP_TRANSPARENCY else 0
+				mesh.Transparency = rig.meshTransparency
+			end
 		end
 		rig.sleepColor = sleepColor
 
@@ -1201,6 +1582,9 @@ local function sync(snapshot: Net.Snapshot)
 		end
 		local weakened = rig.weakenedUntil > now
 		local asleep = sleepColor ~= nil
+		if rig.mesh then
+			rig.statusColor = if enemy.stunned then STUNNED_COLOR else (statusTint(enemy, weakened))
+		end
 		local key = colorKey(enemy, weakened, asleep)
 		if rig.colorKey ~= key then
 			rig.colorKey = key
@@ -1220,7 +1604,8 @@ local function sync(snapshot: Net.Snapshot)
 		end
 		for index, piece in rig.look.pieces do
 			local material = materialOf(piece, enemy)
-			if rig.materials[index] ~= material then
+			-- A mesh keeps its own material: its texture is its look.
+			if rig.materials[index] ~= material and rig.mesh == nil then
 				rig.materials[index] = material
 				rig.parts[index].Material = material
 			end
@@ -1283,6 +1668,10 @@ local function paint(rig: Rig, enemy: Protocol.EnemyView, now: number, pulse: nu
 		flicker = flickerOf(rig, now, FLICKER_BLEND)
 	end
 	for index, part in rig.parts do
+		-- A textured mesh ignores its colour.
+		if index == 1 and rig.mesh then
+			continue
+		end
 		local color = rig.base[index]
 		if flash then
 			color = WHITE
@@ -1298,6 +1687,49 @@ local function paint(rig: Rig, enemy: Protocol.EnemyView, now: number, pulse: nu
 	end
 end
 
+-- Writes a boss's or elite's mesh Highlight for this frame: white in a hit
+-- flash, a glow rising through the telegraph, the stunned or burning flicker,
+-- the strongest status's colour; outlined green while buffed.
+local function paintShell(rig: Rig, enemy: Protocol.EnemyView, now: number, pulse: number)
+	local shell = rig.rim
+	if shell == nil then
+		return
+	end
+	local color: Color3? = nil
+	local fill = 1
+	local telegraphAt = rig.telegraphAt
+	local status = statusTint(enemy, rig.weakenedUntil > now)
+	if rig.flashUntil > now then
+		color, fill = WHITE, SHELL_FLASH_FILL
+	elseif telegraphAt then
+		local progress = math.clamp((now - telegraphAt) / rig.telegraphSeconds, 0, 1)
+		local glow = progress * (1 - SHELL_TELEGRAPH_PULSE + SHELL_TELEGRAPH_PULSE * pulse)
+
+		color, fill = SHELL_TELEGRAPH_COLOR, 1 - (1 - SHELL_TELEGRAPH_FILL) * glow
+	elseif enemy.stunned then
+		color = STUNNED_COLOR
+		fill = SHELL_STATUS_FILL + (1 - SHELL_STATUS_FILL) * flickerOf(rig, now, STUN_FLICKER_BLEND)
+	elseif enemy.burning and not enemy.slowed then
+		color = BURNING_COLOR
+		fill = SHELL_STATUS_FILL + (1 - SHELL_STATUS_FILL) * flickerOf(rig, now, FLICKER_BLEND)
+	elseif status and status ~= BUFFED_COLOR then
+		color, fill = status, SHELL_STATUS_FILL
+	end
+	if color and color ~= rig.shellColor then
+		rig.shellColor = color
+		shell.FillColor = color
+	end
+	if fill ~= rig.shellFill then
+		rig.shellFill = fill
+		shell.FillTransparency = fill
+	end
+	local outline = if enemy.buffed then 0 else 1
+	if outline ~= rig.shellOutline then
+		rig.shellOutline = outline
+		shell.OutlineTransparency = outline
+	end
+end
+
 -- Fades and sinks the dead, then hands their parts back to the pools.
 local function dissolve(now: number, count: number): number
 	for index = #dying, 1, -1 do
@@ -1308,6 +1740,17 @@ local function dissolve(now: number, count: number): number
 			recycle(rig)
 			dying[index] = dying[#dying]
 			dying[#dying] = nil
+		elseif rig.mesh then
+			-- A mesh tips over forward at its feet as it fades.
+			local fallen = rig.root
+				* CFrame.Angles(-MESH_DEATH_TIP * math.sin(progress * math.pi / 2), 0, 0)
+			for partIndex, part in rig.parts do
+				count += 1
+				moveParts[count] = part
+				moveFrames[count] = fallen * entry.locals[partIndex]
+				local opaque = if partIndex == 1 then rig.meshTransparency else 0
+				part.Transparency = opaque + (1 - opaque) * progress
+			end
 		else
 			local sink = 1 - COLLAPSE * progress
 			local pieces = rig.look.pieces
@@ -1352,6 +1795,12 @@ local function render(dt: number)
 						moveParts[count] = aura
 						moveFrames[count] = PARKED
 					end
+					local ring = rig.ring
+					if ring then
+						count += 1
+						moveParts[count] = ring
+						moveFrames[count] = PARKED
+					end
 				end
 			elseif rig then
 				-- The hit-stop: the enemy stays where it was drawn; one coming
@@ -1366,8 +1815,12 @@ local function render(dt: number)
 					end
 					rig.root = rootFrame(x, z, facing)
 				end
+				if rig.parked then
+					-- Back from parking: no walk measured across the jump.
+					rig.lastPosition = nil
+				end
 				rig.parked = false
-				layout(rig, now, pulse, dt)
+				place(rig, now, pulse, dt)
 				for index, part in rig.parts do
 					count += 1
 					moveParts[count] = part
@@ -1398,7 +1851,16 @@ local function render(dt: number)
 					local wave = 0.5 + 0.5 * math.sin((now * hz + rig.phase) * 2 * math.pi)
 					aura.Transparency = low + (high - low) * wave
 				end
+				local ring = rig.ring
+				if ring then
+					count += 1
+					moveParts[count] = ring
+					moveFrames[count] = ringFrame(rig)
+				end
 				paint(rig, enemy, now, pulse)
+				if rig.shell then
+					paintShell(rig, enemy, now, pulse)
+				end
 			end
 		end
 	end
@@ -1475,6 +1937,10 @@ function EnemyView.start()
 	prewarm("glow", PREWARM_GLOWS)
 	for _ = 1, PREWARM_MODELS do
 		table.insert(freeModels, Instance.new("Model"))
+	end
+	-- The meshes load in the background; their kinds use parts meanwhile.
+	for kindId, entry in Config.enemyMeshes do
+		task.spawn(loadMesh, kindId, entry)
 	end
 
 	Net.onWorld(sync)
