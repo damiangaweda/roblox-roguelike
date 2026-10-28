@@ -111,7 +111,7 @@ An enemy of doom: fast, nearly unkillable, worth no experience.
 _Avoid_: Reaper, ghost, super monster
 
 **Final boss**:
-A map's own boss that ends a run: killing it extracts everyone still alive, and if it lives too long the map closes and everyone left dies.
+A map's own boss that rises when the last lair is silenced: killing it extracts everyone still alive; doom, not the boss, ends a run that takes too long.
 _Avoid_: Last boss, raid boss
 
 **Telegraph**:
