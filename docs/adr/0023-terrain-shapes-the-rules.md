@@ -11,4 +11,4 @@ The map was flat because the rules live on the XZ plane (ADR-0002, ADR-0014). Th
 
 ## Consequences
 
-Enemies need a way to a ramp or a ford when a cliff or the channel stands between them and their target, which the steering around circles does not give on its own. The adapter must read the ground's height everywhere it places something.
+Enemies need a way to a ramp or a ford when a cliff or the channel stands between them and their target: the core keeps a flow field per alive player over a grid of the map (one flood every few steps), and enemies walk down its gradient, with the local steering kept for bodies; the user chose full pathfinding over hand-placed crossing points. The adapter must read the ground's height everywhere it places something.
