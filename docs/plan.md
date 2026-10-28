@@ -75,6 +75,34 @@ Aimed combat with the Elementalist ([ADR-0009](adr/0009-aimed-combat.md)), seven
 5. With the horde at its cap the server holds at least 50 Hz and the client at least 50 FPS with Studio focused, on mains power.
 6. The user plays a run and judges whether it is fun and looks intended; the stage is done only when they say so.
 
+### Stage 3c: lairs
+
+**Status:** proposed on 2026-10-28 after the user's playtests of stages 3 and 3b; grilled in session, awaiting the user's acceptance together with ADR-0021.
+
+**Goal:** the run has a goal on the map: five lairs, each with a boss tied to it, that feed the horde until their boss dies; the final boss comes only when every lair is silent, and the clock punishes those who dawdle.
+
+**Scope:**
+- **Lairs** ([ADR-0021](adr/0021-lairs-feed-the-horde-and-hold-the-bosses.md)): the map's bosses live in lairs, one lair kind per boss (proposal: Thornback's bramble nest, Mossmaw's bog, the Hollow Shade's barrow, the Bramble Matron's hollow, the Ironbark Warden's elder grove, the Ashen Stag's burnt glade), of which a configured number (proposal: 5 of 6) is drawn for a run and placed as places of the map's composition, apart from the start, the chest and one another. A lair is a kit of meshes with a landmark seen from afar (proposal: a column of light or smoke in the lair's colour) that goes out when the lair is silenced. "Camp" is a metaphor: variety is the point, every lair is its own kind of den.
+- **Emission:** every living lair releases a batch of grunts of its own kinds (a configured subset of the roster, 2–3 kinds per lair) every configured interval (proposal: 10 s); the batch grows with run time (proposal: 3 to 14) and the grunts' health and damage grow as now. Grunts walk straight at the nearest player through the whole map, so the pressure is highest near living lairs and lowest far from them: the breather comes from distance, not from a timer. The alive cap of [ADR-0019](adr/0019-horde-cap-of-220.md) stays; a grunt farther than a configured distance from every player despawns and its count returns to its lair's next batch. The spawn ring around the players, the kind window, the boss clock and the closing rings of stage 3 go; the trial shrine keeps its ring.
+- **The boss and its guard:** a lair's boss sleeps until a player enters the lair's radius (proposal: 45 studs), then wakes with its guard (proposal: 2–3 elites of the lair's kinds); the boss and the guard are tied to the lair: they fight inside its radius and never leave it. The boss grows with run time (proposal: +10% health and damage per minute), so an early kill is cheaper. A player who leaves the radius puts the boss back to sleep; it regains a share of its missing health (proposal: half).
+- **Silencing a lair:** the boss's death stops the lair's emission for good, deals a great offer to its killer (the party in stage 4), drops food, and leaves the lair safe ground; the landmark goes out. A chance of an item drop joins here when items exist (stage 5).
+- **The final boss:** comes the moment the last lair falls, at that lair, with a spectacle (proposal: the sky darkens, the ground splits in a ring of light, a roar, the boss rises over a few seconds during which nothing spawns); it keeps its attacks and second phase; killing it extracts everyone alive.
+- **Doom:** from the run's end time (15:00) wraiths spawn around every player every few seconds: fast, with enormous health and damage, immune to control, worth no experience. The final boss no longer comes. Only the portal (the extraction spell) is a way out; a player without it dies within about a minute.
+- **Unchanged:** the chest, the spell, the portal, the compass, the shrines, cards, classes, skills and the dash.
+
+**Acceptance criteria:**
+1. Core tests cover the lair draw (count, distinct kinds, placement rules, seed repeatability), the emission (interval, batch growth, kinds per lair, the cap, despawn and return of strays, silence after the boss dies), the sleeping boss (wake on entry, leash of boss and guard, growth with time, sleep and recovery on leaving), silencing (the great offer, the food, the landmark state in the view), the final boss on the last lair's fall with its spawn delay, doom (wraith spawns, no experience, the portal still working, no final boss after the end time), all repeatable for a seed.
+2. Every number is configuration; lairs, their kinds, guards and wraiths are data.
+3. The client sends only the intents of stages 3 and 3b.
+4. In a Studio playtest through the Studio MCP: each lair kind is seen with its landmark, a lair is silenced and its landmark goes out, the final boss rises at the last lair with its spectacle, doom kills a hero without the spell and a hero with it extracts; the server holds 50 Hz at the cap with grunts walking across the map.
+5. The user plays a run and judges whether it is fun and looks intended; the stage is done only when they say so.
+
+### Stage 3d: terrain and enemy meshes
+
+**Status:** proposed on 2026-10-28; to be grilled after stage 3c.
+
+Gentle hills, streams with fords and water the fight can use (high ground, chokepoints), with the rules still on the XZ plane and the ground's height read by the adapter; enemies and bosses as meshes generated with the Studio MCP in place of the part silhouettes (supersedes ADR-0010).
+
 ### Stage 4: co-op
 
 **Status:** outline; grilled for acceptance criteria before it starts.
@@ -132,7 +160,4 @@ Ideas outside the current stage.
 - Flying enemies that ignore obstacles.
 - Hand-made maps with a fixed layout, if scattered obstacles disappoint.
 - A utility skill that draws crystals in from farther away (the user's idea once the pickup range shrank to 4 studs on 2026-10-28).
-- Terrain with gentle hills, streams with fords and water the fight can use (high ground, chokepoints): proposed by the user on 2026-10-28 as the next step after stage 3b; needs grilling and an ADR, since ADR-0014 makes the map flat and the rules are XZ-only.
-- Bosses living in camps, the horde spawning in camps and running at the players, and attacks coming in waves with lulls to collect crystals or open the chest: the user's proposal of 2026-10-28, to be grilled as a stage of its own (it reshapes ADR-0014 and ADR-0015).
-- Enemies and bosses as meshes generated with the Studio MCP (the user's intent after stage 3b's props; it supersedes ADR-0010 and needs an ADR of its own).
 - A PvP mode, as a separate mode, if co-op proves itself.
