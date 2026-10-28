@@ -670,7 +670,12 @@ local freeMeshes: { [string]: { MeshPart } } = {}
 -- clone's loaded tracks stay with it across reuse.
 local rigTemplates: { [string]: Model } = {}
 local clipsByKind: { [string]: { [string]: Animation } } = {}
-local clipSources: { [string]: Instance } = {}
+-- The registered clips must stay in the DataModel: a KeyframeSequence parented
+-- to nil is released about a minute after registering, and every track of its
+-- kind then plays without moving a bone. They wait here, out of the templates.
+local clipStore = Instance.new("Folder")
+clipStore.Name = "EnemyClips"
+clipStore.Parent = script
 local freeRigs: { [string]: { Model } } = {}
 local tracksByModel: { [Model]: { [string]: AnimationTrack } } = setmetatable({}, { __mode = "k" }) :: any
 local rigs: { [number]: Rig } = {}
@@ -842,8 +847,8 @@ local function loadRig(kindId: string, entry: Types.PropConfig)
 		end
 		-- Kept registered but out of the template: every clone would carry
 		-- thousands of keyframes and poses, and ScaleTo would walk them.
-		clipSources[kindId] = clipFolder
-		clipFolder.Parent = nil
+		clipFolder.Name = kindId
+		clipFolder.Parent = clipStore
 	end
 	local kind = Config.enemies[kindId]
 	local pool: { Model } = {}

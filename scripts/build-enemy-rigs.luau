@@ -102,6 +102,9 @@ local function buildRig(d: Dumped): any
 	-- MeshPart built from a file renders the skin at the wrong scale.
 	local untyped: any = part
 	untyped.InitialSize = Vector3.new(d.size[1], d.size[2], d.size[3])
+	-- Only the importer sets this; without it the mesh draws its bind pose and
+	-- ignores the bones, so the clips play and nothing on screen moves.
+	untyped.HasSkinnedMesh = true
 	part.Anchored = true
 	part.CanCollide = false
 	part.CanQuery = false
