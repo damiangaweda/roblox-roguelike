@@ -1794,8 +1794,9 @@ function Hud.start()
 		end
 		local scale = uiScale.Scale
 		local viewport = camera.ViewportSize
-		local point, onScreen =
-			camera:WorldToViewportPoint(Vector3.new(chest.x, Net.groundY(), chest.z))
+		local point, onScreen = camera:WorldToViewportPoint(
+			Vector3.new(chest.x, Net.groundY(chest.x, chest.z), chest.z)
+		)
 		local margin = COMPASS_MARGIN * scale
 		if
 			onScreen
@@ -2086,7 +2087,7 @@ function Hud.start()
 		local ownRoot = if character then character:FindFirstChild("HumanoidRootPart") else nil
 		local here: Vector3? = if ownRoot and ownRoot:IsA("BasePart")
 			then ownRoot.Position
-			elseif view then Vector3.new(view.x, Net.groundY(), view.z)
+			elseif view then Vector3.new(view.x, Net.groundY(view.x, view.z), view.z)
 			else nil
 		local extraction = Config.extraction
 		local promptText: string? = nil

@@ -1140,6 +1140,27 @@ export type Rng = {
 
 export type Portal = { x: number, z: number, until_: number }
 
+-- The enemies' flow field (stage 3d, ADR-0023): a grid of square cells over
+-- the map's disc, cell `index = cx + cz * size + 1` from the corner at
+-- (-origin, -origin), and per alive player the walking distance of every
+-- cell to the player's cell (-1: blocked or unreached).
+export type Flow = {
+	cellSize: number,
+	-- Cells along each side, and the corner's offset from the centre.
+	size: number,
+	origin: number,
+	blocked: { boolean },
+	-- The obstacle list the grid was built from, and its length: a change of
+	-- either rebuilds it.
+	obstacles: { Obstacle },
+	obstacleCount: number,
+	-- Distance fields by player id, and spare ones to reuse.
+	fields: { [number]: { number } },
+	spare: { { number } },
+	-- Steps counted since the run began, for the flood interval.
+	steps: number,
+}
+
 export type Run = {
 	config: Config,
 	map: MapConfig,
@@ -1169,6 +1190,8 @@ export type Run = {
 	compassOn: boolean,
 	portal: Portal?,
 	shrines: { Shrine },
+	-- Built at the first step (Flow.update).
+	flow: Flow?,
 	-- The run stands still while a solo player chooses a card.
 	paused: boolean,
 	ended: boolean,

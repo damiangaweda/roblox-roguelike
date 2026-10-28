@@ -46,6 +46,12 @@ local function arenaOf(seed: number): (Types.Arena, Types.MapConfig)
 	return Arena.generate(map, Rng.new(seed), config.shrines), map
 end
 
+-- Whether the circle is the terrain's (ADR-0023): a cliff or the channel,
+-- which reach the edge and border the kits and each other.
+local function isTerrain(obstacle: Types.Obstacle): boolean
+	return obstacle.kind == "cliff" or obstacle.kind == "channel"
+end
+
 -- The place whose clearing holds the circle's centre: its kit's props are the
 -- only obstacles there.
 local function placeOf(arena: Types.Arena, obstacle: Types.Obstacle): Types.Place?
@@ -101,17 +107,24 @@ return {
 				"chest clear"
 			)
 			Assert.truthy(
-				Geometry.distance(a.x, a.z, 0, 0) + a.radius <= map.radius - map.edgeMargin + 1e-6,
+				isTerrain(a)
+					or Geometry.distance(a.x, a.z, 0, 0) + a.radius
+						<= map.radius - map.edgeMargin + 1e-6,
 				"inside"
 			)
 			local placeA = placeOf(arena, a)
 			for j, b in arena.obstacles do
-				-- A prop's own circles may touch, and so may a place's kit; every
-				-- other prop keeps its spacing.
+				-- A prop's own circles may touch, and so may a place's kit; the
+				-- terrain's circles border each other and the kits; every other
+				-- prop keeps its spacing.
+				local placeB = placeOf(arena, b)
+				local terrainPair = (isTerrain(a) and (isTerrain(b) or placeB ~= nil))
+					or (isTerrain(b) and placeA ~= nil)
 				if
 					i < j
 					and a.group ~= b.group
-					and (placeA == nil or placeA ~= placeOf(arena, b))
+					and (placeA == nil or placeA ~= placeB)
+					and not terrainPair
 				then
 					Assert.truthy(
 						Geometry.distance(a.x, a.z, b.x, b.z)
@@ -470,6 +483,9 @@ return {
 				Assert.equal(circle.kind, first.kind, "one kind per group")
 				Assert.equal(circle.rotation, first.rotation, "one rotation per group")
 				Assert.equal(circle.anchor, order == 1, "only the first is the anchor")
+			end
+			if isTerrain(first) then
+				continue
 			end
 			if footprint == nil then
 				Assert.equal(#circles, 1, "a plain kind is one circle")

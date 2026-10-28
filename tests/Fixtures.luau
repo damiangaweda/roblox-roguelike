@@ -41,9 +41,64 @@ function Fixtures.run(
 	return run
 end
 
--- Open ground: no obstacles stand in the way of a spec's positions.
+-- Open ground: no obstacles stand in the way of a spec's positions, and no
+-- shallow water slows them.
 function Fixtures.clearObstacles(run: Types.Run)
 	run.arena.obstacles = {}
+	run.arena.terrain.slowZones = {}
+end
+
+-- A slow zone (shallow water) of `radius` at (x, z).
+function Fixtures.slowZone(run: Types.Run, x: number, z: number, radius: number): Types.SlowZone
+	local zone = { x = x, z = z, radius = radius }
+	table.insert(run.arena.terrain.slowZones, zone)
+	return zone
+end
+
+-- An obstacle circle of `kind` (a rock by default) at (x, z).
+function Fixtures.obstacle(
+	run: Types.Run,
+	x: number,
+	z: number,
+	radius: number,
+	kind: string?
+): Types.Obstacle
+	local id = #run.arena.obstacles + 1
+	local obstacle: Types.Obstacle = {
+		id = id,
+		kind = kind or "rock",
+		x = x,
+		z = z,
+		radius = radius,
+		rotation = 0,
+		group = id,
+		anchor = true,
+	}
+	table.insert(run.arena.obstacles, obstacle)
+	return obstacle
+end
+
+-- A cliff ring round (x, z) of `radius` from the terrain's cliff circles,
+-- with one ramp-wide gap facing `gapAngle` (radians): the circles whose arc
+-- from the gap's middle is under half the ramp plus a circle's radius are
+-- left out, so the opening is about a ramp wide.
+function Fixtures.cliffRing(run: Types.Run, x: number, z: number, radius: number, gapAngle: number)
+	local terrain = run.config.terrain
+	local count = math.ceil(2 * math.pi * radius / terrain.cliffStep)
+	local opening = terrain.rampWidth / 2 + terrain.cliffRadius
+	for index = 0, count - 1 do
+		local angle = index * 2 * math.pi / count
+		local apart = math.abs((angle - gapAngle + math.pi) % (2 * math.pi) - math.pi)
+		if apart * radius >= opening then
+			Fixtures.obstacle(
+				run,
+				x + math.cos(angle) * radius,
+				z + math.sin(angle) * radius,
+				terrain.cliffRadius,
+				"cliff"
+			)
+		end
+	end
 end
 
 -- An enemy of `kind` at (x, z) without the horde's growth.

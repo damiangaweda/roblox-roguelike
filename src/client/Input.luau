@@ -263,7 +263,7 @@ end
 -- half its own height above the feet (R15).
 local function keepAboveGround(character: Model, humanoid: Humanoid, root: BasePart)
 	local position = root.Position
-	local standing = Net.groundY() + humanoid.HipHeight + root.Size.Y / 2
+	local standing = Net.groundYExact(position.X, position.Z) + humanoid.HipHeight + root.Size.Y / 2
 	if standing > position.Y then
 		character:PivotTo(character:GetPivot() + Vector3.new(0, standing - position.Y, 0))
 	end

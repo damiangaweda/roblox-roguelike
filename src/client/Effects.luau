@@ -333,7 +333,7 @@ WORLD.SPLASH_SECONDS = 0.3
 WORLD.SPLASH_SPARKS = 10
 
 -- Discs: flat neon cylinders on the ground. Heights here are above the
--- ground, which Net.groundY gives.
+-- ground, which Net.groundY gives at the disc's centre.
 DRAW.DISC_HEIGHT = 0.15
 -- Lays a cylinder flat: its axis (X) points up.
 SHAPE.LIE = CFrame.Angles(0, 0, math.pi / 2)
@@ -1527,7 +1527,7 @@ local function heroAt(userId: number, x: number, z: number): Vector3
 	if root then
 		return root.Position
 	end
-	return Vector3.new(x, Net.groundY() + SKILL.HERO_RISE, z)
+	return Vector3.new(x, Net.groundY(x, z) + SKILL.HERO_RISE, z)
 end
 
 -- Where a hand of a hero standing at `at` is, reaching towards `toward`.
@@ -1543,12 +1543,12 @@ local function handOf(at: Vector3, toward: Vector3?): Vector3
 end
 
 local function groundAt(x: number, z: number, rise: number): Vector3
-	return Vector3.new(x, Net.groundY() + rise, z)
+	return Vector3.new(x, Net.groundY(x, z) + rise, z)
 end
 
 -- The flat ground at (x, z), lifted `rise`.
 local function groundFrame(x: number, z: number, rise: number): CFrame
-	return CFrame.new(x, Net.groundY() + rise, z)
+	return CFrame.new(x, Net.groundY(x, z) + rise, z)
 end
 
 -- The local player's character root, if it has one.
@@ -2320,7 +2320,7 @@ function fx.trackPart(tracker: Tracker, id: number, style: Style, x: number, z: 
 	end
 	local free = tracker.free[style]
 	local tracked = (if free then table.remove(free) else nil) or fx.buildTracked(style)
-	tracked.part.CFrame = CFrame.new(x, Net.groundY() + style.height, z)
+	tracked.part.CFrame = CFrame.new(x, Net.groundY(x, z) + style.height, z)
 	tracked.part.Transparency = style.transparency
 	tracked.part.Parent = state.folder
 	local trail = tracked.trail
@@ -3289,7 +3289,6 @@ function fx.renderTracked(now: number)
 	end
 	local alpha = EnemyView.interpolation()
 	local count = 0
-	local ground = Net.groundY()
 
 	for _, projectile in latest.projectiles do
 		local tracked = state.projectileTracker.live[projectile.id]
@@ -3302,7 +3301,7 @@ function fx.renderTracked(now: number)
 			end
 			count += 1
 			state.moveParts[count] = tracked.part
-			state.moveFrames[count] = CFrame.new(x, ground + tracked.style.height, z)
+			state.moveFrames[count] = CFrame.new(x, Net.groundY(x, z) + tracked.style.height, z)
 				* CFrame.Angles(0, -projectile.angle - math.pi / 2, 0)
 		end
 	end
@@ -3322,9 +3321,11 @@ function fx.renderTracked(now: number)
 		local bob = OBJECT.GEM_BOB * math.sin((now * OBJECT.GEM_BOB_HZ + gem.phase) * 2 * math.pi)
 		count += 1
 		state.moveParts[count] = gem.part
-		state.moveFrames[count] = CFrame.new(gem.x, ground + OBJECT.GEM_RISE + bob, gem.z)
-			* CFrame.Angles(0, now * OBJECT.GEM_SPIN + gem.phase * 6, 0)
-			* SHAPE.GEM_TURN
+		state.moveFrames[count] = CFrame.new(
+			gem.x,
+			Net.groundY(gem.x, gem.z) + OBJECT.GEM_RISE + bob,
+			gem.z
+		) * CFrame.Angles(0, now * OBJECT.GEM_SPIN + gem.phase * 6, 0) * SHAPE.GEM_TURN
 	end
 
 	for index = #state.flights, 1, -1 do
@@ -4368,7 +4369,10 @@ function fx.onDash(player: number, dx: number, dz: number)
 	for index = 0, images - 1 do
 		task.delay(Config.player.dashSeconds * index / images, function()
 			local now = characterRoot(player)
-			local at = if now then now.Position else from + delta * (index / images)
+			local share = index / images
+			local at = if now
+				then now.Position
+				else groundAt(from.X + dx * share, from.Z + dz * share, SKILL.HERO_RISE)
 			local slot = start(state.afterimages, OBJECT.DASH_IMAGE_SECONDS, at)
 			slot.fade = OBJECT.DASH_IMAGE_FADE
 			slot.part.Color = color

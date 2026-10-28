@@ -59,9 +59,56 @@ function Net.onPhase(listener: (Phase, Protocol.SummaryView?) -> ())
 	table.insert(phaseListeners, listener)
 end
 
--- The ground's height under any point: the map is flat (ADR-0014).
-function Net.groundY(): number
-	return 0
+-- The ground's height where nothing is sculpted, and without a point.
+local FLAT_GROUND = 0
+-- The ground's height is sampled once per cell this many studs wide.
+local GROUND_CELL = 4
+-- A height query casts down from this high, this far.
+local GROUND_RAY_TOP = 80
+local GROUND_RAY_LENGTH = 200
+-- Cells per row of the cache's key; a cell index sits within half of it.
+local GROUND_KEY_SPAN = 2 ^ 20
+
+local groundParams = RaycastParams.new()
+groundParams.FilterType = Enum.RaycastFilterType.Include
+groundParams.FilterDescendantsInstances = { workspace.Terrain }
+-- Shallows are waded: things stand on the bed, not on the water.
+groundParams.IgnoreWater = true
+
+-- The ground's height per cell, keyed by the cell; cleared on every phase,
+-- since every run sculpts its own terrain (ADR-0023).
+local groundHeights: { [number]: number } = {}
+
+-- The terrain's surface right under (x, z), or the flat height where no
+-- terrain is.
+local function castGround(x: number, z: number): number
+	local origin = Vector3.new(x, GROUND_RAY_TOP, z)
+	local hit = workspace:Raycast(origin, Vector3.new(0, -GROUND_RAY_LENGTH, 0), groundParams)
+	return if hit then hit.Position.Y else FLAT_GROUND
+end
+
+-- The ground's height under (x, z): the terrain's surface at the middle of
+-- the cell around the point, cached. Without a point, the flat height.
+function Net.groundY(x: number?, z: number?): number
+	if x == nil or z == nil then
+		return FLAT_GROUND
+	end
+	local cellX = math.floor(x / GROUND_CELL)
+	local cellZ = math.floor(z / GROUND_CELL)
+	local key = (cellX + GROUND_KEY_SPAN / 2) * GROUND_KEY_SPAN + cellZ
+	local known = groundHeights[key]
+	if known then
+		return known
+	end
+	local height = castGround((cellX + 0.5) * GROUND_CELL, (cellZ + 0.5) * GROUND_CELL)
+	groundHeights[key] = height
+	return height
+end
+
+-- The ground's height right under (x, z), uncached: for the few queries a
+-- cell's sample would mislead, such as a hero beside a cliff.
+function Net.groundYExact(x: number, z: number): number
+	return castGround(x, z)
 end
 
 function Net.pickClass(class: string)
@@ -155,6 +202,7 @@ phaseRemote.OnClientEvent:Connect(function(phase: any, summary: Protocol.Summary
 	end
 	local current: Phase = PHASES[phase]
 	Net.phase = current
+	table.clear(groundHeights)
 	Net.summary = if phase == "summary" and type(summary) == "table" then summary else nil
 	notifyPhase(current, Net.summary)
 end)

@@ -19,6 +19,9 @@ local DEAD_TRANSPARENCY = 0.7
 local EXTRACTED_TRANSPARENCY = 1
 -- How far above the ground a teleported or corrected character's pivot lands.
 local TELEPORT_HEIGHT = 3.5
+-- A corrected character whose pivot is less than this above the ground
+-- there (it was snapped onto higher ground) is lifted onto it.
+local SUNK_HEIGHT = 2
 
 type Entry = {
 	character: Model,
@@ -141,9 +144,11 @@ function Characters.hold(player: Player, x: number, z: number, y: number)
 	local dx, dz = position.X - x, position.Z - z
 	if dx * dx + dz * dz > Config.player.correctionDistance ^ 2 then
 		-- A walking correction keeps the character's height: a lift would
-		-- drop it after every snap.
+		-- drop it after every snap; only a character under the ground there
+		-- is put on it.
+		local height = if position.Y < y + SUNK_HEIGHT then y + TELEPORT_HEIGHT else position.Y
 		local pivot = character:GetPivot()
-		character:PivotTo(pivot.Rotation + Vector3.new(x, math.max(position.Y, y), z))
+		character:PivotTo(pivot.Rotation + Vector3.new(x, height, z))
 		part.AssemblyLinearVelocity = Vector3.zero
 	end
 end

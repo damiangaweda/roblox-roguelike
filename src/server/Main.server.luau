@@ -24,8 +24,6 @@ local STEP_SECONDS = 1 / Config.net.stepHz
 local SNAPSHOT_SECONDS = 1 / Config.net.snapshotHz
 -- A slow frame catches up with at most this many steps; the rest is dropped.
 local MAX_STEPS_PER_FRAME = 5
--- The ground is flat (ADR-0014): every position is at this height.
-local GROUND_HEIGHT = 0
 -- The seed, the run's clock and the core's view of each player are
 -- Studio-only diagnostics: attributes replicate to every client, and the seed
 -- with the shared core would let a client replay the run's rolls.
@@ -126,7 +124,7 @@ local function joinRun(current: Types.Run, player: Player, class: string)
 		Run.removePlayer(current, player.UserId)
 		return
 	end
-	Characters.teleport(player, core.x, core.z, GROUND_HEIGHT)
+	Characters.teleport(player, core.x, core.z, ArenaBuilder.groundHeight(core.x, core.z))
 	Characters.dress(player, current.config.classes[core.class])
 	members[player.UserId] = player
 	setPhase(player, "run")
@@ -170,7 +168,12 @@ local function startRun()
 	-- Everyone else waits on the new map, out of the run.
 	for _, player in present() do
 		if not members[player.UserId] then
-			Characters.teleport(player, fresh.arena.startX, fresh.arena.startZ, GROUND_HEIGHT)
+			Characters.teleport(
+				player,
+				fresh.arena.startX,
+				fresh.arena.startZ,
+				ArenaBuilder.groundHeight(fresh.arena.startX, fresh.arena.startZ)
+			)
 		end
 	end
 	if next(fresh.players) ~= nil then
@@ -231,7 +234,12 @@ local function onPlayerAdded(player: Player)
 			local current = run
 			local core = if current then current.players[player.UserId] else nil
 			if current and core and members[player.UserId] then
-				Characters.teleport(player, core.x, core.z, GROUND_HEIGHT)
+				Characters.teleport(
+					player,
+					core.x,
+					core.z,
+					ArenaBuilder.groundHeight(core.x, core.z)
+				)
 			elseif members[player.UserId] then
 				-- Already put in place by its join.
 				return
@@ -245,7 +253,7 @@ local function onPlayerAdded(player: Player)
 					player,
 					current.arena.startX,
 					current.arena.startZ,
-					GROUND_HEIGHT
+					ArenaBuilder.groundHeight(current.arena.startX, current.arena.startZ)
 				)
 			end
 		end)
@@ -555,7 +563,7 @@ local function onHeartbeat(dt: number)
 				then 0
 				else Run.walkSpeed(current, core)
 			Characters.apply(player, core.state, walkSpeed)
-			Characters.hold(player, core.x, core.z, GROUND_HEIGHT)
+			Characters.hold(player, core.x, core.z, ArenaBuilder.groundHeight(core.x, core.z))
 		end
 	end
 

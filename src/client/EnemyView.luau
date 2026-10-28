@@ -700,7 +700,7 @@ end
 
 local function rootFrame(x: number, z: number, facing: number): CFrame
 	-- The front is -Z; the facing is measured from +X toward +Z.
-	return CFrame.new(x, Net.groundY(), z) * CFrame.Angles(0, -facing - math.pi / 2, 0)
+	return CFrame.new(x, Net.groundY(x, z), z) * CFrame.Angles(0, -facing - math.pi / 2, 0)
 end
 
 local function assetId(id: string): string
@@ -1379,7 +1379,7 @@ end
 
 -- Where a parked enemy is: its snapshot position on the ground.
 local function groundPosition(rig: Rig): Vector3
-	return Vector3.new(rig.x, Net.groundY(), rig.z)
+	return Vector3.new(rig.x, Net.groundY(rig.x, rig.z), rig.z)
 end
 
 local function kill(id: number, rig: Rig, now: number)
