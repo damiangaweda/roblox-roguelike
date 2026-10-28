@@ -320,7 +320,8 @@ export type EnemyKindConfig = {
 	-- The silhouette the client draws: an archetype's (grunt, brute, spitter,
 	-- exploder, shieldbearer, shaman) or a boss's own.
 	look: string,
-	role: "grunt" | "elite" | "boss" | "finalBoss",
+	-- A wraith is doom's enemy: no experience, no control, no knockback.
+	role: "grunt" | "elite" | "boss" | "finalBoss" | "wraith",
 	health: number,
 	speed: number,
 	radius: number,
@@ -591,6 +592,79 @@ export type Shrine = {
 -- Where a shrine goes, decided with the obstacles for the seed.
 export type ShrineSpot = { kind: ShrineKind, x: number, z: number }
 
+-- A lair kind (ADR-0021, GLOSSARY: lair): one per boss, with the grunts it
+-- releases, the elites of its guard, its own release interval, its radius
+-- (the boss's and the guard's leash, and what wakes them) and the kit of
+-- props drawn around it.
+export type LairKindConfig = {
+	id: string,
+	name: string,
+	boss: string,
+	grunts: { string },
+	guards: { string },
+	guardCount: number,
+	intervalSeconds: number,
+	radius: number,
+	-- The clearing kept free of other props.
+	clearRadius: number,
+	colour: number,
+	props: { PlaceProp },
+}
+
+export type WraithConfig = {
+	kind: string,
+	intervalSeconds: number,
+	count: number,
+	ringRadius: number,
+}
+
+export type LairsConfig = {
+	-- Lairs a run draws from `kinds`, all different.
+	count: number,
+	kinds: { LairKindConfig },
+	startMinDistance: number,
+	chestMinDistance: number,
+	spacing: number,
+	-- A batch's size at the start and at the end of the run's time.
+	batchStart: number,
+	batchEnd: number,
+	-- The share of a lair's interval its first release may be delayed by, so
+	-- the lairs never release together.
+	offsetShare: number,
+	-- A grunt farther than this from every player despawns and its count
+	-- returns to its lair's next batch.
+	strayDespawnDistance: number,
+	-- The boss's health and damage growth per minute of run time.
+	bossGrowthPerMinute: number,
+	-- The share of its missing health a boss regains when it falls asleep.
+	sleepRecoverShare: number,
+	-- Seconds the final boss takes to rise, nothing spawning meanwhile.
+	finalRiseSeconds: number,
+	-- Seconds before the run's end time the doom countdown shows.
+	doomWarnSeconds: number,
+	wraith: WraithConfig,
+}
+
+-- A lair of the run: its boss and guard sleep until woken; silenced once the
+-- boss dies. `owed` is the strays returned to its next batch.
+export type Lair = {
+	id: number,
+	kind: string,
+	x: number,
+	z: number,
+	radius: number,
+	rotation: number,
+	bossId: number?,
+	guardIds: { number },
+	asleep: boolean,
+	silenced: boolean,
+	nextBatchAt: number,
+	owed: number,
+}
+
+-- Where a lair goes, decided with the places for the seed.
+export type LairSpot = { kind: string, x: number, z: number, rotation: number }
+
 export type Config = {
 	run: {
 		durationSeconds: number,
@@ -637,6 +711,7 @@ export type Config = {
 	progression: ProgressionConfig,
 	extraction: ExtractionConfig,
 	shrines: ShrinesConfig,
+	lairs: LairsConfig,
 	-- The low-poly meshes the server builds the map from, by obstacle kind
 	-- (stage 3b): variants are picked by the obstacle's id.
 	props: { [string]: { PropConfig } },
@@ -690,6 +765,7 @@ export type Arena = {
 	chestX: number,
 	chestZ: number,
 	shrineSpots: { ShrineSpot },
+	lairSpots: { LairSpot },
 	places: { Place },
 	paths: { Path },
 }
@@ -752,6 +828,10 @@ export type Enemy = {
 	chargeEndZ: number,
 	-- The summoner or spawner's time of birth, for the oldest-first culls.
 	bornAt: number,
+	-- The lair this enemy belongs to (a released grunt, a guard or a boss),
+	-- and whether it sleeps there.
+	lairId: number?,
+	asleep: boolean,
 }
 
 export type Projectile = {
@@ -979,6 +1059,11 @@ export type Event =
 	| { kind: "trialStarted", shrineId: number, count: number }
 	| { kind: "trialCompleted", shrineId: number, player: number }
 	| { kind: "shrineReady", shrineId: number }
+	| { kind: "lairWoke", lairId: number }
+	| { kind: "lairSlept", lairId: number }
+	| { kind: "lairSilenced", lairId: number, player: number }
+	| { kind: "finalRising", lairId: number, x: number, z: number, seconds: number }
+	| { kind: "doomStarted" }
 
 export type Rng = {
 	-- A float in [0, 1).
@@ -1004,6 +1089,13 @@ export type Run = {
 	crystals: { Crystal },
 	foods: { Food },
 	players: { [number]: Player },
+	-- The lairs (ADR-0021), the final boss's rise and doom.
+	lairs: { Lair },
+	finalRiseAt: number?,
+	finalRiseX: number,
+	finalRiseZ: number,
+	doom: boolean,
+	nextWraithAt: number,
 	-- The horde's bookkeeping: when it next spawns, which bosses and closing
 	-- rings have come, whether the final boss is up and when it must be dead.
 	nextSpawnAt: number,

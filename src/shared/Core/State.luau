@@ -35,6 +35,12 @@ function State.newRun(config: Types.Config, seed: number): Types.Run
 		compassOn = false,
 		portal = nil,
 		shrines = {},
+		lairs = {},
+		finalRiseAt = nil,
+		finalRiseX = 0,
+		finalRiseZ = 0,
+		doom = false,
+		nextWraithAt = 0,
 		paused = false,
 		ended = false,
 		events = {},
@@ -42,7 +48,56 @@ function State.newRun(config: Types.Config, seed: number): Types.Run
 	for _, spot in run.arena.shrineSpots do
 		table.insert(run.shrines, State.newShrine(run, spot))
 	end
+	for _, spot in run.arena.lairSpots do
+		table.insert(run.lairs, State.newLair(run, spot))
+	end
 	return run
+end
+
+-- A lair at its spot, asleep, its first release delayed by its own offset
+-- (drawn here, so the same seed staggers the lairs the same way); the boss
+-- and the guard are spawned by the Lairs module.
+function State.newLair(run: Types.Run, spot: Types.LairSpot): Types.Lair
+	local lairs = run.config.lairs
+	local kind: Types.LairKindConfig? = nil
+	for _, candidate in lairs.kinds do
+		if candidate.id == spot.kind then
+			kind = candidate
+		end
+	end
+	local interval = if kind then kind.intervalSeconds else 10
+	return {
+		id = State.nextId(run),
+		kind = spot.kind,
+		x = spot.x,
+		z = spot.z,
+		radius = if kind then kind.radius else 45,
+		rotation = spot.rotation,
+		bossId = nil,
+		guardIds = {},
+		asleep = true,
+		silenced = false,
+		nextBatchAt = run.rng:next() * interval * lairs.offsetShare,
+		owed = 0,
+	}
+end
+
+function State.lairById(run: Types.Run, id: number): Types.Lair?
+	for _, lair in run.lairs do
+		if lair.id == id then
+			return lair
+		end
+	end
+	return nil
+end
+
+function State.lairKind(run: Types.Run, lair: Types.Lair): Types.LairKindConfig
+	for _, kind in run.config.lairs.kinds do
+		if kind.id == lair.kind then
+			return kind
+		end
+	end
+	error("unknown lair kind " .. lair.kind)
 end
 
 -- A shrine at its spot; its boon or pact is drawn now, so the same
@@ -220,6 +275,8 @@ function State.newEnemy(
 		chargeEndX = x,
 		chargeEndZ = z,
 		bornAt = run.time,
+		lairId = nil,
+		asleep = false,
 	}
 	table.insert(run.enemies, enemy)
 	return enemy

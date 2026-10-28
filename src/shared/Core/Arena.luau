@@ -524,6 +524,7 @@ function Arena.generate(
 		shrineSpots = if shrines
 			then scatterShrines(map, shrines, rng, layout.obstacles, chestX, chestZ)
 			else {},
+		lairSpots = {},
 		places = layout.places,
 		paths = layout.paths,
 	}

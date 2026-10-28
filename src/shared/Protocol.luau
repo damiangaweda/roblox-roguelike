@@ -470,6 +470,24 @@ export type WorldView = {
 	-- The bosses alive, drawn with their health bars.
 	bossIds: { number },
 	shrines: { ShrineView },
+	lairs: { LairView },
+	-- Doom (ADR-0021): whether it has begun, and seconds until the run's end time.
+	doom: boolean,
+	doomIn: number,
+	-- Seconds until the final boss has risen, while it rises.
+	finalRiseLeft: number?,
+}
+
+-- A lair as every client sees it.
+export type LairView = {
+	id: number,
+	kind: string,
+	x: number,
+	z: number,
+	radius: number,
+	asleep: boolean,
+	silenced: boolean,
+	bossId: number?,
 }
 
 local function secondsLeft(run: Types.Run, until_: number): number
@@ -536,6 +554,19 @@ function Protocol.worldView(run: Types.Run): WorldView
 			trial = shrine.trialEnemies ~= nil,
 		})
 	end
+	local lairs = table.create(#run.lairs)
+	for _, lair in run.lairs do
+		table.insert(lairs, {
+			id = lair.id,
+			kind = lair.kind,
+			x = lair.x,
+			z = lair.z,
+			radius = lair.radius,
+			asleep = lair.asleep,
+			silenced = lair.silenced,
+			bossId = lair.bossId,
+		})
+	end
 	local portal = run.portal
 	local deadline = run.finalBossDeadline
 	local bossIds = {}
@@ -560,6 +591,10 @@ function Protocol.worldView(run: Types.Run): WorldView
 		finalBossLeft = if deadline then secondsLeft(run, deadline) else nil,
 		bossIds = bossIds,
 		shrines = shrines,
+		lairs = lairs,
+		doom = run.doom,
+		doomIn = secondsLeft(run, run.config.run.durationSeconds),
+		finalRiseLeft = if run.finalRiseAt then secondsLeft(run, run.finalRiseAt) else nil,
 	}
 end
 
