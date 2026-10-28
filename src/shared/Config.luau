@@ -1027,6 +1027,7 @@ local Config: Types.Config = {
 					radius = 2.5,
 					weight = 3,
 					footprint = {
+						{ dx = 0, dz = 0, radius = 2.5 },
 						{ dx = -5, dz = 0, radius = 2.5 },
 						{ dx = 5, dz = 0, radius = 2.5 },
 					},

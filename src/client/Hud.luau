@@ -412,19 +412,44 @@ local function iconOf(id: string?): string?
 	return if type(image) == "string" and image ~= "" then image else nil
 end
 
--- A boon's or pact's name by id, from Config.shrines.
-local function boonOrPactName(id: string): string
+-- "+15% damage", "-3 armour": a shrine's change to `stat` by `amount`, a
+-- share or, for FLAT_STATS, a flat number.
+local function statChange(stat: string, amount: number, up: boolean): string
+	local name = STAT_TEXT[stat] or stat
+	local details = Strings.shrineDetails
+	if FLAT_STATS[stat] then
+		return string.format(
+			if up then details.flatUp else details.flatDown,
+			trimNumber(amount),
+			name
+		)
+	end
+	return string.format(
+		if up then details.percentUp else details.percentDown,
+		trimNumber(amount * 100),
+		name
+	)
+end
+
+-- A boon's or pact's name by id, from Config.shrines, and what it gives:
+-- a boon's gain, a pact's gain and cost.
+local function boonOrPactName(id: string): (string, string)
 	for _, boon in Config.shrines.boons do
 		if boon.id == id then
-			return boon.name
+			return boon.name, statChange(boon.stat, boon.amount, true)
 		end
 	end
 	for _, pact in Config.shrines.pacts do
 		if pact.id == id then
-			return pact.name
+			return pact.name,
+				string.format(
+					Strings.shrineDetails.pact,
+					statChange(pact.up, pact.upAmount, true),
+					statChange(pact.down, pact.downAmount, false)
+				)
 		end
 	end
-	return id
+	return id, ""
 end
 
 -- A square face `side` wide: the icon of `id` when it has one, else the
@@ -978,7 +1003,7 @@ function Hud.start()
 	end
 
 	-- What the interact key would do here, if anything, above the health bar;
-	-- a shrine in reach is named above it.
+	-- a shrine in reach is named above it, over a line of what it does.
 	local prompt = newLabel(
 		runLayer,
 		"Prompt",
@@ -993,11 +1018,20 @@ function Hud.start()
 		runLayer,
 		"Shrine",
 		UDim2.fromOffset(520, 28),
-		UDim2.new(0.5, -260, 1, vitalsTop - 8 - 26 - 28),
+		UDim2.new(0.5, -260, 1, vitalsTop - 8 - 26 - 22 - 28),
 		22,
 		FONT_BOLD
 	)
 	shrineLabel.Visible = false
+	local shrineDetail = newLabel(
+		runLayer,
+		"ShrineDetail",
+		UDim2.fromOffset(640, 22),
+		UDim2.new(0.5, -320, 1, vitalsTop - 8 - 26 - 22),
+		16,
+		FONT
+	)
+	shrineDetail.Visible = false
 	local interactName = if touch then Strings.buttons.interact else Strings.keys.interact
 
 	-- Touch: large round buttons in the bottom-right corner: the utility skills
@@ -1353,7 +1387,8 @@ function Hud.start()
 			elseif event.kind == "shrineActivated" and event.player == userId then
 				local given = event.given
 				if type(given) == "string" then
-					pushNotice(string.format(Strings.notices.given, boonOrPactName(given)))
+					local name, gain = boonOrPactName(given)
+					pushNotice(string.format(Strings.notices.given, name, gain))
 				elseif event.shrineKind == "spring" then
 					pushNotice(Strings.notices.springUsed)
 				end
@@ -1647,7 +1682,7 @@ function Hud.start()
 					table.insert(entries, "")
 				end
 				for _, id in shrinesTaken do
-					table.insert(entries, boonOrPactName(id))
+					table.insert(entries, (boonOrPactName(id)))
 				end
 			end
 		end
@@ -1889,6 +1924,7 @@ function Hud.start()
 		local extraction = Config.extraction
 		local promptText: string? = nil
 		local shrineText: string? = nil
+		local detailText: string? = nil
 		local shrineColor = EXTRACT_COLOR
 		local barShown = false
 		if alive and world and view and here then
@@ -1899,15 +1935,32 @@ function Hud.start()
 			if named then
 				shrineColor = SHRINE_COLORS[named.kind] or EXTRACT_COLOR
 				local given = named.given
-				if named.kind == "spring" and named.readyIn > 0 then
-					shrineText = string.format(
-						Strings.shrines.springBack,
-						math.max(1, math.ceil(named.readyIn - sinceSnapshot))
-					)
-				elseif type(given) == "string" then
-					shrineText = boonOrPactName(given)
+				local details = Strings.shrineDetails
+				if type(given) == "string" then
+					local gain
+					shrineText, gain = boonOrPactName(given)
+					detailText = if named.kind == "boon"
+						then string.format(details.boon, gain)
+						else gain
 				else
 					shrineText = SHRINE_TEXT[named.kind] or named.kind
+				end
+				if named.kind == "spring" and named.readyIn > 0 then
+					detailText = string.format(
+						details.springBack,
+						formatTime(math.max(1, math.ceil(named.readyIn - sinceSnapshot)))
+					)
+				elseif named.kind == "spring" then
+					detailText = string.format(
+						details.spring,
+						formatTime(Config.shrines.springRechargeSeconds)
+					)
+				elseif named.kind == "trial" then
+					detailText = string.format(
+						details.trial,
+						Config.shrines.trialRingCount,
+						Config.shrines.greatOfferRanks
+					)
 				end
 			end
 			if target == "portal" then
@@ -1943,6 +1996,8 @@ function Hud.start()
 		shrineLabel.Visible = shrineText ~= nil
 		shrineLabel.Text = shrineText or ""
 		shrineLabel.TextColor3 = shrineColor
+		shrineDetail.Visible = detailText ~= nil
+		shrineDetail.Text = detailText or ""
 		actionBar.root.Visible = barShown
 		local compassChest = if alive
 				and world

@@ -23,7 +23,7 @@ local Net = require(script.Parent.Net)
 local Input = {}
 
 -- A knockback stops this far before an obstacle.
-local WALL_MARGIN = 1.5
+local WALL_MARGIN = 0.1
 
 -- A move direction shorter than this counts as standing.
 local STANDING = 0.1

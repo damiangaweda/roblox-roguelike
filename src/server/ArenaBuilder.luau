@@ -180,8 +180,11 @@ local function decor(name: string, color: Color3, material: Enum.Material, paren
 	return part
 end
 
--- An invisible, anchored body: what stops the knockback and dash raycasts is
--- exactly the core's circle.
+-- An invisible, anchored body the character walks against and the knockback
+-- and dash raycasts stop at. Its radius is the core's circle plus the
+-- player's radius, so physics stops the character's centre where the rules
+-- stop it; a narrower body let the character slide past the core's stop and
+-- the server pulled it back every few hundred milliseconds.
 local function body(
 	name: string,
 	x: number,
@@ -1211,8 +1214,9 @@ local function buildShrine(shrine: Types.Shrine, parent: Instance, random: Rando
 	)
 	if mesh then
 		mesh.Name = "Shrine"
-		-- What the raycasts stop at is the shrine's circle, as the plinth was.
-		body("Plinth", x, z, r, SHRINE_BODY_HEIGHT, model)
+		-- What the character and the raycasts stop at is the shrine's circle
+		-- plus the player's radius, as every obstacle body.
+		body("Plinth", x, z, r + Config.player.radius, SHRINE_BODY_HEIGHT, model)
 		base = mesh.Position.Y + mesh.Size.Y / 2
 		lit = mesh
 	else
@@ -1288,7 +1292,14 @@ function ArenaBuilder.build(arena: Types.Arena)
 			local prop = propOf(obstacle, groups[obstacle.group], kinds[obstacle.kind])
 			drawProp(prop, obstacles, random)
 		end
-		body("Body" .. obstacle.id, obstacle.x, obstacle.z, obstacle.radius, BODY_HEIGHT, obstacles)
+		body(
+			"Body" .. obstacle.id,
+			obstacle.x,
+			obstacle.z,
+			obstacle.radius + Config.player.radius,
+			BODY_HEIGHT,
+			obstacles
+		)
 		if index % BUILD_BATCH == 0 then
 			task.wait()
 		end

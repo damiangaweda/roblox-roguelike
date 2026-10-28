@@ -52,8 +52,8 @@ local Strings = {
 		interrupted = "Interrupted!",
 		trialStarted = "Trial!",
 		trialCompleted = "Trial complete",
-		-- The boon's or pact's name.
-		given = "%s",
+		-- The boon's or pact's name, then what it gave (shrineDetails' gains).
+		given = "%s: %s",
 		springUsed = "Fully restored",
 	},
 	-- Under the clock: the time left as m:ss, and whole seconds.
@@ -91,8 +91,24 @@ local Strings = {
 		pact = "Pact",
 		trial = "Trial",
 		spring = "Spring",
-		-- A spring still recharging: whole seconds.
-		springBack = "Spring (back in %ds)",
+	},
+	-- Under a shrine's name: what it does and what it costs.
+	shrineDetails = {
+		-- The gain (a boon's `percentUp` or `flatUp`).
+		boon = "%s until the run ends",
+		-- The gain, then the cost.
+		pact = "%s, %s",
+		-- The enemies in the ring, then the ranks each card is worth.
+		trial = "Fight a ring of %d enemies for a great offer (cards worth %d ranks)",
+		-- The recharge, as m:ss.
+		spring = "Full heal, utilities and dash ready; back in %s",
+		-- A spring still recharging: the time left, as m:ss.
+		springBack = "Back in %s",
+		-- The number, then the stat's name (stats).
+		percentUp = "+%s%% %s",
+		percentDown = "-%s%% %s",
+		flatUp = "+%s %s",
+		flatDown = "-%s %s",
 	},
 
 	cards = {

@@ -442,20 +442,26 @@ OBJECT.TOTEM_FLAP_HZ = 1.5
 OBJECT.TOTEM_FLAP = 0.5
 OBJECT.TOTEM_TURN = 0.8
 
--- Crystals: small floating neon state.gems, spinning and bobbing; state.collected ones
--- fly to the hero, then sparkle.
+-- Crystals: small glowing orbs, bobbing, each with a soft light and a
+-- translucent halo; state.collected ones fly to the hero with a short trail,
+-- then sparkle.
 OBJECT.GEM_SIZE = Vector3.new(2, 2, 2)
 OBJECT.GEM_BIG = 1.3
 OBJECT.GEM_RISE = 1.1
 OBJECT.GEM_BOB = 0.25
 OBJECT.GEM_BOB_HZ = 0.7
-OBJECT.GEM_SPIN = 2.2
+OBJECT.GEM_HALO = 1.8
+OBJECT.GEM_HALO_FADE = 0.75
+OBJECT.GEM_LIGHT_RANGE = 6
+OBJECT.GEM_LIGHT_BRIGHTNESS = 1
+OBJECT.GEM_TRAIL_SECONDS = 0.18
+OBJECT.GEM_TRAIL_WIDTH = 0.5
 -- Colours by the crystal's experience: up to OBJECT.SMALL_XP, up to OBJECT.MEDIUM_XP, more.
 OBJECT.SMALL_XP = 4
 OBJECT.MEDIUM_XP = 12
-PALETTE.GEM_SMALL = Color3.fromRGB(80, 160, 255)
-PALETTE.GEM_MEDIUM = Color3.fromRGB(80, 235, 110)
-PALETTE.GEM_LARGE = Color3.fromRGB(190, 90, 255)
+PALETTE.GEM_SMALL = Color3.fromRGB(90, 235, 255)
+PALETTE.GEM_MEDIUM = Color3.fromRGB(110, 255, 120)
+PALETTE.GEM_LARGE = Color3.fromRGB(255, 205, 60)
 OBJECT.GEM_FLY_SECONDS = 0.25
 OBJECT.GEM_SPARKLE = 6
 -- Where a crystal let go was, remembered this long for its collection.
@@ -2333,14 +2339,65 @@ state.lostGems = {} :: { [number]: { x: number, z: number, xp: number, at: numbe
 state.collected = {} :: { [number]: number }
 state.flights = {} :: { Flight }
 SHAPE.PARKED = CFrame.new(0, -10000, 0)
--- Turns a cube onto a corner: a gem.
-SHAPE.GEM_TURN = CFrame.Angles(math.pi / 4, 0, math.pi / 4)
+-- A pooled orb's halo, light and trail, by its core part; they are its
+-- children, so they come and go with it.
+state.gemHalos = {} :: { [Part]: Part }
+state.gemLights = {} :: { [Part]: PointLight }
+state.gemTrails = {} :: { [Part]: Trail }
+SHAPE.GEM_TRAIL_FADE = NumberSequence.new(0.2, 1)
 
 function fx.newGemPart(): Part
 	local part = newEffectPart()
 	part.Name = "Crystal"
+	part.Shape = Enum.PartType.Ball
 	part.Size = OBJECT.GEM_SIZE
+	local halo = newEffectPart()
+	halo.Name = "Halo"
+	halo.Shape = Enum.PartType.Ball
+	halo.Size = OBJECT.GEM_SIZE * OBJECT.GEM_HALO
+	halo.Transparency = OBJECT.GEM_HALO_FADE
+	halo.Parent = part
+	local light = Instance.new("PointLight")
+	light.Shadows = false
+	light.Range = OBJECT.GEM_LIGHT_RANGE
+	light.Brightness = OBJECT.GEM_LIGHT_BRIGHTNESS
+	light.Parent = part
+	local top = Instance.new("Attachment")
+	top.Position = Vector3.new(0, OBJECT.GEM_TRAIL_WIDTH, 0)
+	top.Parent = part
+	local bottom = Instance.new("Attachment")
+	bottom.Position = Vector3.new(0, -OBJECT.GEM_TRAIL_WIDTH, 0)
+	bottom.Parent = part
+	local trail = Instance.new("Trail")
+	trail.Attachment0 = top
+	trail.Attachment1 = bottom
+	trail.Lifetime = OBJECT.GEM_TRAIL_SECONDS
+	trail.FaceCamera = true
+	trail.LightEmission = 1
+	trail.Transparency = SHAPE.GEM_TRAIL_FADE
+	trail.Enabled = false
+	trail.Parent = part
+	state.gemHalos[part] = halo
+	state.gemLights[part] = light
+	state.gemTrails[part] = trail
 	return part
+end
+
+-- Queues orb `part` and its halo to move to `frame` after `count` moves;
+-- returns the new count.
+function fx.moveGem(part: Part, frame: CFrame, count: number): number
+	state.moveParts[count + 1] = part
+	state.moveFrames[count + 1] = frame
+	state.moveParts[count + 2] = state.gemHalos[part]
+	state.moveFrames[count + 2] = frame
+	return count + 2
+end
+
+-- Starts or stops orb `part`'s trail, dropping what it left.
+function fx.trailGem(part: Part, on: boolean)
+	local trail = state.gemTrails[part]
+	trail:Clear()
+	trail.Enabled = on
 end
 
 function fx.gemColor(xp: number): Color3
@@ -2354,14 +2411,22 @@ end
 
 function fx.takeGem(xp: number): Part
 	local part = table.remove(state.freeGems) or fx.newGemPart()
-	part.Color = fx.gemColor(xp)
-	part.Size = if xp > OBJECT.MEDIUM_XP then OBJECT.GEM_SIZE * OBJECT.GEM_BIG else OBJECT.GEM_SIZE
+	local color = fx.gemColor(xp)
+	local size = if xp > OBJECT.MEDIUM_XP then OBJECT.GEM_SIZE * OBJECT.GEM_BIG else OBJECT.GEM_SIZE
+	part.Color = color
+	part.Size = size
 	part.Transparency = 0
+	local halo = state.gemHalos[part]
+	halo.Color = color
+	halo.Size = size * OBJECT.GEM_HALO
+	state.gemLights[part].Color = color
+	state.gemTrails[part].Color = ColorSequence.new(color)
 	part.Parent = state.folder
 	return part
 end
 
 function fx.giveGem(part: Part)
+	fx.trailGem(part, false)
 	part.Parent = nil
 	table.insert(state.freeGems, part)
 end
@@ -2436,6 +2501,11 @@ function fx.collectGem(id: number, player: number)
 		fx.giveGem(part)
 		return
 	end
+	-- Placed where it starts before the trail is lit, so no streak runs
+	-- from where it was parked.
+	part.CFrame = CFrame.new(from)
+	state.gemHalos[part].CFrame = part.CFrame
+	fx.trailGem(part, true)
 	table.insert(
 		state.flights,
 		{ part = part, from = from, player = player, startedAt = now, color = fx.gemColor(xp) }
@@ -3225,8 +3295,8 @@ function fx.syncTracked(snapshot: Net.Snapshot)
 	fx.syncCrystals(snapshot.crystals)
 end
 
--- Moves the projectiles (glided like enemies), the crystals (spinning and
--- bobbing, parked out of view) and the state.collected crystals in flight.
+-- Moves the projectiles (glided like enemies), the crystals (bobbing,
+-- parked out of view) and the state.collected crystals in flight.
 function fx.renderTracked(now: number)
 	local latest = Net.latest
 	if latest == nil then
@@ -3257,19 +3327,14 @@ function fx.renderTracked(now: number)
 		if not fx.inView(center, gem.x, gem.z) then
 			if not gem.parked then
 				gem.parked = true
-				count += 1
-				state.moveParts[count] = gem.part
-				state.moveFrames[count] = SHAPE.PARKED
+				count = fx.moveGem(gem.part, SHAPE.PARKED, count)
 			end
 			continue
 		end
 		gem.parked = false
 		local bob = OBJECT.GEM_BOB * math.sin((now * OBJECT.GEM_BOB_HZ + gem.phase) * 2 * math.pi)
-		count += 1
-		state.moveParts[count] = gem.part
-		state.moveFrames[count] = CFrame.new(gem.x, ground + OBJECT.GEM_RISE + bob, gem.z)
-			* CFrame.Angles(0, now * OBJECT.GEM_SPIN + gem.phase * 6, 0)
-			* SHAPE.GEM_TURN
+		count =
+			fx.moveGem(gem.part, CFrame.new(gem.x, ground + OBJECT.GEM_RISE + bob, gem.z), count)
 	end
 
 	for index = #state.flights, 1, -1 do
@@ -3284,9 +3349,7 @@ function fx.renderTracked(now: number)
 		else
 			local position = flight.from:Lerp(target, progress * progress)
 				+ SHAPE.UP * (math.sin(progress * math.pi) * 1.5)
-			count += 1
-			state.moveParts[count] = flight.part
-			state.moveFrames[count] = CFrame.new(position) * SHAPE.GEM_TURN
+			count = fx.moveGem(flight.part, CFrame.new(position), count)
 		end
 	end
 
