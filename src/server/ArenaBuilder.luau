@@ -13,11 +13,15 @@
 local InsertService = game:GetService("InsertService")
 local TweenService = game:GetService("TweenService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 
 local Config = require(ReplicatedStorage.Shared.Config)
 local Types = require(ReplicatedStorage.Shared.Core.Types)
 
 local ArenaBuilder = {}
+
+-- The water probe's result is a Studio-only diagnostic.
+local IS_STUDIO = RunService:IsStudio()
 
 -- Presentation constants, not gameplay numbers.
 local GROUND_THICKNESS = 4
@@ -34,12 +38,11 @@ local PATCH_RADIUS_MIN, PATCH_RADIUS_MAX = 6, 18
 -- material, so the clearings take a material nothing else uses, recoloured.
 local CLEARING_MATERIAL = Enum.Material.Snow
 local CLEARING_COLOR = Color3.fromRGB(138, 170, 88)
--- The paths: dirt bands along the core's polylines, a disc every PATH_STEP
--- studs, kept off the start's ring of stones.
-local PATH_MATERIAL = Enum.Material.Mud
-local PATH_COLOR = Color3.fromRGB(128, 102, 68)
-local PATH_STEP = 3
-local PATH_START_GAP = 10
+-- The paths: faint tracks along the core's polylines, a disc every
+-- PATH_STEP studs as wide as one voxel (VOXEL), kept off the start's clearing.
+local PATH_MATERIAL = Enum.Material.Ground
+local PATH_RADIUS = 2
+local PATH_STEP = 2
 local FLOWER_COUNT = 50
 local FLOWER_COLORS = {
 	Color3.fromRGB(240, 200, 80),
@@ -167,7 +170,13 @@ local SCULPT_FLOOR = -8
 local BUCKET_SIZE = 32
 local CHANNEL_DEPTH = -3
 local SHALLOW_DEPTH = -1
-local WATER_LEVEL = -0.5
+-- Water stands on ground lower than this, up to the top of the voxel layer
+-- under WATER_SURFACE: pure water over the deep parts, filling the rest of
+-- the shallows' sand voxel (ankle-deep).
+local WET_EDGE = -0.5
+local WATER_SURFACE = 0
+-- Where the probe ray starts above a deep column, and how far it reaches.
+local WATER_PROBE_HEIGHT = 20
 -- The step from the channel's floor to the bank's, centred on its edge.
 local CHANNEL_STEP = 1
 -- The bank's lip, from the shallows' floor up to the plain.
@@ -241,6 +250,9 @@ type Heightmap = {
 	shallowEdge: number,
 	-- The highest the ground rises, for the voxel layers.
 	highest: number,
+	-- Set when the Terrain shows no water in a voxel shared with sand: the
+	-- shallows are dry sand at the plain's level, the deep parts full water.
+	dryShallows: boolean,
 }
 
 -- The current map's ground; nil while none is built, which reads as flat.
@@ -310,6 +322,7 @@ local function newHeightmap(arena: Types.Arena): Heightmap
 		channelHalfWidth = if stream then stream.channelHalfWidth else 0,
 		shallowEdge = if stream then stream.channelHalfWidth + stream.bankWidth else 0,
 		highest = 0,
+		dryShallows = false,
 	}
 	map.highest = map.rolling
 	for _, pad in terrain.pads do
@@ -505,7 +518,10 @@ local function sample(map: Heightmap, x: number, z: number): (number, number, bo
 	if cut < height then
 		height = cut
 		surface = if cut < (CHANNEL_DEPTH + SHALLOW_DEPTH) / 2 then SURFACE_BED else SURFACE_SHORE
-		return height, surface, height < WATER_LEVEL
+		if surface == SURFACE_SHORE and map.dryShallows then
+			return 0, surface, false
+		end
+		return height, surface, height < WET_EDGE
 	end
 	if rise >= height then
 		height = rise
@@ -548,30 +564,21 @@ local function columnMaterial(map: Heightmap, surface: number, x: number, z: num
 	return material
 end
 
--- Without shorelines a voxel holds a solid or water, not both: water takes
--- the voxels under the water line that are mostly empty.
-local function legacyWater(materials: { any }, solids: { any }, liquids: { any })
-	for i, plane in materials do
-		for j, row in plane do
-			for k, liquid in liquids[i][j] do
-				if liquid > 0 and solids[i][j][k] < 0.5 then
-					row[k] = Enum.Material.Water
-					solids[i][j][k] = 1
-				end
-			end
-		end
-	end
-end
-
 -- Writes the heightmap into the Terrain over the disc of `outer`, in chunks
--- of voxel columns, yielding between batches of chunks.
-local function sculpt(map: Heightmap, outer: number)
+-- of voxel columns, yielding between batches of chunks. A wet column's voxel
+-- under the water surface holds water: all of it over the deep parts, the
+-- rest of the sand's voxel in the shallows. With `map.dryShallows` the deep
+-- parts are Water voxels and the shallows plain sand. Returns a deep wet
+-- column's centre for the water probe, or nil when there is none.
+local function sculpt(map: Heightmap, outer: number): Vector3?
 	local terrain = workspace.Terrain
 	local top = math.ceil((map.highest + VOXEL) / VOXEL) * VOXEL
 	local layers = (top - SCULPT_FLOOR) / VOXEL
 	local span = SCULPT_CHUNK * VOXEL
-	local channels = true
+	local waterLayer = (WATER_SURFACE - VOXEL - SCULPT_FLOOR) / VOXEL + 1
+	local channels = not map.dryShallows
 	local written = 0
+	local probe: Vector3? = nil
 	for cx = math.floor(-outer / span), math.ceil(outer / span) - 1 do
 		for cz = math.floor(-outer / span), math.ceil(outer / span) - 1 do
 			local x0, z0 = cx * span, cz * span
@@ -599,16 +606,30 @@ local function sculpt(map: Heightmap, outer: number)
 						height, surface, wet = sample(map, x, z)
 						material = columnMaterial(map, surface, x, z)
 					end
+					local deep = wet and surface == SURFACE_BED
+					if deep and probe == nil then
+						probe = Vector3.new(x, WATER_SURFACE, z)
+					end
 					for j = 1, layers do
 						local bottom = SCULPT_FLOOR + (j - 1) * VOXEL
 						local solid = if inside
 							then math.clamp((height - bottom) / VOXEL, 0, 1)
 							else 0
-						materials[i][j][k] = if solid > 0 then material else Enum.Material.Air
-						solids[i][j][k] = solid
-						liquids[i][j][k] = if wet
-							then math.clamp((WATER_LEVEL - bottom) / VOXEL, 0, 1)
-							else 0
+						local liquid = 0
+						if wet and j == waterLayer then
+							if deep then
+								solid = 0
+							end
+							liquid = 1 - solid
+						end
+						if deep and j == waterLayer and not channels then
+							materials[i][j][k] = Enum.Material.Water
+							solids[i][j][k] = 1
+						else
+							materials[i][j][k] = if solid > 0 then material else Enum.Material.Air
+							solids[i][j][k] = solid
+						end
+						liquids[i][j][k] = liquid
 					end
 				end
 			end
@@ -624,11 +645,10 @@ local function sculpt(map: Heightmap, outer: number)
 				})
 				if not ok then
 					warn(`ArenaBuilder: no voxel channels, writing water as voxels: {problem}`)
-					channels = false
+					map.dryShallows = true
+					return sculpt(map, outer)
 				end
-			end
-			if not channels then
-				legacyWater(materials, solids, liquids)
+			else
 				terrain:WriteVoxels(region, VOXEL, materials, solids)
 			end
 			written += 1
@@ -636,6 +656,48 @@ local function sculpt(map: Heightmap, outer: number)
 				task.wait()
 			end
 		end
+	end
+	return probe
+end
+
+-- What a ray straight down onto a deep column hits: Water when the sculpted
+-- water shows; nil when nothing is hit.
+local function probeWater(point: Vector3): Enum.Material?
+	local parameters = RaycastParams.new()
+	parameters.FilterType = Enum.RaycastFilterType.Include
+	parameters.FilterDescendantsInstances = { workspace.Terrain }
+	parameters.IgnoreWater = false
+	local result = workspace:Raycast(
+		point + Vector3.new(0, WATER_PROBE_HEIGHT, 0),
+		Vector3.new(0, -WATER_PROBE_HEIGHT * 2, 0),
+		parameters
+	)
+	return if result then result.Material else nil
+end
+
+-- Sculpts the ground and checks that its water shows: when a ray onto a deep
+-- column misses the water, the ground is sculpted again with Water voxels
+-- and dry shallows. Logs the probe in Studio.
+local function sculptGround(map: Heightmap, outer: number)
+	local probe = sculpt(map, outer)
+	if probe == nil then
+		return
+	end
+	task.wait()
+	local hit = probeWater(probe)
+	if hit ~= Enum.Material.Water and not map.dryShallows then
+		warn(`ArenaBuilder: water probe at {probe} hit {hit}, writing water as voxels`)
+		workspace.Terrain:Clear()
+		map.dryShallows = true
+		local again = sculpt(map, outer)
+		if again == nil then
+			return
+		end
+		task.wait()
+		probe, hit = again, probeWater(again)
+	end
+	if IS_STUDIO then
+		print(`ArenaBuilder: water probe at {probe} hit {hit} (dry shallows: {map.dryShallows})`)
 	end
 end
 
@@ -1391,14 +1453,14 @@ local function buildClearings(arena: Types.Arena, map: Heightmap)
 	end
 end
 
--- A dirt band along every path of the core: discs of the path's width,
--- jittered, every PATH_STEP studs along its polyline, none on the start's ring.
-local function buildPaths(arena: Types.Arena, random: Random, ground: Heightmap)
+-- A faint dirt track along every path of the core: discs one voxel wide
+-- every PATH_STEP studs along its polyline, none inside the start's clearing.
+local function buildPaths(arena: Types.Arena, ground: Heightmap)
 	local map = Config.maps[Config.map]
 	if map == nil then
 		return
 	end
-	local radius = map.pathWidth / 2
+	local start = Vector3.new(arena.startX, 0, arena.startZ)
 	for _, path in arena.paths do
 		for index = 2, #path do
 			local from = Vector3.new(path[index - 1].x, 0, path[index - 1].z)
@@ -1406,16 +1468,8 @@ local function buildPaths(arena: Types.Arena, random: Random, ground: Heightmap)
 			local steps = math.max(math.ceil((to - from).Magnitude / PATH_STEP), 1)
 			for step = 0, steps - 1 do
 				local point = from:Lerp(to, step / steps)
-				if
-					(point - Vector3.new(arena.startX, 0, arena.startZ)).Magnitude >= PATH_START_GAP
-				then
-					addPaint(
-						ground,
-						point.X,
-						point.Z,
-						radius * random:NextNumber(0.85, 1.15),
-						PATH_MATERIAL
-					)
+				if (point - start).Magnitude >= map.startClearRadius then
+					addPaint(ground, point.X, point.Z, PATH_RADIUS, PATH_MATERIAL)
 				end
 			end
 		end
@@ -1430,7 +1484,6 @@ end
 local function buildGround(arena: Types.Arena, parent: Instance, random: Random, map: Heightmap)
 	local terrain = workspace.Terrain
 	terrain:SetMaterialColor(CLEARING_MATERIAL, CLEARING_COLOR)
-	terrain:SetMaterialColor(PATH_MATERIAL, PATH_COLOR)
 	local outer = arena.radius + GROUND_OVERHANG
 	for _ = 1, PATCH_COUNT do
 		local angle = random:NextNumber(0, 2 * math.pi)
@@ -1440,8 +1493,8 @@ local function buildGround(arena: Types.Arena, parent: Instance, random: Random,
 		addPaint(map, math.cos(angle) * distance, math.sin(angle) * distance, radius, material)
 	end
 	buildClearings(arena, map)
-	buildPaths(arena, random, map)
-	sculpt(map, outer)
+	buildPaths(arena, map)
+	sculptGround(map, outer)
 
 	local ground = Instance.new("Model")
 	ground.Name = "Ground"
