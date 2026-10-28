@@ -44,6 +44,26 @@ _Avoid_: Zone, arena, level, battleground, world (the game's setting as a whole)
 A prop scattered on the map anew for every run, which blocks players and enemies and nothing else.
 _Avoid_: Cover, prop, wall
 
+**Shrine**:
+A place scattered on the map with the obstacles, seen from afar by its beam of light, that a hero activates by holding beside it for a boon, a pact, a trial or a spring.
+_Avoid_: Altar, totem (reserved for the skill), pickup, power-up
+
+**Boon**:
+What a shrine of its kind gives once: one stat raised until the run ends.
+_Avoid_: Buff, blessing, bonus
+
+**Pact**:
+What a shrine of its kind gives once: a bigger stat raised and another lowered until the run ends.
+_Avoid_: Curse, trade, deal
+
+**Trial**:
+What a shrine of its kind starts once: a ring of enemies around it, and when the last of them dies, a great offer.
+_Avoid_: Challenge, wave, event
+
+**Spring**:
+What a shrine of its kind gives whenever it is back: full health and every utility skill and the dash ready.
+_Avoid_: Fountain, well (reserved for the prop), heal point
+
 ### Enemies
 
 **Enemy**:
@@ -104,6 +124,10 @@ _Avoid_: Deck, spellbook
 How a skill chooses where it lands: the nearest enemies, the toughest, the densest cluster, a chain, the ground around the hero, and the like.
 _Avoid_: Aim, lock-on
 
+**Dash**:
+The short move every class makes with one button: a burst in the direction of movement, through enemies, during which nothing hurts the hero; it has charges that come back on a cooldown.
+_Avoid_: Dodge, roll, blink, evade
+
 **Utility skill**:
 A move a player fires by hand on a cooldown, such as a sprint, a barrier or a heal; up to three are worn, any of them by any class, and they persist between runs in the stash.
 _Avoid_: Active skill, ultimate, spell
@@ -123,6 +147,10 @@ _Avoid_: Perk, upgrade, offer
 **Offer**:
 The three cards a level-up deals, from which the player takes one; a solo run stands still until they do.
 _Avoid_: Hand, draw, choice
+
+**Great offer**:
+An offer a trial deals, each of whose cards is worth two ranks.
+_Avoid_: Legendary offer, bonus cards, reward
 
 **Crystal**:
 What a killed enemy drops and a player within pickup range draws in, carrying experience.

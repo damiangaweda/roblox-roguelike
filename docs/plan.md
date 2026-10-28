@@ -26,7 +26,7 @@ Aimed combat with the Elementalist ([ADR-0009](adr/0009-aimed-combat.md)), seven
 
 ### Stage 3: the solo run
 
-**Status:** accepted on 2026-10-27 together with ADR-0013 to ADR-0018; in progress on `feat/solo-run`.
+**Status:** accepted on 2026-10-27 together with ADR-0013 to ADR-0018; criteria 1–5 met and merged on 2026-10-28 (PR #9); criterion 6 continues in stage 3b. Decided on 2026-10-28 after the first playtest: bosses keep two attacks and the final boss three; the horde's cap is 220 ([ADR-0019](adr/0019-horde-cap-of-220.md)); the roster's ramp stays until more runs are played; a barrier already up keeps whatever is larger, and a shield skill fires only with an enemy in a configured range; bosses are never knocked back or stunned; the chest's position travels in the world view from the start and only the compass hides it.
 
 **Goal:** one fifteen-minute run, played alone, that is fun and looks intended: three classes whose skills cast themselves, cards that build a different character every run, a horde with elites and bosses, a hidden way out and a final boss.
 
@@ -51,6 +51,28 @@ Aimed combat with the Elementalist ([ADR-0009](adr/0009-aimed-combat.md)), seven
 3. The client sends only intents: pick a class, choose a card, fire a utility skill, open the chest, cast the spell, enter the portal; the server decides every target, hit and outcome.
 4. In a Studio playtest with one client, driven through the Studio MCP and once by the user, each class plays a run in which skills fire on their own, level-ups offer cards that change the build visibly, an elite of each archetype and a boss are fought, the chest is found, the spell is cast and interrupted and cast again, and the hero extracts; another run reaches the final boss; a second run scatters different obstacles.
 5. With the horde at its cap the server holds at least 50 Hz and the client at least 50 FPS with Studio focused; with the touch emulator moving and the three utility buttons work.
+6. The user plays a run and judges whether it is fun and looks intended; the stage is done only when they say so.
+
+### Stage 3b: the run's feel
+
+**Status:** accepted on 2026-10-28 together with ADR-0019 and ADR-0020; in progress on `feat/run-feel`.
+
+**Goal:** the solo run of stage 3, played by the user, is fun and looks intended: a dodge, a reason to cross the map, a forest that looks made, skills with faces and a HUD that stays visible. Everything else of stage 3 stays as it is.
+
+**Scope:**
+- **Dash:** every class dashes with one button (space, a touch button, a gamepad button): a configured distance (proposal: 14 studs) in the direction of movement, or the facing when standing, over a configured time (proposal: 0.25 s), through enemies, stopped by obstacles and the wall. The hero is untouchable for the dash: no contact, attack, projectile or area hurts them. Two charges, each back after a configured cooldown (proposal: 3 s). The client sends the intent with the direction; the server moves the hero and the client plays the move at once, as it does a knockback. The sprint utility stays.
+- **Buttons:** utility skills on Q, E and R (and the gamepad's face buttons); cards by click or tap, or 1, 2, 3 only while an offer is up; every interaction in the world on one key, F (and one gamepad button): the chest and a shrine are held, the portal and the spell are pressed. Touch keeps its thumbstick, the three utility buttons and gains a dash button and an interact button.
+- **Shrines** ([ADR-0020](adr/0020-shrines-reward-crossing-the-map.md)): a configured number (proposal: 8) of shrines scattered with the obstacles, at a minimum distance from the start, the chest and one another, each of one of four kinds drawn at random (proposal: two of each), told apart from afar by a beam of light in its kind's colour and named up close. Activating one takes a configured hold (proposal: 1.5 s) that a hit interrupts. A **boon** gives one stat bonus from a configured pool (proposal: damage, speed, max health, haste, pickup range) until the run ends, once. A **pact** gives a bigger bonus at a cost from a configured pool (proposal: damage up for max health down, haste up for speed down, area up for armour down), once. A **trial** spawns a ring of the window's grunts and one elite around the shrine; when the last of them dies the shrine deals a **great offer**: three cards of the usual draw, each worth two ranks (a new skill arrives at rank 2), with the run paused as at a level-up; once. A **spring** heals the hero fully and resets the utility skills' and the dash's cooldowns, and is back after a configured time (proposal: 3 min).
+- **The forest's look:** obstacles are drawn from a set of low-poly meshes generated with the Studio MCP and published under the owner's account, their asset ids in configuration: three pines and two broad trees, a fallen log, a stump, two boulders, a ruined chapel, a watchtower, a hut, a well, a stone circle and fence pieces. Buildings are bigger obstacles that take several circles in the rules. The ground gains clearings, a path and a pond; the tree line and the wall stay.
+- **Skill faces:** every skill, passive and utility skill has an icon (an image asset, its id in configuration) shown on its card, its tile and the pick screen; a card shows the icon large with the name under it. Icons come from a CC BY icon set, rasterised in the class's colours, with the attribution in `CREDITS.md` and the game's description.
+- **HUD:** experience across the top of the screen with the level; health and the barrier at the bottom centre above the skill tiles, with the dash charges and the utility keys shown; kills and passives at the right edge; the chat untouched.
+
+**Acceptance criteria:**
+1. Core tests cover the dash's distance, time, charges, cooldown, untouchability (contact, attack, projectile and area miss a dashing hero), its stop at an obstacle and the wall; the shrines' scatter (count, kinds, spacing, clear ground), the hold and its interruption, each kind's effect, the trial's ring and its reward, the spring's recharge, all repeatable for a seed.
+2. Every number in the scope is configuration; the shrine kinds, the boon and pact pools, the mesh set and the icon ids are data.
+3. The client sends only intents: dash with a direction, interact held or pressed; the server decides every move, hit and reward.
+4. In a Studio playtest driven through the Studio MCP: the dash crosses a group of enemies without damage, each shrine kind is activated and its effect shows, the trial's ring is fought and its great offer taken, the forest shows every prop of the set, every card and tile shows its icon, the HUD stays readable with the chat open, and the touch emulator's buttons dash and interact.
+5. With the horde at its cap the server holds at least 50 Hz and the client at least 50 FPS with Studio focused, on mains power.
 6. The user plays a run and judges whether it is fun and looks intended; the stage is done only when they say so.
 
 ### Stage 4: co-op
