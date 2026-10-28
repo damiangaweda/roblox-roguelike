@@ -1688,6 +1688,18 @@ local Config: Types.Config = {
 	-- Enemy meshes (ADR-0022): filled as they are published; kind id ->
 	-- mesh, texture, scale and the height of the mesh's base above the ground.
 	enemyMeshes = {
+		mossmaw = {
+			meshId = "rbxassetid://99039464049122",
+			textureId = "rbxassetid://139178986975400",
+			scale = 1.35,
+			yOffset = 0,
+		},
+		spitter = {
+			meshId = "rbxassetid://87001287693829",
+			textureId = "rbxassetid://95992316156528",
+			scale = 1.1,
+			yOffset = 0,
+		},
 		ashenStag = {
 			meshId = "rbxassetid://81903043061667",
 			textureId = "rbxassetid://99702338813237",
