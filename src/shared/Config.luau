@@ -1685,6 +1685,9 @@ local Config: Types.Config = {
 		warRoar = "rbxassetid://133510941517636",
 		wideCut = "rbxassetid://136820166390280",
 	},
+	-- Enemy meshes (ADR-0022): filled as they are published; kind id ->
+	-- mesh, texture, scale and the height of the mesh's base above the ground.
+	enemyMeshes = {},
 	extraction = {
 		compassMinute = 5,
 		openRadius = 6,
