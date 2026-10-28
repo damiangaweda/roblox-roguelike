@@ -96,6 +96,19 @@ return {
 		Assert.near(Hero.walkSpeed(run, player), speed, 1e-9)
 	end,
 
+	["walk speed falls to the shallow factor in a slow zone"] = function()
+		local run = Fixtures.run()
+		local player = run.players[1]
+		Fixtures.clearObstacles(run)
+		local speed = Hero.walkSpeed(run, player)
+		Fixtures.slowZone(run, 30, 0, 6)
+		Assert.near(Hero.walkSpeed(run, player), speed, 1e-9)
+		Fixtures.place(run, 1, 33, 2)
+		Assert.near(Hero.walkSpeed(run, player), speed * run.config.terrain.shallowFactor, 1e-9)
+		Fixtures.place(run, 1, 37, 0)
+		Assert.near(Hero.walkSpeed(run, player), speed, 1e-9)
+	end,
+
 	["damage goes through the barrier, then armour, down to the minimum"] = function()
 		local run = Fixtures.run()
 		local player = run.players[1]

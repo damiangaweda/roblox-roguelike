@@ -6,6 +6,7 @@
 local Config = require("../src/shared/Config")
 local Lairs = require("../src/shared/Core/Lairs")
 local State = require("../src/shared/Core/State")
+local Terrain = require("../src/shared/Core/Terrain")
 local Types = require("../src/shared/Core/Types")
 
 local Fixtures = {}
@@ -41,9 +42,57 @@ function Fixtures.run(
 	return run
 end
 
--- Open ground: no obstacles stand in the way of a spec's positions.
+-- Open ground: no obstacles stand in the way of a spec's positions, and no
+-- shallows slow them.
 function Fixtures.clearObstacles(run: Types.Run)
 	run.arena.obstacles = {}
+	run.arena.terrain.slowZones = {}
+end
+
+-- A slow zone (the shallows) of `radius` at (x, z).
+function Fixtures.slowZone(run: Types.Run, x: number, z: number, radius: number): Types.SlowZone
+	local zone = { x = x, z = z, radius = radius }
+	table.insert(run.arena.terrain.slowZones, zone)
+	return zone
+end
+
+-- An obstacle circle of `kind` (a rock by default) at (x, z).
+function Fixtures.obstacle(
+	run: Types.Run,
+	x: number,
+	z: number,
+	radius: number,
+	kind: string?
+): Types.Obstacle
+	local id = #run.arena.obstacles + 1
+	local obstacle: Types.Obstacle = {
+		id = id,
+		kind = kind or "rock",
+		x = x,
+		z = z,
+		radius = radius,
+		rotation = 0,
+		group = id,
+		anchor = true,
+	}
+	table.insert(run.arena.obstacles, obstacle)
+	return obstacle
+end
+
+-- A cliff ring round (x, z) of `radius` with one ramp facing `gapAngle`
+-- (radians), its circles laid by the generator's rule (Terrain.cliffRing).
+function Fixtures.cliffRing(run: Types.Run, x: number, z: number, radius: number, gapAngle: number)
+	local plateau: Types.Plateau = {
+		id = 0,
+		x = x,
+		z = z,
+		radius = radius,
+		height = 0,
+		ramps = { gapAngle },
+	}
+	for _, circle in Terrain.cliffRing(run.config.terrain, plateau) do
+		Fixtures.obstacle(run, circle.x, circle.z, circle.radius, "cliff")
+	end
 end
 
 -- An enemy of `kind` at (x, z) without the horde's growth.

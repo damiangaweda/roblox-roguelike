@@ -122,6 +122,27 @@ return {
 		Assert.equal(player.x, x)
 	end,
 
+	["a move into the shallows is held to their speed from its start"] = function()
+		local run = Fixtures.run()
+		Fixtures.clearObstacles(run)
+		local player = run.players[1]
+		local config = run.config.player
+		local land = run.config.classes[player.class].walkSpeed * config.moveTolerance
+		local cap = land * config.moveBurstSeconds
+		-- The banked burst on land, then a long step into the water ahead.
+		player.x, player.z = 0, 0
+		player.moveBudget = cap
+		Fixtures.slowZone(run, 30, 0, 20)
+		Run.step(run, DT, { [1] = { x = 20, z = 0 } })
+		Assert.near(player.x, cap * run.config.terrain.shallowFactor, 1e-6)
+		-- On dry ground the same burst carries the whole cap.
+		player.x, player.z = 0, 0
+		player.moveBudget = cap
+		run.arena.terrain.slowZones = {}
+		Run.step(run, DT, { [1] = { x = 20, z = 0 } })
+		Assert.near(player.x, cap, 1e-6)
+	end,
+
 	["a solo run pauses while a card is chosen and resumes after"] = function()
 		local run = Fixtures.run(1, nil, 5)
 		run.config.classes.mage.maxHealth = 1e6

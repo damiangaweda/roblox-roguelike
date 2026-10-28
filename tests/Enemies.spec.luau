@@ -5,6 +5,7 @@ local Fixtures = require("./Fixtures")
 local Geometry = require("../src/shared/Core/Geometry")
 local Arena = require("../src/shared/Core/Arena")
 local Lairs = require("../src/shared/Core/Lairs")
+local Run = require("../src/shared/Core/Run")
 local State = require("../src/shared/Core/State")
 local Types = require("../src/shared/Core/Types")
 
@@ -473,6 +474,26 @@ return {
 		Assert.near(event.x, 25)
 	end,
 
+	["a leap is held by the channel and a cliff but flies over a rock"] = function()
+		for _, kind in { "channel", "cliff", "rock" } do
+			local run = open()
+			Fixtures.place(run, 1, 25, 0)
+			local boss = fighter(run, "mossmaw", 0, 0)
+			boss.attack = 2
+			local radius = run.config.enemies.mossmaw.radius
+			for z = -30, 30, 6 do
+				Fixtures.obstacle(run, 12, z, 4, kind)
+			end
+			windUp(run, boss, attacked(run))
+			if kind == "rock" then
+				Assert.near(boss.x, 25, 1e-6, "over the rock")
+			else
+				Assert.truthy(boss.x <= 12 - 4 - radius + 1e-6, kind .. " crossed: " .. boss.x)
+			end
+			Assert.truthy(boss.x >= 0, "the leap went backwards")
+		end
+	end,
+
 	["a projectile attack fans its shots over the spread"] = function()
 		local run = open()
 		Fixtures.place(run, 1, 30, 0)
@@ -674,6 +695,79 @@ return {
 		Assert.equal(hit.skill, "thorns")
 		Assert.equal(hit.enemyId, grunt.id)
 		Assert.truthy(grunt.health < grunt.maxHealth)
+	end,
+
+	["a grunt behind a cliff ring finds the ramp and reaches the hero"] = function()
+		-- The ramp faces +x; the boar starts on the far side, where walking
+		-- straight presses it into the cliff.
+		local run, player = open()
+		Fixtures.clearLairs(run)
+		Fixtures.place(run, 1, 100, 0)
+		Fixtures.cliffRing(run, 100, 0, 30, 0)
+		local function reached(): boolean
+			local boar = run.enemies[1]
+			local touching = run.config.player.radius + State.kind(run, boar).radius
+			return Geometry.distance(boar.x, boar.z, player.x, player.z)
+				<= touching + run.config.horde.contactMargin + 0.5
+		end
+		local boar = Fixtures.enemy(run, "wildBoar", 40, 0)
+		boar.health, boar.maxHealth = 1e9, 1e9
+
+		local arrived = false
+		for _ = 1, 400 do
+			Run.step(run, DT, {})
+			if reached() then
+				arrived = true
+				break
+			end
+		end
+		Assert.truthy(arrived, string.format("stuck at (%.1f, %.1f)", boar.x, boar.z))
+
+		-- Without the field the same boar stays outside the ring.
+		local before, hero = open()
+		Fixtures.clearLairs(before)
+		Fixtures.place(before, 1, 100, 0)
+		Fixtures.cliffRing(before, 100, 0, 30, 0)
+		local stuck = Fixtures.enemy(before, "wildBoar", 40, 0)
+		for _ = 1, 400 do
+			tick(before)
+		end
+		Assert.truthy(
+			Geometry.distance(stuck.x, stuck.z, hero.x, hero.z) > 25,
+			"it got in without the field"
+		)
+	end,
+
+	["an elite behind a wall walks round it to the hero"] = function()
+		local run, player = open()
+		Fixtures.clearLairs(run)
+		Fixtures.place(run, 1, 0, 0)
+		for z = -40, 40, 4 do
+			Fixtures.obstacle(run, 20, z, 2.5)
+		end
+		local brute = Fixtures.enemy(run, "brute", 45, 0)
+		brute.health, brute.maxHealth = 1e9, 1e9
+		local range = State.kind(run, brute).attacks[1].range
+		local closest = math.huge
+		for _ = 1, 400 do
+			Run.step(run, DT, {})
+			closest = math.min(closest, Geometry.distance(brute.x, brute.z, player.x, player.z))
+			if closest <= range then
+				break
+			end
+		end
+		Assert.truthy(closest <= range, string.format("closest %.1f", closest))
+	end,
+
+	["the shallows slow an enemy's walk by the shallow factor"] = function()
+		local run = open()
+		local speed = run.config.enemies.sproutImp.speed
+		local dry = Fixtures.enemy(run, "sproutImp", 40, 0)
+		local wet = Fixtures.enemy(run, "sproutImp", -40, 0)
+		Fixtures.slowZone(run, -40, 0, 8)
+		tick(run)
+		Assert.near(dry.x, 40 - speed * DT)
+		Assert.near(wet.x, -40 + speed * run.config.terrain.shallowFactor * DT)
 	end,
 
 	["the same seed moves the same horde"] = function()

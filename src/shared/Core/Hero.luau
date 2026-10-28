@@ -41,13 +41,15 @@ function Hero.stats(run: Types.Run, player: Types.Player): Types.HeroStats
 	}
 end
 
--- Studs per second the hero may walk now, with a sprint running.
-function Hero.walkSpeed(run: Types.Run, player: Types.Player): number
+-- Studs per second the hero may walk now, with a sprint running and slowed
+-- in the shallows (ADR-0023): by `slow`, else by the slow factor where the
+-- hero stands.
+function Hero.walkSpeed(run: Types.Run, player: Types.Player, slow: number?): number
 	local speed = Hero.stats(run, player).speed
 	if player.sprintUntil > run.time then
 		speed *= player.sprintFactor
 	end
-	return speed
+	return speed * (slow or Arena.slowFactor(run.arena, run.config.terrain, player.x, player.z))
 end
 
 -- Whether nothing can hurt the hero now: a dash is under way (GLOSSARY: dash).

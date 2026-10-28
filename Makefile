@@ -32,13 +32,13 @@ hooks:
 
 ## Format the sources in place.
 fmt:
-	$(TOOLS)/stylua src tests
+	$(TOOLS)/stylua src tests scripts
 
 fmt-check:
-	$(TOOLS)/stylua --check src tests
+	$(TOOLS)/stylua --check src tests scripts
 
 lint:
-	$(TOOLS)/selene src tests
+	$(TOOLS)/selene src tests scripts
 
 ## Strict type check of the game's sources against the Roblox API.
 types:

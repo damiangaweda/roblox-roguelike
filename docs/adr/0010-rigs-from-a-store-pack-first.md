@@ -1,5 +1,7 @@
 # Rigged models from a store pack first, generated creatures later
 
+**Status:** superseded by [ADR-0024](0024-enemies-are-rigged-meshy-models-with-clips.md) on 2026-10-28: Meshy now rigs and animates every enemy kind, so the store pack was never republished.
+
 Stage 2a draws enemies from one Creator Store pack of rigged, animated low-poly monsters (Lukami's "Studded Rigged Monster Pack", twenty monsters with idle, walk, run, attack, hit and die), republished under the game owner's account, and draws players from Avatar Auto Setup R15 rigs with catalogue and Mixamo animations. Generated creatures (Meshy or Tripo on a commercial plan, with attack and death clips authored in Studio) come in the art stage, once combat is proven. We chose this because no AI tool rigs or animates a non-humanoid monster today: Roblox's generator yields unrigged meshes, Auto Setup takes humanoids only, and Meshy and Tripo rig creatures but animate only their walk.
 
 ## Considered options

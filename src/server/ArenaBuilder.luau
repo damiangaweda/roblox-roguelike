@@ -1,7 +1,8 @@
 --!strict
 -- Builds the forest map in the workspace from the core's arena (ADR-0014,
--- ADR-0020): a round terrain ground with the places' clearings and the paths
--- to them (stage 3b),
+-- ADR-0020): a round terrain ground sculpted from the arena's terrain
+-- (ADR-0023: plateaus, the stream, ponds, gently rolling ground) with the
+-- places' clearings and the paths to them (stage 3b),
 -- an invisible wall at the edge, a prop per obstacle drawn from its kind's
 -- mesh (or built from parts while the kind has none), an invisible solid body
 -- per obstacle circle, the shrines, the extraction chest and the portal's
@@ -12,11 +13,15 @@
 local InsertService = game:GetService("InsertService")
 local TweenService = game:GetService("TweenService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 
 local Config = require(ReplicatedStorage.Shared.Config)
 local Types = require(ReplicatedStorage.Shared.Core.Types)
 
 local ArenaBuilder = {}
+
+-- The water probe's result is a Studio-only diagnostic.
+local IS_STUDIO = RunService:IsStudio()
 
 -- Presentation constants, not gameplay numbers.
 local GROUND_THICKNESS = 4
@@ -33,12 +38,11 @@ local PATCH_RADIUS_MIN, PATCH_RADIUS_MAX = 6, 18
 -- material, so the clearings take a material nothing else uses, recoloured.
 local CLEARING_MATERIAL = Enum.Material.Snow
 local CLEARING_COLOR = Color3.fromRGB(138, 170, 88)
--- The paths: dirt bands along the core's polylines, a disc every PATH_STEP
--- studs, kept off the start's ring of stones.
-local PATH_MATERIAL = Enum.Material.Mud
-local PATH_COLOR = Color3.fromRGB(128, 102, 68)
-local PATH_STEP = 3
-local PATH_START_GAP = 10
+-- The paths: faint tracks along the core's polylines, a disc every
+-- PATH_STEP studs as wide as one voxel (VOXEL), kept off the start's clearing.
+local PATH_MATERIAL = Enum.Material.Ground
+local PATH_RADIUS = 2
+local PATH_STEP = 2
 local FLOWER_COUNT = 50
 local FLOWER_COLORS = {
 	Color3.fromRGB(240, 200, 80),
@@ -53,6 +57,12 @@ local TREE_LINE_RADIUS = 5
 local WALL_HEIGHT = 40
 local WALL_THICKNESS = 4
 local BODY_HEIGHT = 12
+-- How far an obstacle's body reaches below the ground, and where around its
+-- circle the ground is read (the centre and four points on the edge).
+local BODY_SINK = 1
+local BODY_SAMPLES = { { 0, 0 }, { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }
+-- Obstacle kinds the sculpted ground draws: no prop, only the body.
+local SCULPTED_KINDS: { [string]: boolean } = { cliff = true, channel = true }
 local BUILD_BATCH = 40
 
 local TRUNK_COLORS =
@@ -146,6 +156,573 @@ local RISE_CRACK_WIDTH = 0.35
 local RISE_BEAM_HEIGHT = 30
 local RISE_BEAM_RADIUS = 0.25
 
+-- The sculpted ground (stage 3d, ADR-0023): the core's terrain description
+-- turned into a height at every point, sampled per voxel column at build and
+-- per character per heartbeat. These depths and slopes are the look; the
+-- shapes and the slow factor are the core's.
+local VOXEL = 4
+-- Voxel columns per WriteVoxelChannels call, along each side.
+local SCULPT_CHUNK = 16
+local SCULPT_CHUNKS_PER_FRAME = 4
+-- The lowest voxel layer's bottom: the ground is solid from here up.
+local SCULPT_FLOOR = -8
+-- The side of the buckets that list which features reach a point.
+local BUCKET_SIZE = 32
+local CHANNEL_DEPTH = -3
+local SHALLOW_DEPTH = -1
+-- Water stands on ground lower than this, up to the top of the voxel layer
+-- under WATER_SURFACE: pure water over the deep parts, filling the rest of
+-- the shallows' sand voxel (ankle-deep).
+local WET_EDGE = -0.5
+local WATER_SURFACE = 0
+-- Where the probe ray starts above a deep column, and how far it reaches.
+local WATER_PROBE_HEIGHT = 20
+-- The step from the channel's floor to the bank's, centred on its edge.
+local CHANNEL_STEP = 1
+-- The bank's lip, from the shallows' floor up to the plain.
+local SHORE_LIP = 2
+-- A ford fades into the channel over this much beyond its radius.
+local FORD_BLEND = 3
+-- The rolling ground returns over this much beyond a feature's edge.
+local FEATURE_FALLOFF = 8
+local PAD_FALLOFF = 6
+-- A ramp climbs from the plain to the plateau's top across this band around
+-- the plateau's edge (inside, outside): 12 studs for 6-8 high.
+local RAMP_INNER = 6
+local RAMP_OUTER = 6
+-- Elsewhere the edge drops sheer over this much, and the ground around it is
+-- rock: a rim on top and scree at the foot.
+local CLIFF_FALL = 1
+local ROCK_RIM = 3
+local ROCK_FOOT = 2
+-- The rolling ground: two octaves of noise, gained and clipped so its range
+-- spans Config.terrain.rollingHeight.
+local ROLL_SCALE = 90
+local ROLL_DETAIL_SCALE = 35
+local ROLL_DETAIL = 0.5
+local ROLL_GAIN = 1.6
+local BED_MATERIAL = Enum.Material.Mud
+local SHORE_MATERIAL = Enum.Material.Sand
+local CLIFF_MATERIAL = Enum.Material.Rock
+local RAMP_MATERIAL = Enum.Material.Ground
+local GRASS_MATERIAL = Enum.Material.Grass
+
+-- What covers a point of ground, beyond the painted discs of the plain.
+local SURFACE_PLAIN = 0
+local SURFACE_ROCK = 1
+local SURFACE_SHORE = 2
+local SURFACE_BED = 3
+local SURFACE_RAMP = 4
+-- The bucket key's offset, so negative bucket indices make positive keys.
+local BUCKET_OFFSET = 2048
+local BUCKET_STRIDE = 4096
+
+type Disc = { x: number, z: number, radius: number }
+type Paint = { x: number, z: number, radius: number, material: Enum.Material }
+type PlateauShape = {
+	x: number,
+	z: number,
+	radius: number,
+	height: number,
+	ramps: { number },
+	-- Half a ramp's width along the edge, in studs.
+	rampHalf: number,
+}
+type Segment = { ax: number, az: number, dx: number, dz: number, inverse: number }
+type Bucket = {
+	pads: { Disc },
+	plateaus: { PlateauShape },
+	ponds: { Types.Pond },
+	segments: { Segment },
+	fords: { Types.Ford },
+	paints: { Paint },
+}
+type Heightmap = {
+	buckets: { [number]: Bucket },
+	-- Half the rolling ground's range: zero on a map without terrain.
+	rolling: number,
+	ox: number,
+	oz: number,
+	detailX: number,
+	detailZ: number,
+	channelHalfWidth: number,
+	-- The shallows' outer edge from the stream's centre line.
+	shallowEdge: number,
+	-- The highest the ground rises, for the voxel layers.
+	highest: number,
+	-- Set when the Terrain shows no water in a voxel shared with sand: the
+	-- shallows are dry sand at the plain's level, the deep parts full water.
+	dryShallows: boolean,
+}
+
+-- The current map's ground; nil while none is built, which reads as flat.
+local heightmap: Heightmap? = nil
+
+local function smoothstep(from: number, to: number, value: number): number
+	if value <= from then
+		return 0
+	elseif value >= to then
+		return 1
+	end
+	local t = (value - from) / (to - from)
+	return t * t * (3 - 2 * t)
+end
+
+local function lerp(from: number, to: number, t: number): number
+	return from + (to - from) * t
+end
+
+local function bucketKey(ix: number, iz: number): number
+	return (ix + BUCKET_OFFSET) * BUCKET_STRIDE + iz + BUCKET_OFFSET
+end
+
+-- The buckets a box over the ground touches, created as needed.
+local function bucketsOver(
+	map: Heightmap,
+	x0: number,
+	z0: number,
+	x1: number,
+	z1: number
+): { Bucket }
+	local result = {}
+	for ix = math.floor(x0 / BUCKET_SIZE), math.floor(x1 / BUCKET_SIZE) do
+		for iz = math.floor(z0 / BUCKET_SIZE), math.floor(z1 / BUCKET_SIZE) do
+			local key = bucketKey(ix, iz)
+			local bucket = map.buckets[key]
+			if bucket == nil then
+				bucket =
+					{ pads = {}, plateaus = {}, ponds = {}, segments = {}, fords = {}, paints = {} }
+				map.buckets[key] = bucket
+			end
+			table.insert(result, bucket)
+		end
+	end
+	return result
+end
+
+local function around(map: Heightmap, x: number, z: number, reach: number): { Bucket }
+	return bucketsOver(map, x - reach, z - reach, x + reach, z + reach)
+end
+
+-- The heightmap of an arena's terrain. An arena without plateaus, stream or
+-- ponds stays flat, as the map was before the terrain.
+local function newHeightmap(arena: Types.Arena): Heightmap
+	local terrain = arena.terrain
+	local shaped = #terrain.plateaus > 0 or terrain.stream ~= nil or #terrain.ponds > 0
+	-- The noise's offsets come from the map, so a map always rolls the same.
+	local random = Random.new(arena.chestX * 7919 + arena.chestZ * 104729 + 1)
+	local stream = terrain.stream
+	local map: Heightmap = {
+		buckets = {},
+		rolling = if shaped then Config.terrain.rollingHeight / 2 else 0,
+		ox = random:NextNumber(-1000, 1000),
+		oz = random:NextNumber(-1000, 1000),
+		detailX = random:NextNumber(-1000, 1000),
+		detailZ = random:NextNumber(-1000, 1000),
+		channelHalfWidth = if stream then stream.channelHalfWidth else 0,
+		shallowEdge = if stream then stream.channelHalfWidth + stream.bankWidth else 0,
+		highest = 0,
+		dryShallows = false,
+	}
+	map.highest = map.rolling
+	for _, pad in terrain.pads do
+		local disc = { x = pad.x, z = pad.z, radius = pad.radius }
+		for _, bucket in around(map, pad.x, pad.z, pad.radius + PAD_FALLOFF) do
+			table.insert(bucket.pads, disc)
+		end
+	end
+	for _, plateau in terrain.plateaus do
+		local shape: PlateauShape = {
+			x = plateau.x,
+			z = plateau.z,
+			radius = plateau.radius,
+			height = plateau.height,
+			ramps = plateau.ramps,
+			rampHalf = Config.terrain.rampWidth / 2,
+		}
+		map.highest = math.max(map.highest, plateau.height)
+		local reach = plateau.radius + RAMP_OUTER + FEATURE_FALLOFF
+		for _, bucket in around(map, plateau.x, plateau.z, reach) do
+			table.insert(bucket.plateaus, shape)
+		end
+	end
+	for _, pond in terrain.ponds do
+		for _, bucket in
+			around(map, pond.x, pond.z, pond.radius + pond.rimWidth + SHORE_LIP + FEATURE_FALLOFF)
+		do
+			table.insert(bucket.ponds, pond)
+		end
+	end
+	if stream then
+		local reach = map.shallowEdge + SHORE_LIP + FEATURE_FALLOFF
+		for index = 2, #stream.points do
+			local a, b = stream.points[index - 1], stream.points[index]
+			local dx, dz = b.x - a.x, b.z - a.z
+			local length = dx * dx + dz * dz
+			local segment: Segment = {
+				ax = a.x,
+				az = a.z,
+				dx = dx,
+				dz = dz,
+				inverse = if length > 0 then 1 / length else 0,
+			}
+			local buckets = bucketsOver(
+				map,
+				math.min(a.x, b.x) - reach,
+				math.min(a.z, b.z) - reach,
+				math.max(a.x, b.x) + reach,
+				math.max(a.z, b.z) + reach
+			)
+			for _, bucket in buckets do
+				table.insert(bucket.segments, segment)
+			end
+		end
+		for _, ford in stream.fords do
+			for _, bucket in around(map, ford.x, ford.z, ford.radius + FORD_BLEND) do
+				table.insert(bucket.fords, ford)
+			end
+		end
+	end
+	return map
+end
+
+-- A disc of `material` on the plain; a later disc covers an earlier one.
+local function addPaint(
+	map: Heightmap,
+	x: number,
+	z: number,
+	radius: number,
+	material: Enum.Material
+)
+	local paint = { x = x, z = z, radius = radius, material = material }
+	for _, bucket in around(map, x, z, radius) do
+		table.insert(bucket.paints, paint)
+	end
+end
+
+local function rollingAt(map: Heightmap, x: number, z: number): number
+	local n = math.noise(x / ROLL_SCALE + map.ox, z / ROLL_SCALE + map.oz)
+		+ ROLL_DETAIL
+			* math.noise(x / ROLL_DETAIL_SCALE + map.detailX, z / ROLL_DETAIL_SCALE + map.detailZ)
+	return map.rolling * math.clamp(n * ROLL_GAIN, -1, 1)
+end
+
+-- The floor of water whose deep part ends `edge` from its centre and whose
+-- shallows end `shallow` from it, at distance `d`.
+local function waterFloor(d: number, edge: number, shallow: number): number
+	if d < edge + CHANNEL_STEP then
+		return lerp(
+			CHANNEL_DEPTH,
+			SHALLOW_DEPTH,
+			smoothstep(edge - CHANNEL_STEP, edge + CHANNEL_STEP, d)
+		)
+	end
+	return lerp(SHALLOW_DEPTH, 0, smoothstep(shallow, shallow + SHORE_LIP, d))
+end
+
+-- The ground's height at (x, z), what covers it and whether water stands on it.
+local function sample(map: Heightmap, x: number, z: number): (number, number, boolean)
+	local bucket = map.buckets[bucketKey(math.floor(x / BUCKET_SIZE), math.floor(z / BUCKET_SIZE))]
+	local rolling = if map.rolling > 0 then rollingAt(map, x, z) else 0
+	if bucket == nil then
+		return rolling, SURFACE_PLAIN, false
+	end
+	-- How far the rolling ground is flattened, from 0 (not) to 1 (flat).
+	local flat = 0
+	for _, pad in bucket.pads do
+		local dx, dz = x - pad.x, z - pad.z
+		local d = math.sqrt(dx * dx + dz * dz)
+		flat = math.max(flat, 1 - smoothstep(pad.radius, pad.radius + PAD_FALLOFF, d))
+	end
+	-- The water's floor, where water cuts the ground.
+	local cut = math.huge
+	if #bucket.segments > 0 then
+		local nearest = math.huge
+		for _, segment in bucket.segments do
+			local t = math.clamp(
+				((x - segment.ax) * segment.dx + (z - segment.az) * segment.dz) * segment.inverse,
+				0,
+				1
+			)
+			local px, pz = segment.ax + segment.dx * t - x, segment.az + segment.dz * t - z
+			nearest = math.min(nearest, px * px + pz * pz)
+		end
+		local d = math.sqrt(nearest)
+		local edge = map.shallowEdge
+		flat =
+			math.max(flat, 1 - smoothstep(edge + SHORE_LIP, edge + SHORE_LIP + FEATURE_FALLOFF, d))
+		if d < edge + SHORE_LIP then
+			local floor = waterFloor(d, map.channelHalfWidth, edge)
+			-- A ford is shallow across the whole width.
+			for _, ford in bucket.fords do
+				local fx, fz = x - ford.x, z - ford.z
+				local shallow = 1
+					- smoothstep(
+						ford.radius,
+						ford.radius + FORD_BLEND,
+						math.sqrt(fx * fx + fz * fz)
+					)
+				if shallow > 0 and floor < SHALLOW_DEPTH then
+					floor = lerp(floor, SHALLOW_DEPTH, shallow)
+				end
+			end
+			cut = math.min(cut, floor)
+		end
+	end
+	for _, pond in bucket.ponds do
+		local dx, dz = x - pond.x, z - pond.z
+		local d = math.sqrt(dx * dx + dz * dz)
+		-- Deep water inside the pond's radius (its blocking circle), the
+		-- shallows out to its rim.
+		local shore = pond.radius + pond.rimWidth
+		flat = math.max(
+			flat,
+			1 - smoothstep(shore + SHORE_LIP, shore + SHORE_LIP + FEATURE_FALLOFF, d)
+		)
+		if d < shore + SHORE_LIP then
+			cut = math.min(cut, waterFloor(d, pond.radius, shore))
+		end
+	end
+	-- The plateaus' rise, and what covers it.
+	local rise, riseSurface = 0, SURFACE_PLAIN
+	for _, plateau in bucket.plateaus do
+		local dx, dz = x - plateau.x, z - plateau.z
+		local d = math.sqrt(dx * dx + dz * dz)
+		local r = plateau.radius
+		flat = math.max(flat, 1 - smoothstep(r + RAMP_OUTER, r + RAMP_OUTER + FEATURE_FALLOFF, d))
+		if d < r + RAMP_OUTER then
+			local onRamp = false
+			if d > r - RAMP_INNER then
+				local bearing = math.atan2(dz, dx)
+				for _, ramp in plateau.ramps do
+					local delta = math.abs((bearing - ramp + math.pi) % (2 * math.pi) - math.pi)
+					if delta * r <= plateau.rampHalf then
+						onRamp = true
+						break
+					end
+				end
+			end
+			local top, surface
+			if onRamp then
+				top = plateau.height
+					* math.clamp((r + RAMP_OUTER - d) / (RAMP_INNER + RAMP_OUTER), 0, 1)
+				surface = SURFACE_RAMP
+			else
+				top = plateau.height * (1 - smoothstep(r, r + CLIFF_FALL, d))
+				surface = if d >= r - ROCK_RIM and d <= r + CLIFF_FALL + ROCK_FOOT
+					then SURFACE_ROCK
+					else SURFACE_PLAIN
+			end
+			if top > rise or (top == rise and surface ~= SURFACE_PLAIN) then
+				rise, riseSurface = top, surface
+			end
+		end
+	end
+	local height = rolling * (1 - flat)
+	local surface = SURFACE_PLAIN
+	if cut < height then
+		height = cut
+		surface = if cut < (CHANNEL_DEPTH + SHALLOW_DEPTH) / 2 then SURFACE_BED else SURFACE_SHORE
+		if surface == SURFACE_SHORE and map.dryShallows then
+			return 0, surface, false
+		end
+		return height, surface, height < WET_EDGE
+	end
+	if rise >= height then
+		height = rise
+		surface = riseSurface
+	end
+	return height, surface, false
+end
+
+-- The ground's height at (x, z) on the current map: 0 where none is built.
+function ArenaBuilder.groundHeight(x: number, z: number): number
+	local map = heightmap
+	if map == nil then
+		return 0
+	end
+	return (sample(map, x, z))
+end
+
+-- The material of a voxel column whose surface is `surface`: the painted
+-- discs cover the plain, the last one over (x, z) on top.
+local function columnMaterial(map: Heightmap, surface: number, x: number, z: number): Enum.Material
+	if surface == SURFACE_ROCK then
+		return CLIFF_MATERIAL
+	elseif surface == SURFACE_SHORE then
+		return SHORE_MATERIAL
+	elseif surface == SURFACE_BED then
+		return BED_MATERIAL
+	elseif surface == SURFACE_RAMP then
+		return RAMP_MATERIAL
+	end
+	local bucket = map.buckets[bucketKey(math.floor(x / BUCKET_SIZE), math.floor(z / BUCKET_SIZE))]
+	local material = GRASS_MATERIAL
+	if bucket then
+		for _, paint in bucket.paints do
+			local dx, dz = x - paint.x, z - paint.z
+			if dx * dx + dz * dz <= paint.radius * paint.radius then
+				material = paint.material
+			end
+		end
+	end
+	return material
+end
+
+-- Writes the heightmap into the Terrain over the disc of `outer`, in chunks
+-- of voxel columns, yielding between batches of chunks. A wet column's voxel
+-- under the water surface holds water: all of it over the deep parts, the
+-- rest of the sand's voxel in the shallows. With `map.dryShallows` the deep
+-- parts are Water voxels and the shallows plain sand. Returns a deep wet
+-- column's centre for the water probe, or nil when there is none.
+local function sculpt(map: Heightmap, outer: number): Vector3?
+	local terrain = workspace.Terrain
+	local top = math.ceil((map.highest + VOXEL) / VOXEL) * VOXEL
+	local layers = (top - SCULPT_FLOOR) / VOXEL
+	local span = SCULPT_CHUNK * VOXEL
+	local waterLayer = (WATER_SURFACE - VOXEL - SCULPT_FLOOR) / VOXEL + 1
+	local channels = not map.dryShallows
+	local written = 0
+	local probe: Vector3? = nil
+	for cx = math.floor(-outer / span), math.ceil(outer / span) - 1 do
+		for cz = math.floor(-outer / span), math.ceil(outer / span) - 1 do
+			local x0, z0 = cx * span, cz * span
+			-- The chunk's nearest point to the centre.
+			local nx = math.clamp(0, x0, x0 + span)
+			local nz = math.clamp(0, z0, z0 + span)
+			if nx * nx + nz * nz > outer * outer then
+				continue
+			end
+			local materials, solids, liquids = {}, {}, {}
+			for i = 1, SCULPT_CHUNK do
+				materials[i], solids[i], liquids[i] = {}, {}, {}
+				for j = 1, layers do
+					materials[i][j], solids[i][j], liquids[i][j] = {}, {}, {}
+				end
+			end
+			for i = 1, SCULPT_CHUNK do
+				local x = x0 + (i - 0.5) * VOXEL
+				for k = 1, SCULPT_CHUNK do
+					local z = z0 + (k - 0.5) * VOXEL
+					local inside = x * x + z * z <= outer * outer
+					local height, surface, wet = 0, SURFACE_PLAIN, false
+					local material = Enum.Material.Air
+					if inside then
+						height, surface, wet = sample(map, x, z)
+						material = columnMaterial(map, surface, x, z)
+					end
+					local deep = wet and surface == SURFACE_BED
+					if deep and probe == nil then
+						probe = Vector3.new(x, WATER_SURFACE, z)
+					end
+					for j = 1, layers do
+						local bottom = SCULPT_FLOOR + (j - 1) * VOXEL
+						local solid = if inside
+							then math.clamp((height - bottom) / VOXEL, 0, 1)
+							else 0
+						local liquid = 0
+						if wet and j == waterLayer then
+							if deep then
+								solid = 0
+							end
+							liquid = 1 - solid
+						end
+						if deep and j == waterLayer and not channels then
+							materials[i][j][k] = Enum.Material.Water
+							solids[i][j][k] = 1
+						else
+							materials[i][j][k] = if solid > 0 then material else Enum.Material.Air
+							solids[i][j][k] = solid
+						end
+						liquids[i][j][k] = liquid
+					end
+				end
+			end
+			local region = Region3.new(
+				Vector3.new(x0, SCULPT_FLOOR, z0),
+				Vector3.new(x0 + span, top, z0 + span)
+			)
+			if channels then
+				local ok, problem = pcall(terrain.WriteVoxelChannels, terrain, region, VOXEL, {
+					SolidMaterial = materials,
+					SolidOccupancy = solids,
+					LiquidOccupancy = liquids,
+				})
+				if not ok then
+					warn(`ArenaBuilder: no voxel channels, writing water as voxels: {problem}`)
+					map.dryShallows = true
+					return sculpt(map, outer)
+				end
+			else
+				terrain:WriteVoxels(region, VOXEL, materials, solids)
+			end
+			written += 1
+			if written % SCULPT_CHUNKS_PER_FRAME == 0 then
+				task.wait()
+			end
+		end
+	end
+	return probe
+end
+
+-- What a ray straight down onto a deep column hits: Water when the sculpted
+-- water shows; nil when nothing is hit.
+local function probeWater(point: Vector3): Enum.Material?
+	local parameters = RaycastParams.new()
+	parameters.FilterType = Enum.RaycastFilterType.Include
+	parameters.FilterDescendantsInstances = { workspace.Terrain }
+	parameters.IgnoreWater = false
+	local result = workspace:Raycast(
+		point + Vector3.new(0, WATER_PROBE_HEIGHT, 0),
+		Vector3.new(0, -WATER_PROBE_HEIGHT * 2, 0),
+		parameters
+	)
+	return if result then result.Material else nil
+end
+
+-- Sculpts the ground and checks that its water shows: when a ray onto a deep
+-- column misses the water, the ground is sculpted again with Water voxels
+-- and dry shallows. Logs the probe in Studio.
+local function sculptGround(map: Heightmap, outer: number)
+	local probe = sculpt(map, outer)
+	if probe == nil then
+		return
+	end
+	task.wait()
+	local hit = probeWater(probe)
+	if hit ~= Enum.Material.Water and not map.dryShallows then
+		warn(`ArenaBuilder: water probe at {probe} hit {hit}, writing water as voxels`)
+		workspace.Terrain:Clear()
+		map.dryShallows = true
+		local again = sculpt(map, outer)
+		if again == nil then
+			return
+		end
+		task.wait()
+		probe, hit = again, probeWater(again)
+	end
+	if IS_STUDIO then
+		print(`ArenaBuilder: water probe at {probe} hit {hit} (dry shallows: {map.dryShallows})`)
+	end
+end
+
+-- Moves every part in `container` up by `dy`: what was built on flat ground
+-- stands on the sculpted ground.
+local function lift(container: Instance, dy: number)
+	if dy == 0 then
+		return
+	end
+	local offset = Vector3.new(0, dy, 0)
+	if container:IsA("BasePart") then
+		container.CFrame += offset
+	end
+	for _, descendant in container:GetDescendants() do
+		if descendant:IsA("BasePart") then
+			descendant.CFrame += offset
+		end
+	end
+end
+
 type Look = { part: BasePart, color: Color3, material: Enum.Material }
 type ShrineLook = {
 	beam: Part,
@@ -189,6 +766,8 @@ local chestModel: Model? = nil
 local chestLid: Part? = nil
 local chestMesh: MeshPart? = nil
 local chestClosed: CFrame? = nil
+-- The ground's height under the chest, for the part chest's lid.
+local chestGround = 0
 local chestGlow: Part? = nil
 local chestLight: PointLight? = nil
 local portalArch: MeshPart? = nil
@@ -233,6 +812,7 @@ local function body(
 	x: number,
 	z: number,
 	radius: number,
+	bottom: number,
 	height: number,
 	parent: Instance
 ): Part
@@ -245,7 +825,7 @@ local function body(
 	part.CanTouch = false
 	part.Shape = Enum.PartType.Cylinder
 	part.Size = Vector3.new(height, radius * 2, radius * 2)
-	part.CFrame = CFrame.new(x, height / 2, z) * CFrame.Angles(0, 0, math.pi / 2)
+	part.CFrame = CFrame.new(x, bottom + height / 2, z) * CFrame.Angles(0, 0, math.pi / 2)
 	part.Parent = parent
 	return part
 end
@@ -655,18 +1235,19 @@ end
 
 -- A pond, always from parts: the terrain is dug out and banked with sand, a
 -- dark bed lies under a flat, slightly reflective water disc sunk below the
--- ground, so the bank's edge shows.
-local function buildPond(prop: Prop, parent: Instance)
+-- ground, so the bank's edge shows. The terrain is dug from `base`; the
+-- parts are lifted with the rest of the prop.
+local function buildPond(prop: Prop, parent: Instance, base: number)
 	local terrain = workspace.Terrain
 	local r = prop.radius
 	terrain:FillCylinder(
-		CFrame.new(prop.x, -GROUND_THICKNESS / 2, prop.z),
+		CFrame.new(prop.x, base - GROUND_THICKNESS / 2, prop.z),
 		GROUND_THICKNESS,
 		r + 6,
 		POND_RIM_MATERIAL
 	)
 	terrain:FillCylinder(
-		CFrame.new(prop.x, -GROUND_THICKNESS / 2, prop.z),
+		CFrame.new(prop.x, base - GROUND_THICKNESS / 2, prop.z),
 		GROUND_THICKNESS + 1,
 		r + 3,
 		Enum.Material.Air
@@ -767,9 +1348,31 @@ local function buildFallback(original: Prop, parent: Instance, random: Random)
 	end
 end
 
-local function drawProp(prop: Prop, parent: Instance, random: Random)
+-- Builds what `draw` puts in a holder on flat ground, lifts it by `base` and
+-- moves it into `parent`.
+local function onGround(parent: Instance, base: number, draw: (Instance) -> ())
+	local holder = Instance.new("Folder")
+	draw(holder)
+	lift(holder, base)
+	for _, child in holder:GetChildren() do
+		child.Parent = parent
+	end
+	holder:Destroy()
+end
+
+-- The lowest ground under a prop's centre and its circles: a prop on a
+-- slope sinks into it rather than float.
+local function propBase(prop: Prop): number
+	local base = ArenaBuilder.groundHeight(prop.x, prop.z)
+	for _, circle in prop.circles do
+		base = math.min(base, ArenaBuilder.groundHeight(circle.x, circle.z))
+	end
+	return base
+end
+
+local function drawFlat(prop: Prop, parent: Instance, random: Random, base: number)
 	if prop.kind == "pond" then
-		buildPond(prop, parent)
+		buildPond(prop, parent, base)
 	elseif prop.kind == "stoneCircle" then
 		if not meshStoneCircle(prop, parent) then
 			buildFallback(prop, parent, random)
@@ -781,6 +1384,13 @@ local function drawProp(prop: Prop, parent: Instance, random: Random)
 	elseif not meshProp(prop, parent) then
 		buildFallback(prop, parent, random)
 	end
+end
+
+local function drawProp(prop: Prop, parent: Instance, random: Random)
+	local base = propBase(prop)
+	onGround(parent, base, function(holder)
+		drawFlat(prop, holder, random, base)
+	end)
 end
 
 -- The footprints of the current map's kinds, by kind id.
@@ -841,32 +1451,21 @@ local function propOf(
 	}
 end
 
--- A terrain disc of `material` flush with the ground.
-local function paint(x: number, z: number, radius: number, material: Enum.Material)
-	workspace.Terrain:FillCylinder(
-		CFrame.new(x, -GROUND_THICKNESS / 2, z),
-		GROUND_THICKNESS,
-		radius,
-		material
-	)
-end
-
 -- A lighter grass disc under every place, its clearing's radius.
-local function buildClearings(arena: Types.Arena)
+local function buildClearings(arena: Types.Arena, map: Heightmap)
 	for _, place in arena.places do
-		paint(place.x, place.z, place.radius, CLEARING_MATERIAL)
+		addPaint(map, place.x, place.z, place.radius, CLEARING_MATERIAL)
 	end
 end
 
--- A dirt band along every path of the core: discs of the path's width,
--- jittered, every PATH_STEP studs along its polyline, none on the start's ring.
-local function buildPaths(arena: Types.Arena, random: Random)
+-- A faint dirt track along every path of the core: discs one voxel wide
+-- every PATH_STEP studs along its polyline, none inside the start's clearing.
+local function buildPaths(arena: Types.Arena, ground: Heightmap)
 	local map = Config.maps[Config.map]
 	if map == nil then
 		return
 	end
-	local radius = map.pathWidth / 2
-	local count = 0
+	local start = Vector3.new(arena.startX, 0, arena.startZ)
 	for _, path in arena.paths do
 		for index = 2, #path do
 			local from = Vector3.new(path[index - 1].x, 0, path[index - 1].z)
@@ -874,52 +1473,43 @@ local function buildPaths(arena: Types.Arena, random: Random)
 			local steps = math.max(math.ceil((to - from).Magnitude / PATH_STEP), 1)
 			for step = 0, steps - 1 do
 				local point = from:Lerp(to, step / steps)
-				if
-					(point - Vector3.new(arena.startX, 0, arena.startZ)).Magnitude >= PATH_START_GAP
-				then
-					paint(point.X, point.Z, radius * random:NextNumber(0.85, 1.15), PATH_MATERIAL)
-					count += 1
-					if count % BUILD_BATCH == 0 then
-						task.wait()
-					end
+				if (point - start).Magnitude >= map.startClearRadius then
+					addPaint(ground, point.X, point.Z, PATH_RADIUS, PATH_MATERIAL)
 				end
 			end
 		end
 	end
 end
 
--- The ground is terrain: a grass disc with patches of other materials
--- blended in, which gives the forest floor its texture and swaying grass for
--- nothing per frame; the places' clearings and the paths over them; above it the start's
--- ring of stones and a few flowers.
-local function buildGround(arena: Types.Arena, parent: Instance, random: Random)
+-- The ground is terrain sculpted from the heightmap: grass with patches of
+-- other materials, which gives the forest floor its texture and swaying grass
+-- for nothing per frame; the places' clearings and the paths over them; rock,
+-- sand and water where the terrain says; above it the start's ring of stones
+-- and a few flowers.
+local function buildGround(arena: Types.Arena, parent: Instance, random: Random, map: Heightmap)
 	local terrain = workspace.Terrain
 	terrain:SetMaterialColor(CLEARING_MATERIAL, CLEARING_COLOR)
-	terrain:SetMaterialColor(PATH_MATERIAL, PATH_COLOR)
 	local outer = arena.radius + GROUND_OVERHANG
-	paint(0, 0, outer, Enum.Material.Grass)
-	for index = 1, PATCH_COUNT do
+	for _ = 1, PATCH_COUNT do
 		local angle = random:NextNumber(0, 2 * math.pi)
 		local distance = arena.radius * math.sqrt(random:NextNumber())
 		local radius = random:NextNumber(PATCH_RADIUS_MIN, PATCH_RADIUS_MAX)
 		local material = PATCH_MATERIALS[random:NextInteger(1, #PATCH_MATERIALS)]
-		paint(math.cos(angle) * distance, math.sin(angle) * distance, radius, material)
-		if index % 40 == 0 then
-			task.wait()
-		end
+		addPaint(map, math.cos(angle) * distance, math.sin(angle) * distance, radius, material)
 	end
-	buildClearings(arena)
-	buildPaths(arena, random)
+	buildClearings(arena, map)
+	buildPaths(arena, map)
+	sculptGround(map, outer)
 
 	local ground = Instance.new("Model")
 	ground.Name = "Ground"
 	for index = 1, FLOWER_COUNT do
 		local angle = random:NextNumber(0, 2 * math.pi)
 		local distance = arena.radius * math.sqrt(random:NextNumber())
+		local x, z = math.cos(angle) * distance, math.sin(angle) * distance
 		local flower = block(
 			"Flower" .. index,
-			CFrame.new(math.cos(angle) * distance, 0.35, math.sin(angle) * distance)
-				* CFrame.Angles(0, angle, 0),
+			CFrame.new(x, ArenaBuilder.groundHeight(x, z) + 0.35, z) * CFrame.Angles(0, angle, 0),
 			Vector3.new(0.6, 0.5, 0.6),
 			pick(FLOWER_COLORS, random),
 			Enum.Material.SmoothPlastic,
@@ -930,10 +1520,11 @@ local function buildGround(arena: Types.Arena, parent: Instance, random: Random)
 	-- The start: a ring of flat stones.
 	for index = 1, 8 do
 		local angle = index * 2 * math.pi / 8
-		local position = Vector3.new(math.cos(angle) * 7, 0.15, math.sin(angle) * 7)
+		local x, z = math.cos(angle) * 7, math.sin(angle) * 7
+		local position = Vector3.new(x, ArenaBuilder.groundHeight(x, z) + 0.15, z)
 		block(
 			"StartStone",
-			CFrame.lookAt(position, Vector3.new(0, 0.15, 0)),
+			CFrame.lookAt(position, Vector3.new(0, position.Y, 0)),
 			Vector3.new(2.2, 0.3, 1.4),
 			START_STONE_COLOR,
 			Enum.Material.Slate,
@@ -971,9 +1562,11 @@ local function buildTreeLine(arena: Types.Arena, parent: Instance, random: Rando
 				lean = 0,
 				circles = { { x = x, z = z, radius = treeRadius } },
 			}
-			if not meshProp(prop, line) then
-				buildTree(x, z, treeRadius, angle, ring == 1, line, random)
-			end
+			onGround(line, ArenaBuilder.groundHeight(x, z), function(holder)
+				if not meshProp(prop, holder) then
+					buildTree(x, z, treeRadius, angle, ring == 1, holder, random)
+				end
+			end)
 			if count % BUILD_BATCH == 0 then
 				task.wait()
 			end
@@ -1045,6 +1638,7 @@ local function meshChest(arena: Types.Arena, parent: Instance): boolean
 	mesh.CanCollide = true
 	mesh.CanQuery = true
 	chestMarker(x, z, mesh, model)
+	lift(model, chestGround)
 	model.Parent = parent
 	chestModel = model
 	chestMesh = mesh
@@ -1055,6 +1649,7 @@ end
 -- The part chest, while the mesh has not loaded: a wooden box with a golden
 -- band and a soft glow.
 local function buildChest(arena: Types.Arena, parent: Instance)
+	chestGround = ArenaBuilder.groundHeight(arena.chestX, arena.chestZ)
 	if meshChest(arena, parent) then
 		return
 	end
@@ -1104,6 +1699,7 @@ local function buildChest(arena: Types.Arena, parent: Instance)
 		model
 	)
 	chestMarker(x, z, base, model)
+	lift(model, chestGround)
 	model.Parent = parent
 	chestModel = model
 	chestLid = lid
@@ -1124,6 +1720,7 @@ function ArenaBuilder.setPortal(x: number, z: number)
 		-- The client's ring faces the camera, which looks along -Z: the arch's
 		-- span runs along X.
 		align(arch, Vector3.xAxis)
+		lift(arch, ArenaBuilder.groundHeight(x, z))
 		portalArch = arch
 	end
 end
@@ -1259,7 +1856,7 @@ local function buildShrine(shrine: Types.Shrine, parent: Instance, random: Rando
 		mesh.Name = "Shrine"
 		-- What the character and the raycasts stop at is the shrine's circle
 		-- plus the player's radius, as every obstacle body.
-		body("Plinth", x, z, r + Config.player.radius, SHRINE_BODY_HEIGHT, model)
+		body("Plinth", x, z, r + Config.player.radius, 0, SHRINE_BODY_HEIGHT, model)
 		base = mesh.Position.Y + mesh.Size.Y / 2
 		lit = mesh
 	else
@@ -1294,6 +1891,7 @@ local function buildShrine(shrine: Types.Shrine, parent: Instance, random: Rando
 	light.Color = color
 	light.Range = 18
 	light.Parent = lit
+	lift(model, ArenaBuilder.groundHeight(x, z))
 	model.Parent = parent
 	shrineLooks[shrine.id] =
 		{ beam = beam, glow = glow, light = light, emblem = emblem, mesh = mesh }
@@ -1311,7 +1909,9 @@ function ArenaBuilder.build(arena: Types.Arena)
 	-- Only the look varies with it: colours, tilts and the paths' jitter.
 	local random = Random.new(arena.chestX * 1000 + arena.chestZ)
 	lookRandom = random
-	buildGround(arena, root, random)
+	local map = newHeightmap(arena)
+	heightmap = map
+	buildGround(arena, root, random, map)
 	buildWall(arena, root)
 	buildTreeLine(arena, root, random)
 	buildChest(arena, root)
@@ -1331,16 +1931,29 @@ function ArenaBuilder.build(arena: Types.Arena)
 	end
 	local kinds = footprints()
 	for index, obstacle in arena.obstacles do
-		if obstacle.anchor then
+		-- Cliffs and the channel are the sculpted ground's; only their bodies
+		-- stand here.
+		if obstacle.anchor and not SCULPTED_KINDS[obstacle.kind] then
 			local prop = propOf(obstacle, groups[obstacle.group], kinds[obstacle.kind])
 			drawProp(prop, obstacles, random)
+		end
+		-- The body reaches from below the lowest ground around the circle to
+		-- above the highest, so a cliff's stands from its foot past its top.
+		local low, high = math.huge, -math.huge
+		for _, offset in BODY_SAMPLES do
+			local height = ArenaBuilder.groundHeight(
+				obstacle.x + offset[1] * obstacle.radius,
+				obstacle.z + offset[2] * obstacle.radius
+			)
+			low, high = math.min(low, height), math.max(high, height)
 		end
 		body(
 			"Body" .. obstacle.id,
 			obstacle.x,
 			obstacle.z,
 			obstacle.radius + Config.player.radius,
-			BODY_HEIGHT,
+			low - BODY_SINK,
+			high - low + BODY_SINK + BODY_HEIGHT,
 			obstacles
 		)
 		if index % BUILD_BATCH == 0 then
@@ -1490,6 +2103,7 @@ local function buildLair(lair: Types.Lair, parent: Instance)
 	embers.Acceleration = Vector3.new(0, 1.5, 0)
 	embers.EmissionDirection = Enum.NormalId.Top
 	embers.Parent = base
+	lift(model, ArenaBuilder.groundHeight(x, z))
 	model.Parent = parent
 	lairLooks[lair.id] = {
 		beam = beam,
@@ -1641,6 +2255,7 @@ function ArenaBuilder.setFinalRise(x: number, z: number)
 	)
 	centre.Transparency = 1
 	light.Parent = centre
+	lift(model, ArenaBuilder.groundHeight(x, z))
 	model.Parent = root
 	finalRise = model
 end
@@ -1676,10 +2291,10 @@ function ArenaBuilder.setChestOpened(opened: boolean)
 	end
 	local pivot = model:GetPivot()
 	if opened then
-		lid.CFrame = CFrame.new(pivot.Position.X, 4.8, pivot.Position.Z - 2)
+		lid.CFrame = CFrame.new(pivot.Position.X, chestGround + 4.8, pivot.Position.Z - 2)
 			* CFrame.Angles(math.rad(-70), 0, 0)
 	else
-		lid.CFrame = CFrame.new(pivot.Position.X, 3.8, pivot.Position.Z)
+		lid.CFrame = CFrame.new(pivot.Position.X, chestGround + 3.8, pivot.Position.Z)
 	end
 end
 
@@ -1688,6 +2303,8 @@ end
 -- run's teleport.
 function ArenaBuilder.clear()
 	workspace.Terrain:Clear()
+	heightmap = nil
+	chestGround = 0
 	if folder then
 		folder:Destroy()
 		folder = nil

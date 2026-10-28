@@ -1,6 +1,7 @@
 --!strict
--- What every enemy does in one step (ADR-0004, ADR-0014): walk at the nearest
--- hero around the obstacles, hit on contact (grunts and wraiths) or wind up an
+-- What every enemy does in one step (ADR-0004, ADR-0014, ADR-0023): walk at
+-- the nearest hero, down its flow field when the way is not straight and
+-- around the obstacles, hit on contact (grunts and wraiths) or wind up an
 -- attack the players can read, land it and recover (elites and bosses), then
 -- push apart from the crowd. A lair's boss and guard (ADR-0021) do nothing
 -- while asleep, and awake they target only heroes within the lair's reach,
@@ -9,6 +10,7 @@
 
 local Arena = require("./Arena")
 local Damage = require("./Damage")
+local Flow = require("./Flow")
 local Geometry = require("./Geometry")
 local Hero = require("./Hero")
 local Lairs = require("./Lairs")
@@ -81,7 +83,8 @@ local function speedOf(run: Types.Run, enemy: Types.Enemy, kind: Types.EnemyKind
 	if enemy.phase == 2 and kind.phaseSpeedFactor then
 		speed *= kind.phaseSpeedFactor
 	end
-	return speed
+	-- The shallows slow enemies as they slow heroes (ADR-0023).
+	return speed * Arena.slowFactor(run.arena, run.config.terrain, enemy.x, enemy.z)
 end
 
 -- The attacks the enemy may use now: before a boss's second phase, those
@@ -172,6 +175,36 @@ local function walk(
 	local move = math.min(step, reach)
 	enemy.x += dx * move
 	enemy.z += dz * move
+end
+
+-- Where an enemy walks to reach `target`, `distance` away (ADR-0023): straight
+-- at it when it is near or nothing on the grid stands between them, else down
+-- the target's flow field, as far along that way as the target is (so the
+-- steering probes as far ahead as before). A leashed enemy whose way would
+-- leave its lair's radius walks straight instead.
+local function wayTo(
+	run: Types.Run,
+	enemy: Types.Enemy,
+	target: Types.Player,
+	distance: number
+): (number, number)
+	local cellSize = run.config.flow.cellSize
+	if distance <= cellSize * 2 or Flow.open(run, enemy.x, enemy.z, target.x, target.z) then
+		return target.x, target.z
+	end
+	local dx, dz = Flow.direction(run, target.id, enemy.x, enemy.z)
+	if dx == nil or dz == nil then
+		return target.x, target.z
+	end
+	local lair = Lairs.leashOf(run, enemy)
+	if
+		lair
+		and Geometry.distance(enemy.x + dx * cellSize, enemy.z + dz * cellSize, lair.x, lair.z)
+			> lair.radius
+	then
+		return target.x, target.z
+	end
+	return enemy.x + dx * distance, enemy.z + dz * distance
 end
 
 -- Walks `step` studs directly away from (fromX, fromZ).
@@ -394,8 +427,22 @@ local function land(
 	context: Context
 ): boolean
 	if attack.kind == "leap" then
-		enemy.x, enemy.z =
-			Arena.freeSpot(run.arena, enemy.aimX, enemy.aimZ, kind.radius, run.rng, FREE_SPOT_TRIES)
+		-- A leap flies over the props but not over a cliff or the channel
+		-- (ADR-0023): it lands where its flight is held, and stays put when
+		-- the free ground found there lies across one.
+		local fromX, fromZ = enemy.x, enemy.z
+		local length = Geometry.distance(fromX, fromZ, enemy.aimX, enemy.aimZ)
+		local flight = Arena.flight(run.arena, fromX, fromZ, enemy.aimX, enemy.aimZ, kind.radius)
+		local ux, uz = Geometry.normalize(enemy.aimX - fromX, enemy.aimZ - fromZ)
+		local toX, toZ = enemy.aimX, enemy.aimZ
+		if flight < length then
+			toX, toZ = fromX + ux * flight, fromZ + uz * flight
+		end
+		local x, z = Arena.freeSpot(run.arena, toX, toZ, kind.radius, run.rng, FREE_SPOT_TRIES)
+		local hop = Geometry.distance(fromX, fromZ, x, z)
+		if Arena.flight(run.arena, fromX, fromZ, x, z, kind.radius) >= hop - 1e-6 then
+			enemy.x, enemy.z = x, z
+		end
 	end
 	table.insert(run.events, {
 		kind = "enemyAttack",
@@ -584,7 +631,8 @@ local function stepGrunt(
 	face(enemy, target.x, target.z)
 	if not rooted and distance > touching + run.config.horde.contactMargin then
 		local step = math.min(speedOf(run, enemy, kind) * dt, distance - touching)
-		walk(run, enemy, kind, target.x, target.z, step)
+		local toX, toZ = wayTo(run, enemy, target, distance)
+		walk(run, enemy, kind, toX, toZ, step)
 		distance = Geometry.distance(enemy.x, enemy.z, target.x, target.z)
 	end
 	if
@@ -637,7 +685,8 @@ local function chase(
 	elseif distance > attack.range * run.config.horde.approachFactor then
 		-- Never closer than touching.
 		local gap = kind.radius + run.config.player.radius
-		walk(run, enemy, kind, target.x, target.z, math.min(step, math.max(0, distance - gap)))
+		local toX, toZ = wayTo(run, enemy, target, distance)
+		walk(run, enemy, kind, toX, toZ, math.min(step, math.max(0, distance - gap)))
 	end
 end
 

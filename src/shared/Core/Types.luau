@@ -495,6 +495,8 @@ export type PropConfig = {
 	textureId: string,
 	scale: number,
 	yOffset: number,
+	-- An enemy kind with a skinned template and clips (ADR-0024).
+	rigged: boolean?,
 }
 
 export type ShrineKind = "boon" | "pact" | "trial" | "spring"
@@ -643,6 +645,95 @@ export type Lair = {
 	stirredAt: number,
 }
 
+-- The terrain's description (ADR-0023): what the rules read and the adapter
+-- sculpts. Cliffs and the stream's channel are obstacles (kinds "cliff" and
+-- "channel"); the shallows are slow zones.
+export type Plateau = {
+	id: number,
+	x: number,
+	z: number,
+	radius: number,
+	height: number,
+	-- Bearings (radians) of the ramps: gaps in the cliff ring.
+	ramps: { number },
+}
+
+export type Ford = { x: number, z: number, radius: number }
+
+export type Stream = {
+	-- The channel's centre line, edge to edge.
+	points: { { x: number, z: number } },
+	-- Half-widths: the deep channel and the shallow bank on each side.
+	channelHalfWidth: number,
+	bankWidth: number,
+	fords: { Ford },
+}
+
+export type Pond = { x: number, z: number, radius: number, rimWidth: number }
+
+-- A circle of the shallows: heroes and enemies inside walk slower.
+export type SlowZone = { x: number, z: number, radius: number }
+
+-- A disc the adapter flattens (the start, the chest, places, lairs, paths).
+export type Pad = { x: number, z: number, radius: number }
+
+export type Terrain = {
+	plateaus: { Plateau },
+	stream: Stream?,
+	ponds: { Pond },
+	slowZones: { SlowZone },
+	pads: { Pad },
+}
+
+export type TerrainConfig = {
+	plateauCountMin: number,
+	plateauCountMax: number,
+	plateauRadiusMin: number,
+	plateauRadiusMax: number,
+	plateauHeightMin: number,
+	plateauHeightMax: number,
+	plateauSpacing: number,
+	plateauStartDistance: number,
+	rampCountMin: number,
+	rampCountMax: number,
+	-- A ramp's width: the free gap between the cliffs either side, in studs.
+	rampWidth: number,
+	-- The first ramp faces the start within this many degrees either side;
+	-- every other ramp keeps at least rampSpacingDegrees from the rest.
+	rampStartConeDegrees: number,
+	rampSpacingDegrees: number,
+	-- The cliff ring's circles: radius and the step between their centres.
+	cliffRadius: number,
+	cliffStep: number,
+	-- Lairs placed on plateaus a run.
+	lairsOnPlateauMin: number,
+	lairsOnPlateauMax: number,
+	-- The stream: the deep channel's half-width, the shallow bank's width,
+	-- the channel circles' step, the sway of the centre line, the fords.
+	channelHalfWidth: number,
+	bankWidth: number,
+	channelStep: number,
+	streamSway: number,
+	fordCount: number,
+	fordRadius: number,
+	-- The fords keep off the line's first and last fordEndShare of its
+	-- length, and fordSpacingShare of its length from each other.
+	fordEndShare: number,
+	fordSpacingShare: number,
+	-- The pond's shallow rim.
+	pondRimWidth: number,
+	-- Speed in the shallows, as a share of normal.
+	shallowFactor: number,
+	-- The gentle rolling of the rest of the ground, in studs (look only).
+	rollingHeight: number,
+}
+
+export type FlowConfig = {
+	-- The grid's cell size in studs and how many steps between floods.
+	cellSize: number,
+	floodEverySteps: number,
+}
+
 -- Where a lair goes, decided with the places for the seed.
 export type LairSpot = { kind: string, x: number, z: number, rotation: number }
 
@@ -693,6 +784,8 @@ export type Config = {
 	extraction: ExtractionConfig,
 	shrines: ShrinesConfig,
 	lairs: LairsConfig,
+	terrain: TerrainConfig,
+	flow: FlowConfig,
 	-- The low-poly meshes the server builds the map from, by obstacle kind
 	-- (stage 3b): variants are picked by the obstacle's id.
 	props: { [string]: { PropConfig } },
@@ -750,6 +843,7 @@ export type Arena = {
 	chestZ: number,
 	shrineSpots: { ShrineSpot },
 	lairSpots: { LairSpot },
+	terrain: Terrain,
 	places: { Place },
 	paths: { Path },
 }
@@ -1056,6 +1150,27 @@ export type Rng = {
 
 export type Portal = { x: number, z: number, until_: number }
 
+-- The enemies' flow field (stage 3d, ADR-0023): a grid of square cells over
+-- the map's disc, cell `index = cx + cz * size + 1` from the corner at
+-- (-origin, -origin), and per alive player the walking distance of every
+-- cell to the player's cell (-1: blocked or unreached).
+export type Flow = {
+	cellSize: number,
+	-- Cells along each side, and the corner's offset from the centre.
+	size: number,
+	origin: number,
+	blocked: { boolean },
+	-- The obstacle list the grid was built from, and its length: a change of
+	-- either rebuilds it.
+	obstacles: { Obstacle },
+	obstacleCount: number,
+	-- Distance fields by player id, and spare ones to reuse.
+	fields: { [number]: { number } },
+	spare: { { number } },
+	-- Steps counted since the run began, for the flood interval.
+	steps: number,
+}
+
 export type Run = {
 	config: Config,
 	map: MapConfig,
@@ -1085,6 +1200,8 @@ export type Run = {
 	compassOn: boolean,
 	portal: Portal?,
 	shrines: { Shrine },
+	-- Built at the first step (Flow.update).
+	flow: Flow?,
 	-- The run stands still while a solo player chooses a card.
 	paused: boolean,
 	ended: boolean,

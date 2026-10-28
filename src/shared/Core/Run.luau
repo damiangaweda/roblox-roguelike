@@ -10,6 +10,7 @@ local Casting = require("./Casting")
 local Damage = require("./Damage")
 local Enemies = require("./Enemies")
 local Extraction = require("./Extraction")
+local Flow = require("./Flow")
 local Hero = require("./Hero")
 local Lairs = require("./Lairs")
 local Progression = require("./Progression")
@@ -115,20 +116,27 @@ end
 -- the player's movement budget. The budget refills at walking speed with a
 -- tolerance and banks a short burst, which absorbs late updates but not a
 -- teleport. A knocked player is carried by the knockback, not by the client.
+-- A move into the shallows is held to their speed from its start (ADR-0023),
+-- so a burst banked on land is not spent in the water at land speed.
 local function move(run: Types.Run, player: Types.Player, input: Types.PlayerInput?, dt: number)
 	local config = run.config.player
-	local speed = Hero.walkSpeed(run, player) * config.moveTolerance
-	local cap = speed * config.moveBurstSeconds
 	if input == nil or not (isFinite(input.x) and isFinite(input.z)) then
-		player.moveBudget = math.min(player.moveBudget + speed * dt, cap)
+		local speed = Hero.walkSpeed(run, player) * config.moveTolerance
+		player.moveBudget =
+			math.min(player.moveBudget + speed * dt, speed * config.moveBurstSeconds)
 		return
 	end
-	player.moveBudget = math.min(player.moveBudget + speed * dt, cap)
+	local targetX, targetZ = Arena.clamp(run.arena, input.x, input.z, config.radius)
+	local slow = math.min(
+		Arena.slowFactor(run.arena, run.config.terrain, player.x, player.z),
+		Arena.slowFactor(run.arena, run.config.terrain, targetX, targetZ)
+	)
+	local speed = Hero.walkSpeed(run, player, slow) * config.moveTolerance
+	player.moveBudget = math.min(player.moveBudget + speed * dt, speed * config.moveBurstSeconds)
 	if run.time < player.knockUntil then
 		return
 	end
 
-	local targetX, targetZ = Arena.clamp(run.arena, input.x, input.z, config.radius)
 	local dx, dz = targetX - player.x, targetZ - player.z
 	local distance = math.sqrt(dx * dx + dz * dz)
 	if distance < 1e-9 then
@@ -207,6 +215,7 @@ function Run.step(run: Types.Run, dt: number, inputs: { [number]: Types.PlayerIn
 	Casting.update(run, dt)
 	Projectiles.step(run, dt)
 	Lairs.update(run, dt)
+	Flow.update(run)
 	Enemies.step(run, dt)
 	Damage.update(run, dt)
 	Hero.update(run, dt)
