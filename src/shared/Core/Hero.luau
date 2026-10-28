@@ -89,8 +89,9 @@ end
 
 -- Damages an alive hero by `amount` (the attacker's multipliers already in):
 -- the barrier absorbs first, armour cuts what is left down to minDamage. A hit
--- interrupts the extraction spell's cast, the chest opening and a shrine's
--- hold. Nothing lands on an untouchable hero. `reflected` is the thorns the
+-- interrupts the extraction spell's cast and a shrine's hold, not the chest
+-- opening (the horde made the chest unopenable; decided on 2026-10-28).
+-- Nothing lands on an untouchable hero. `reflected` is the thorns the
 -- caller returns to the attacker.
 function Hero.damage(
 	run: Types.Run,
@@ -126,7 +127,6 @@ function Hero.damage(
 		player.castingUntil = nil
 		table.insert(run.events, { kind = "castInterrupted", player = player.id })
 	end
-	player.openProgress = 0
 	player.shrineProgress = 0
 
 	local reflected = if player.thornsUntil > run.time then player.thorns else 0

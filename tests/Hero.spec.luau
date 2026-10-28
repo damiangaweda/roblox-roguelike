@@ -149,15 +149,17 @@ return {
 		Assert.equal(Fixtures.count(run.events, "playerHurt"), 1)
 	end,
 
-	["a hit interrupts the cast and the chest opening"] = function()
+	["a hit interrupts the cast and a shrine's hold, not the chest opening"] = function()
 		local run = Fixtures.run()
 		local player = run.players[1]
 		player.castingUntil = 5
 		player.openProgress = 1.2
+		player.shrineProgress = 0.7
 		run.time = 1
 		Hero.damage(run, player, 3)
 		Assert.equal(player.castingUntil, nil)
-		Assert.equal(player.openProgress, 0)
+		Assert.equal(player.openProgress, 1.2)
+		Assert.equal(player.shrineProgress, 0)
 		Assert.equal(player.hurtAt, 1)
 		Assert.equal(Fixtures.count(run.events, "castInterrupted"), 1)
 		Hero.damage(run, player, 3)
