@@ -100,7 +100,7 @@ Aimed combat with the Elementalist ([ADR-0009](adr/0009-aimed-combat.md)), seven
 
 ### Stage 3d: enemy meshes and terrain
 
-**Status:** grilled and accepted on 2026-10-28 for the terrain (ADR-0023); the enemy meshes (ADR-0022) stay proposed until the Meshy rigging trial, with procedural motion built on `feat/enemy-meshes` meanwhile; the terrain is in progress on `feat/terrain`.
+**Status:** grilled and accepted on 2026-10-28 for the terrain (ADR-0023); the enemy meshes (ADR-0022) stay proposed until the Meshy rigging trial, with procedural motion built on `feat/enemy-meshes` meanwhile; the terrain is built on `feat/terrain` (PR #13, stacked on #12 and #11): criteria 1–2 met, the Studio playtest done for the stream, a plateau and a cliff, the user's run pending.
 
 **Goal:** enemies that look made, and a map whose shape matters in the fight.
 
