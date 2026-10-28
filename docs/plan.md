@@ -156,7 +156,7 @@ Each item below is grilled into a stage when its turn comes: trading of items an
 
 ## Open questions
 
-- Stage 3d's enemy animation: the user wants a trial of Meshy rigging (humanoids and quadrupeds, a Roblox bridge; Tripo rigs humanoids only) on one quadruped and one humanoid before accepting ADR-0022's procedural motion; the trial needs the user's Meshy account; decided after it.
+- Stage 3d's enemy animation: the user wants a trial of Meshy rigging (humanoids and quadrupeds, a Roblox bridge; Tripo rigs humanoids only) on one quadruped and one humanoid before accepting ADR-0022's procedural motion; the trial was run on 2026-10-28 (cutthroat and grey wolf rigged with walk and run, the cutthroat with attack and death; 76 credits): rigs and clips work in Studio, but the models read more realistic than the Roblox-generated props; a stylized Thornback (chunky, flat colours; 30 credits) matched the forest's style. Proposed: bosses from Meshy with stylized prompts and rigs, grunts and elites from the Roblox generator with procedural motion. Decided by the user.
 - How a party chooses cards when the run cannot pause for one player: stage 4.
 - How many enemies the server holds at 50 Hz with four clients, and so the horde's cap per party: measured in stage 3, decided in stage 4.
 - Library or own code for saving the profile (ProfileStore or a wrapper over DataStores): stage 5.
