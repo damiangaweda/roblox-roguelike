@@ -362,6 +362,10 @@ local function drain(current: Types.Run)
 	for _, event in Run.drainEvents(current) do
 		if event.kind == "chestOpened" then
 			ArenaBuilder.setChestOpened(true)
+		elseif event.kind == "portalOpened" then
+			ArenaBuilder.setPortal(event.x, event.z)
+		elseif event.kind == "portalClosed" then
+			ArenaBuilder.clearPortal()
 		elseif event.kind == "ended" then
 			endReason = event.reason
 		end

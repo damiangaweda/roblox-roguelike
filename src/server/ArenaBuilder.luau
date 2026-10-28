@@ -3,8 +3,9 @@
 -- ADR-0020): a round terrain ground with clearings and a path to the chest,
 -- an invisible wall at the edge, a prop per obstacle drawn from its kind's
 -- mesh (or built from parts while the kind has none), an invisible solid body
--- per obstacle circle, the shrines and the extraction chest. Everything here
--- is presentation; the rules live in the core.
+-- per obstacle circle, the shrines, the extraction chest and the portal's
+-- arch, each from its own mesh with parts as the fallback. Everything here is
+-- presentation; the rules live in the core.
 
 local InsertService = game:GetService("InsertService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -80,8 +81,22 @@ local START_STONE_COLOR = Color3.fromRGB(170, 160, 140)
 local CHEST_WOOD = Color3.fromRGB(120, 72, 36)
 local CHEST_BAND = Color3.fromRGB(230, 190, 90)
 local CHEST_GLOW = Color3.fromRGB(255, 220, 130)
+local CHEST_GLOW_TRANSPARENCY = 0.6
+local CHEST_GLOW_SPENT = 0.9
+local CHEST_LIGHT_BRIGHTNESS = 2.5
+local CHEST_LIGHT_SPENT = 0.8
+-- An opened chest mesh rises a little and turns, so the change reads.
+local CHEST_OPEN_LIFT = 0.5
+local CHEST_OPEN_TURN = math.rad(15)
 
--- Shrines: a stone plinth, a floating emblem and a beam in the kind's colour.
+-- Shrines: the kind's mesh (or a stone plinth and a floating emblem) and a
+-- beam in the kind's colour.
+local SHRINE_PROPS: { [string]: string } = {
+	boon = "shrineBoon",
+	pact = "shrinePact",
+	trial = "shrineTrial",
+	spring = "shrineSpring",
+}
 local SHRINE_COLORS: { [string]: Color3 } = {
 	boon = Color3.fromRGB(255, 200, 80),
 	pact = Color3.fromRGB(220, 60, 80),
@@ -100,6 +115,10 @@ local BEAM_GLOW_TRANSPARENCY = 0.85
 local BEAM_DIM_TRANSPARENCY = 0.8
 local SHRINE_LIGHT_BRIGHTNESS = 3
 local SHRINE_LIGHT_DIM = 0.8
+-- A textured mesh ignores Color, so a used shrine's mesh fades instead.
+local SHRINE_SPENT_TRANSPARENCY = 0.4
+-- The invisible plinth under a shrine mesh, as tall as the part plinth.
+local SHRINE_BODY_HEIGHT = 1
 
 type Look = { part: BasePart, color: Color3, material: Enum.Material }
 type ShrineLook = {
@@ -107,6 +126,7 @@ type ShrineLook = {
 	glow: Part,
 	light: PointLight,
 	emblem: { Look },
+	mesh: MeshPart?,
 	state: string?,
 }
 
@@ -126,8 +146,15 @@ type Prop = {
 }
 
 local folder: Folder? = nil
+-- The look's Random of the current map, kept for the shrines built after it.
+local lookRandom: Random? = nil
 local chestModel: Model? = nil
 local chestLid: Part? = nil
+local chestMesh: MeshPart? = nil
+local chestClosed: CFrame? = nil
+local chestGlow: Part? = nil
+local chestLight: PointLight? = nil
+local portalArch: MeshPart? = nil
 local shrineLooks: { [number]: ShrineLook } = {}
 -- One loaded mesh per mesh id, cloned for every prop; false when it failed.
 local templates: { [string]: MeshPart | false } = {}
@@ -282,20 +309,28 @@ local function preloadProps()
 	end
 end
 
--- The kind's mesh, drawn at the prop's centre on the ground; false when the
--- kind has no mesh or it failed to load.
-local function meshProp(prop: Prop, parent: Instance): boolean
-	local variants = Config.props[prop.kind]
+-- A clone of a props key's mesh (variant `choice`, wrapping), sized by its
+-- scale, standing on the ground at (x, z) turned by `rotation`, in `parent`;
+-- nil when the key has no mesh or it failed to load.
+local function placeMesh(
+	key: string,
+	choice: number,
+	x: number,
+	z: number,
+	rotation: CFrame,
+	parent: Instance
+): MeshPart?
+	local variants = Config.props[key]
 	if variants == nil or #variants == 0 then
-		return false
+		return nil
 	end
-	local variant = variants[prop.group % #variants + 1]
+	local variant = variants[choice % #variants + 1]
 	local source = template(variant.meshId)
 	if source == nil then
-		return false
+		return nil
 	end
 	local mesh = source:Clone()
-	mesh.Name = prop.kind
+	mesh.Name = key
 	mesh.Anchored = true
 	quiet(mesh)
 	if variant.textureId ~= "" then
@@ -303,9 +338,29 @@ local function meshProp(prop: Prop, parent: Instance): boolean
 	end
 	local size = source.Size * variant.scale
 	mesh.Size = size
-	mesh.CFrame = CFrame.new(prop.x, variant.yOffset + size.Y / 2, prop.z) * yaw(prop.rotation)
+	mesh.CFrame = CFrame.new(x, variant.yOffset + size.Y / 2, z) * rotation
 	mesh.Parent = parent
-	return true
+	return mesh
+end
+
+-- Turns a placed mesh in place so its longer horizontal side runs along
+-- `direction`; the meshes carry no "front", so their shape decides.
+local function align(mesh: MeshPart, direction: Vector3)
+	local flat = Vector3.new(direction.X, 0, direction.Z)
+	if flat.Magnitude < 1e-3 then
+		return
+	end
+	local rotation = CFrame.lookAt(Vector3.zero, flat.Unit)
+	if mesh.Size.X > mesh.Size.Z then
+		rotation *= CFrame.Angles(0, math.pi / 2, 0)
+	end
+	mesh.CFrame = CFrame.new(mesh.Position) * rotation
+end
+
+-- The kind's mesh, drawn at the prop's centre on the ground; false when the
+-- kind has no mesh or it failed to load.
+local function meshProp(prop: Prop, parent: Instance): boolean
+	return placeMesh(prop.kind, prop.group, prop.x, prop.z, yaw(prop.rotation), parent) ~= nil
 end
 
 -- A tree: a trunk and a crown of a few overlapping balls, the crown leaning a
@@ -580,6 +635,44 @@ local function buildPond(prop: Prop, parent: Instance)
 	model.Parent = parent
 end
 
+-- A stone circle from its mesh: one stone per footprint circle, its broad
+-- face toward the ring's centre; false when the mesh failed to load.
+local function meshStoneCircle(prop: Prop, parent: Instance): boolean
+	local cx, cz = 0, 0
+	for _, circle in prop.circles do
+		cx += circle.x
+		cz += circle.z
+	end
+	cx, cz = cx / #prop.circles, cz / #prop.circles
+	local model = Instance.new("Model")
+	model.Name = "StoneCircle"
+	for index, circle in prop.circles do
+		local stone =
+			placeMesh("stoneCircle", prop.group + index, circle.x, circle.z, CFrame.identity, model)
+		if stone == nil then
+			model:Destroy()
+			return false
+		end
+		-- The broad face toward the centre: the long side along the ring.
+		align(stone, Vector3.new(-(cz - circle.z), 0, cx - circle.x))
+	end
+	model.Parent = parent
+	return true
+end
+
+-- A fence from its mesh: once at the middle of its footprint, along the
+-- line of its circles; false when the mesh failed to load.
+local function meshFence(prop: Prop, parent: Instance): boolean
+	local from, to = span(prop)
+	local centre = (from + to) / 2
+	local fence = placeMesh("fence", prop.group, centre.X, centre.Z, yaw(prop.rotation), parent)
+	if fence == nil then
+		return false
+	end
+	align(fence, to - from)
+	return true
+end
+
 local function buildFallback(prop: Prop, parent: Instance, random: Random)
 	local kind = prop.kind
 	if kind == "pine" or kind == "tree" then
@@ -607,6 +700,14 @@ end
 local function drawProp(prop: Prop, parent: Instance, random: Random)
 	if prop.kind == "pond" then
 		buildPond(prop, parent)
+	elseif prop.kind == "stoneCircle" then
+		if not meshStoneCircle(prop, parent) then
+			buildFallback(prop, parent, random)
+		end
+	elseif prop.kind == "fence" then
+		if not meshFence(prop, parent) then
+			buildFallback(prop, parent, random)
+		end
 	elseif not meshProp(prop, parent) then
 		buildFallback(prop, parent, random)
 	end
@@ -851,9 +952,57 @@ local function buildWall(arena: Types.Arena, parent: Instance)
 	wall.Parent = parent
 end
 
--- The extraction chest: a wooden box with a golden band and a soft glow,
--- standing where the core put it.
+-- The glow on the ground and the light that mark the chest, mesh or parts.
+local function chestMarker(x: number, z: number, lit: BasePart, model: Model)
+	local glow = block(
+		"Glow",
+		CFrame.new(x, 0.1, z),
+		Vector3.new(10, 0.1, 10),
+		CHEST_GLOW,
+		Enum.Material.Neon,
+		model
+	)
+	glow.Transparency = CHEST_GLOW_TRANSPARENCY
+	local light = Instance.new("PointLight")
+	light.Color = CHEST_GLOW
+	light.Brightness = CHEST_LIGHT_BRIGHTNESS
+	light.Range = 24
+	light.Parent = lit
+	chestGlow = glow
+	chestLight = light
+end
+
+-- The extraction chest: its mesh, turned toward the start, over a soft glow,
+-- standing where the core put it; a solid body, as the part chest was.
+local function meshChest(arena: Types.Arena, parent: Instance): boolean
+	local model = Instance.new("Model")
+	model.Name = "ExtractionChest"
+	local x, z = arena.chestX, arena.chestZ
+	local facing = Vector3.new(arena.startX - x, 0, arena.startZ - z)
+	local rotation = if facing.Magnitude > 1e-3
+		then CFrame.lookAt(Vector3.zero, facing.Unit)
+		else CFrame.identity
+	local mesh = placeMesh("chest", 0, x, z, rotation, model)
+	if mesh == nil then
+		model:Destroy()
+		return false
+	end
+	mesh.CanCollide = true
+	mesh.CanQuery = true
+	chestMarker(x, z, mesh, model)
+	model.Parent = parent
+	chestModel = model
+	chestMesh = mesh
+	chestClosed = mesh.CFrame
+	return true
+end
+
+-- The part chest, while the mesh has not loaded: a wooden box with a golden
+-- band and a soft glow.
 local function buildChest(arena: Types.Arena, parent: Instance)
+	if meshChest(arena, parent) then
+		return
+	end
 	local model = Instance.new("Model")
 	model.Name = "ExtractionChest"
 	local x, z = arena.chestX, arena.chestZ
@@ -899,23 +1048,37 @@ local function buildChest(arena: Types.Arena, parent: Instance)
 		Enum.Material.Neon,
 		model
 	)
-	local glow = block(
-		"Glow",
-		CFrame.new(x, 0.1, z),
-		Vector3.new(10, 0.1, 10),
-		CHEST_GLOW,
-		Enum.Material.Neon,
-		model
-	)
-	glow.Transparency = 0.6
-	local light = Instance.new("PointLight")
-	light.Color = CHEST_GLOW
-	light.Brightness = 2.5
-	light.Range = 24
-	light.Parent = base
+	chestMarker(x, z, base, model)
 	model.Parent = parent
 	chestModel = model
 	chestLid = lid
+end
+
+-- The portal's arch, standing on the portal's spot across the camera's view,
+-- so the client's ring stands inside it; nothing when the mesh fails, the
+-- client's ring is the portal.
+function ArenaBuilder.setPortal(x: number, z: number)
+	ArenaBuilder.clearPortal()
+	local root = folder
+	if root == nil then
+		return
+	end
+	local arch = placeMesh("portal", 0, x, z, CFrame.identity, root)
+	if arch then
+		arch.Name = "PortalArch"
+		-- The client's ring faces the camera, which looks along -Z: the arch's
+		-- span runs along X.
+		align(arch, Vector3.xAxis)
+		portalArch = arch
+	end
+end
+
+-- Takes the portal's arch away.
+function ArenaBuilder.clearPortal()
+	if portalArch then
+		portalArch:Destroy()
+		portalArch = nil
+	end
 end
 
 -- The emblem floating over a shrine's plinth, by kind; returns its parts.
@@ -1004,10 +1167,9 @@ local function buildEmblem(
 	return parts
 end
 
-local function buildShrine(shrine: Types.Shrine, parent: Instance)
-	local color = SHRINE_COLORS[shrine.kind] or SHRINE_COLORS.boon
-	local model = Instance.new("Model")
-	model.Name = "Shrine_" .. shrine.id
+-- A shrine's body from parts: a stone plinth and the kind's floating emblem;
+-- returns the emblem's looks and the plinth's top.
+local function partShrine(shrine: Types.Shrine, color: Color3, model: Model): ({ Look }, number)
 	local x, z, r = shrine.x, shrine.z, shrine.radius
 	local plinth =
 		cylinder("Plinth", x, z, -0.2, 1, r, SHRINE_STONE, Enum.Material.Cobblestone, model)
@@ -1019,12 +1181,41 @@ local function buildShrine(shrine: Types.Shrine, parent: Instance)
 		part.CastShadow = false
 		table.insert(emblem, { part = part, color = part.Color, material = part.Material })
 	end
+	return emblem, 1.6
+end
+
+local function buildShrine(shrine: Types.Shrine, parent: Instance, random: Random)
+	local color = SHRINE_COLORS[shrine.kind] or SHRINE_COLORS.boon
+	local model = Instance.new("Model")
+	model.Name = "Shrine_" .. shrine.id
+	local x, z, r = shrine.x, shrine.z, shrine.radius
+	local emblem: { Look } = {}
+	local base = 0
+	local lit: BasePart
+	local mesh = placeMesh(
+		SHRINE_PROPS[shrine.kind] or SHRINE_PROPS.boon,
+		0,
+		x,
+		z,
+		CFrame.Angles(0, random:NextNumber(0, 2 * math.pi), 0),
+		model
+	)
+	if mesh then
+		mesh.Name = "Shrine"
+		-- What the raycasts stop at is the shrine's circle, as the plinth was.
+		body("Plinth", x, z, r, SHRINE_BODY_HEIGHT, model)
+		base = mesh.Position.Y + mesh.Size.Y / 2
+		lit = mesh
+	else
+		emblem, base = partShrine(shrine, color, model)
+		lit = emblem[1].part
+	end
 	local beam = cylinder(
 		"Beam",
 		x,
 		z,
-		1.6,
-		1.6 + BEAM_HEIGHT,
+		base,
+		base + BEAM_HEIGHT,
 		BEAM_RADIUS,
 		color,
 		Enum.Material.Neon,
@@ -1035,8 +1226,8 @@ local function buildShrine(shrine: Types.Shrine, parent: Instance)
 		"BeamGlow",
 		x,
 		z,
-		1.6,
-		1.6 + BEAM_HEIGHT,
+		base,
+		base + BEAM_HEIGHT,
 		BEAM_GLOW_RADIUS,
 		color,
 		Enum.Material.Neon,
@@ -1046,9 +1237,10 @@ local function buildShrine(shrine: Types.Shrine, parent: Instance)
 	local light = Instance.new("PointLight")
 	light.Color = color
 	light.Range = 18
-	light.Parent = emblem[1].part
+	light.Parent = lit
 	model.Parent = parent
-	shrineLooks[shrine.id] = { beam = beam, glow = glow, light = light, emblem = emblem }
+	shrineLooks[shrine.id] =
+		{ beam = beam, glow = glow, light = light, emblem = emblem, mesh = mesh }
 	ArenaBuilder.setShrineState(shrine.id, shrine.used, true)
 end
 
@@ -1062,6 +1254,7 @@ function ArenaBuilder.build(arena: Types.Arena)
 	folder = root
 	-- Only the look varies with it: colours, tilts, clearings and the path.
 	local random = Random.new(arena.chestX * 1000 + arena.chestZ)
+	lookRandom = random
 	buildGround(arena, root, random)
 	buildWall(arena, root)
 	buildTreeLine(arena, root, random)
@@ -1104,16 +1297,17 @@ function ArenaBuilder.buildShrines(shrines: { Types.Shrine })
 		existing:Destroy()
 	end
 	shrineLooks = {}
+	local random = lookRandom or Random.new()
 	local parent = Instance.new("Folder")
 	parent.Name = "Shrines"
 	for _, shrine in shrines do
-		buildShrine(shrine, parent)
+		buildShrine(shrine, parent, random)
 	end
 	parent.Parent = root
 end
 
 -- Shows whether a shrine can be used: a used one loses its beam and its
--- emblem greys; a spring recharging (not ready) keeps a dim beam. Does
+-- emblem greys, or its mesh fades; a spring recharging (not ready) keeps a dim beam. Does
 -- nothing when the state is the one already shown.
 function ArenaBuilder.setShrineState(id: number, used: boolean, ready: boolean)
 	local look = shrineLooks[id]
@@ -1136,10 +1330,27 @@ function ArenaBuilder.setShrineState(id: number, used: boolean, ready: boolean)
 		part.part.Color = if used then SHRINE_SPENT else part.color
 		part.part.Material = if used then Enum.Material.SmoothPlastic else part.material
 	end
+	if look.mesh then
+		look.mesh.Transparency = if used then SHRINE_SPENT_TRANSPARENCY else 0
+	end
 end
 
--- Opens the chest's lid once the run says it was opened.
+-- Shows the chest opened once the run says so: the part chest's lid opens,
+-- the mesh rises a little and turns; the glow dims either way.
 function ArenaBuilder.setChestOpened(opened: boolean)
+	if chestGlow then
+		chestGlow.Transparency = if opened then CHEST_GLOW_SPENT else CHEST_GLOW_TRANSPARENCY
+	end
+	if chestLight then
+		chestLight.Brightness = if opened then CHEST_LIGHT_SPENT else CHEST_LIGHT_BRIGHTNESS
+	end
+	local mesh, closed = chestMesh, chestClosed
+	if mesh and closed then
+		mesh.CFrame = if opened
+			then closed * CFrame.new(0, CHEST_OPEN_LIFT, 0) * CFrame.Angles(0, CHEST_OPEN_TURN, 0)
+			else closed
+		return
+	end
 	local lid = chestLid
 	local model = chestModel
 	if lid == nil or model == nil then
@@ -1163,8 +1374,14 @@ function ArenaBuilder.clear()
 		folder:Destroy()
 		folder = nil
 	end
+	lookRandom = nil
 	chestModel = nil
 	chestLid = nil
+	chestMesh = nil
+	chestClosed = nil
+	chestGlow = nil
+	chestLight = nil
+	portalArch = nil
 	shrineLooks = {}
 	local baseplate = workspace:FindFirstChild("Baseplate")
 	if baseplate then
