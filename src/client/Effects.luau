@@ -4515,6 +4515,10 @@ function fx.onEvents(events: { Types.Event }, _self: Protocol.SelfView?)
 			fx.onKill(event.enemyId, event.enemyKind, event.x, event.z)
 		elseif event.kind == "playerHurt" then
 			fx.onPlayerHurt(event.player, event.amount, event.absorbed)
+			local biter = event.enemyId
+			if biter then
+				EnemyView.bite(biter)
+			end
 		elseif event.kind == "knockback" then
 			local at = fx.atHero(event.player)
 			if at then

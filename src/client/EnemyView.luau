@@ -8,9 +8,14 @@
 --
 -- A kind with an entry in Config.enemyMeshes (ADR-0022) is drawn as one
 -- pooled mesh in place of its pieces, once the mesh has loaded; a kind
--- without one, or whose mesh failed, keeps its pieces.
+-- without one, or whose mesh failed, keeps its pieces. A `rigged` entry
+-- (ADR-0024) is drawn as a pooled clone of its kind's skinned template under
+-- Shared.Assets.Enemies, sized only through the model's ScaleTo (a skin does
+-- not follow its mesh's Size) and moved by its clips: a walk or a run by its
+-- pace, a frozen first walk frame at rest, the attack over the telegraph.
 
 local InsertService = game:GetService("InsertService")
+local KeyframeSequenceProvider = game:GetService("KeyframeSequenceProvider")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -509,6 +514,22 @@ local MESH_SWELL: { [string]: number } = { exploder = 1.4 }
 local MESH_HOVER: { [string]: number } = { wraith = 0.3 }
 -- A kind whose mesh does not face -Z: its turn about up, radians, by kind id.
 local MESH_FACING: { [string]: number } = {}
+-- A rigged kind (ADR-0024): below this pace it holds the first walk frame
+-- (its rest pose is a T-pose, never shown), below the run's it walks, at
+-- this pace per clip speed; the clips cross-fade over this long.
+local IDLE_PACE = 0.08
+local RUN_PACE = 0.55
+local WALK_CLIP_PACE = 0.4
+local CLIP_FADE = 0.15
+local DEATH_CLIP_FADE = 0.2
+-- How long the attack clip runs when its track does not know yet.
+local ATTACK_CLIP_SECONDS = 2.8
+-- How long a contact bite (a kind without attacks) swings the attack clip.
+local BITE_SECONDS = 0.5
+-- How long a rigged kind waits for its template before it keeps its parts.
+local RIG_WAIT_SECONDS = 30
+
+type Gait = "idle" | "walking" | "running"
 
 -- Enemies are drawn one snapshot interval behind the newest data, so there is
 -- always a next position to glide to.
@@ -611,6 +632,14 @@ type Rig = {
 	swell: number,
 	hover: number,
 	turn: CFrame,
+	-- A rigged mesh: its model's scale at the look's size, where its chevrons,
+	-- aura and ring go (outside the model, so its ScaleTo leaves them be), and
+	-- the locomotion clip it shows (nil when stopped) and that clip's speed.
+	rigged: boolean,
+	baseScale: number,
+	holder: Instance,
+	gait: Gait?,
+	gaitSpeed: number,
 }
 
 type Dying = { rig: Rig, at: number, locals: { CFrame } }
@@ -628,6 +657,12 @@ local freeRings: { Part } = {}
 local meshTemplates: { [string]: MeshPart } = {}
 local meshLooks: { [string]: Look } = {}
 local freeMeshes: { [string]: { MeshPart } } = {}
+-- Each rigged kind's template, its clips by name and its free clones; each
+-- clone's loaded tracks stay with it across reuse.
+local rigTemplates: { [string]: Model } = {}
+local clipsByKind: { [string]: { [string]: Animation } } = {}
+local freeRigs: { [string]: { Model } } = {}
+local tracksByModel: { [Model]: { [string]: AnimationTrack } } = setmetatable({}, { __mode = "k" }) :: any
 local rigs: { [number]: Rig } = {}
 local dying: { Dying } = {}
 local firstTelegraphs: { [string]: number } = {}
@@ -766,6 +801,122 @@ local function loadMesh(kindId: string, entry: Types.PropConfig)
 	meshTemplates[kindId] = template
 end
 
+-- Takes rigged kind `kindId`'s template, registers its clips and clones its
+-- pool; until then, or when it is missing, the kind is drawn from parts.
+local function loadRig(kindId: string, entry: Types.PropConfig)
+	local assets = ReplicatedStorage.Shared:WaitForChild("Assets", RIG_WAIT_SECONDS)
+	local enemies = if assets then assets:WaitForChild("Enemies", RIG_WAIT_SECONDS) else nil
+	local found = if enemies then enemies:WaitForChild(kindId, RIG_WAIT_SECONDS) else nil
+	local mesh = if found then found:FindFirstChild("Mesh") else nil
+	if not (found and found:IsA("Model") and mesh and mesh:IsA("MeshPart")) then
+		warn(`EnemyView: the rig of {kindId} is missing, using parts`)
+		return
+	end
+	local template: Model = found
+	mesh.Anchored = true
+	mesh.CanCollide = false
+	mesh.CanQuery = false
+	mesh.CanTouch = false
+	mesh.CastShadow = true
+	template.PrimaryPart = mesh
+	local clips: { [string]: Animation } = {}
+	local clipFolder = template:FindFirstChild("Clips")
+	if clipFolder then
+		for _, sequence in clipFolder:GetChildren() do
+			if sequence:IsA("KeyframeSequence") then
+				local animation = Instance.new("Animation")
+				animation.Name = sequence.Name
+				animation.AnimationId = KeyframeSequenceProvider:RegisterKeyframeSequence(sequence)
+				clips[sequence.Name] = animation
+			end
+		end
+	end
+	local kind = Config.enemies[kindId]
+	local pool: { Model } = {}
+	for _ = 1, if kind then PREWARM_MESHES[kind.role] or 0 else 0 do
+		table.insert(pool, template:Clone())
+	end
+	clipsByKind[kindId] = clips
+	freeRigs[kindId] = pool
+	rigTemplates[kindId] = template
+	meshLooks[kindId] = meshLookOf(mesh, entry)
+	meshTemplates[kindId] = mesh
+end
+
+-- The rig's tracks by clip name, loaded on first use (the model must be in
+-- the world by then); empty when it has no animator.
+local function tracksOf(rig: Rig): { [string]: AnimationTrack }
+	local model = rig.model
+	local known = tracksByModel[model]
+	if known then
+		return known
+	end
+	local tracks: { [string]: AnimationTrack } = {}
+	local controller = model:FindFirstChildOfClass("AnimationController")
+	local animator = if controller then controller:FindFirstChildOfClass("Animator") else nil
+	local clips = clipsByKind[rig.kindId]
+	if animator and clips then
+		for name, animation in clips do
+			tracks[name] = animator:LoadAnimation(animation)
+		end
+	end
+	tracksByModel[model] = tracks
+	return tracks
+end
+
+-- Shows locomotion clip `gait` at `speed`, or stops the walk and the run when
+-- nil; a clip is played only on a change, its speed adjusted only on a change.
+local function setGait(rig: Rig, gait: Gait?, speed: number)
+	local tracks = tracksOf(rig)
+	local walking, running = tracks.walking, tracks.running
+	local was = rig.gait
+	if gait ~= was then
+		local wasWalk = was == "walking" or was == "idle"
+		local isWalk = gait == "walking" or gait == "idle"
+		if wasWalk and not isWalk and walking then
+			walking:Stop(CLIP_FADE)
+		elseif was == "running" and running then
+			running:Stop(CLIP_FADE)
+		end
+		local track = if isWalk then walking elseif gait == "running" then running else nil
+		if track and not (wasWalk and isWalk) then
+			track:Play(CLIP_FADE)
+		end
+		if track and gait == "idle" then
+			track.TimePosition = 0
+		end
+		rig.gait = gait
+		rig.gaitSpeed = -1
+	end
+	if gait == "idle" then
+		speed = 0
+	end
+	local track = if gait == "running" then running elseif gait then walking else nil
+	if track and math.abs(speed - rig.gaitSpeed) > 0.05 then
+		rig.gaitSpeed = speed
+		track:AdjustSpeed(speed)
+	end
+end
+
+-- Stops every clip of the rig, fading over `fade` seconds.
+local function stopClips(rig: Rig, fade: number)
+	for _, track in tracksOf(rig) do
+		track:Stop(fade)
+	end
+	rig.gait = nil
+	rig.gaitSpeed = -1
+end
+
+-- Plays the attack clip from its start at `speed`.
+local function playAttack(rig: Rig, speed: number)
+	local track = tracksOf(rig).attack
+	if track then
+		track:Play(0.1)
+		track.TimePosition = 0
+		track:AdjustSpeed(speed)
+	end
+end
+
 -- `count` chevrons (up to `MAX_CHEVRONS`; 0 for none), replacing any it had.
 local function setChevrons(rig: Rig, count: number)
 	local first = #rig.look.pieces + 1
@@ -793,7 +944,7 @@ local function setChevrons(rig: Rig, count: number)
 		local index = first + step - 1
 		-- A parked enemy's new chevrons wait with its other parts.
 		part.CFrame = if rig.parked then PARKED else on * offset
-		part.Parent = rig.model
+		part.Parent = rig.holder
 		rig.parts[index] = part
 		rig.roles[index] = "glow"
 		rig.frames[index] = part.CFrame
@@ -898,7 +1049,8 @@ end
 
 -- Lays out a mesh rig into `rig.frames`: the walk's hop and lean, the
 -- telegraph's rise, the attack's lunge and the charge's tilt all move the one
--- mesh, pivoting at its feet.
+-- mesh, pivoting at its feet. A rigged mesh's clips walk, run and attack, so
+-- it keeps only the lean, the charge's tilt, the hover, the swell and the pop.
 local function layoutMesh(rig: Rig, now: number, pulse: number, dt: number)
 	local mesh = rig.mesh :: MeshPart
 	local piece = rig.look.pieces[1]
@@ -919,7 +1071,19 @@ local function layoutMesh(rig: Rig, now: number, pulse: number, dt: number)
 		forward, side, pace = forward / pace, side / pace, 1
 	end
 	rig.walkPhase += dt * WALK_STEPS_HZ * pace
-	local bob = WALK_BOB_SHARE * height * pace * math.abs(math.sin(rig.walkPhase * math.pi))
+	local rigged = rig.rigged
+	local bob = if rigged
+		then 0
+		else WALK_BOB_SHARE * height * pace * math.abs(math.sin(rig.walkPhase * math.pi))
+	if rigged then
+		if pace < IDLE_PACE or rig.sleepColor then
+			setGait(rig, "idle", 0)
+		elseif pace < RUN_PACE then
+			setGait(rig, "walking", math.clamp(pace / WALK_CLIP_PACE, 0.5, 1.5))
+		else
+			setGait(rig, "running", math.clamp(pace, 0.6, 1.4))
+		end
+	end
 	if rig.hover > 0 then
 		bob += rig.hover * rig.size * math.sin((now * BOB_HZ + rig.phase) * 2 * math.pi)
 	end
@@ -935,12 +1099,15 @@ local function layoutMesh(rig: Rig, now: number, pulse: number, dt: number)
 	local rise, rear, push, tilt = 0, 0, 0, 0
 	if chargeAt then
 		local snap = math.min(1, (now - chargeAt) / STRIKE_SNAP)
-		rise = MESH_RISE_SHARE * height * rig.reached * (1 - snap)
+		if not rigged then
+			rise = MESH_RISE_SHARE * height * rig.reached * (1 - snap)
+		end
 		tilt = MESH_CHARGE_TILT * snap
-	elseif telegraphAt then
+	-- A rigged mesh's attack clip rises, rears and lunges.
+	elseif telegraphAt and not rigged then
 		rise = MESH_RISE_SHARE * height * progress
 		rear = MESH_REAR * progress
-	elseif since < SETTLE_END then
+	elseif since < SETTLE_END and not rigged then
 		local settle = math.max(0, 1 - since / SETTLE_SECONDS)
 		rise = MESH_RISE_SHARE * height * rig.reached * settle
 		rear = MESH_REAR * rig.reached * settle
@@ -960,7 +1127,12 @@ local function layoutMesh(rig: Rig, now: number, pulse: number, dt: number)
 	end
 	if scale ~= rig.scales[1] then
 		rig.scales[1] = scale
-		mesh.Size = size * scale
+		if rigged then
+			-- The bones scale with the model only.
+			rig.model:ScaleTo(rig.baseScale * scale)
+		else
+			mesh.Size = size * scale
+		end
 	end
 	-- Stands on the ground as it grows.
 	local lift = piece.offset.Position.Y * rig.size + (scale - 1) * height / 2
@@ -1054,7 +1226,7 @@ local function setRing(rig: Rig, color: Color3?)
 			local diameter = math.max(footprint.X, footprint.Z) * rig.size * STATUS_RING_SHARE
 			fresh.Size = Vector3.new(STATUS_RING_THICKNESS, diameter, diameter)
 			fresh.CFrame = if rig.parked then PARKED else ringFrame(rig)
-			fresh.Parent = rig.model
+			fresh.Parent = rig.holder
 			rig.ring = fresh
 			ring = fresh
 		end
@@ -1088,7 +1260,7 @@ local function setAura(rig: Rig, on: boolean)
 				0,
 				math.pi / 2
 			)
-		fresh.Parent = rig.model
+		fresh.Parent = rig.holder
 		rig.aura = fresh
 	elseif not on and aura then
 		aura.Parent = nil
@@ -1148,8 +1320,17 @@ local function spawnRig(id: number, enemy: Protocol.EnemyView): Rig
 	local size = if kind then kind.scale else 1
 	local tint = if kind then fromHex(kind.colour) else WHITE
 	local boss = isBoss(kind)
-	local model = table.remove(freeModels) or Instance.new("Model")
+	local rigTemplate: Model? = if template then rigTemplates[enemy.kind] else nil
+	local model
+	if rigTemplate then
+		model = table.remove(freeRigs[enemy.kind]) or rigTemplate:Clone()
+		-- In the world before its clips load and play.
+		model.Parent = folder
+	else
+		model = table.remove(freeModels) or Instance.new("Model")
+	end
 	model.Name = enemy.kind
+	local entry = Config.enemyMeshes[enemy.kind]
 	local rig: Rig = {
 		look = look,
 		model = model,
@@ -1209,10 +1390,22 @@ local function spawnRig(id: number, enemy: Protocol.EnemyView): Rig
 		swell = if kind then MESH_SWELL[kind.look] or 1 else 1,
 		hover = if kind then MESH_HOVER[kind.look] or 0 else 0,
 		turn = CFrame.Angles(0, MESH_FACING[enemy.kind] or 0, 0),
+		rigged = rigTemplate ~= nil,
+		baseScale = if rigTemplate and entry then entry.scale * size else 1,
+		holder = if rigTemplate then folder else model,
+		gait = nil,
+		gaitSpeed = -1,
 	}
 	for index, piece in look.pieces do
 		local part: BasePart
-		if template then
+		if rigTemplate then
+			local mesh = model:FindFirstChild("Mesh") :: MeshPart
+			-- The bones scale with the model only, before the chevrons sit on it.
+			model:ScaleTo(rig.baseScale)
+			mesh.Transparency = 0
+			rig.mesh = mesh
+			part = mesh
+		elseif template then
 			local mesh = table.remove(freeMeshes[enemy.kind]) or template:Clone()
 			mesh.Size = piece.size * size
 			mesh.Transparency = 0
@@ -1365,12 +1558,22 @@ end
 local function recycle(rig: Rig)
 	local mesh = rig.mesh
 	for index, part in rig.parts do
-		if mesh and index == 1 then
+		if rig.rigged and index == 1 then
+			-- The mesh stays in its model.
+			continue
+		elseif mesh and index == 1 then
 			mesh.Parent = nil
 			table.insert(freeMeshes[rig.kindId], mesh)
 		else
 			give(rig.roles[index], part)
 		end
+	end
+	if rig.rigged then
+		-- Back to its kind's pool with its tracks, its mesh still its PrimaryPart.
+		stopClips(rig, 0)
+		rig.model.Parent = nil
+		table.insert(freeRigs[rig.kindId], rig.model)
+		return
 	end
 	rig.model.PrimaryPart = nil
 	rig.model.Parent = nil
@@ -1388,6 +1591,9 @@ local function kill(id: number, rig: Rig, now: number)
 	setRim(rig, false)
 	setAura(rig, false)
 	setRing(rig, nil)
+	if rig.rigged then
+		stopClips(rig, DEATH_CLIP_FADE)
+	end
 	if rig.parked then
 		-- Out of sight: no collapse to draw.
 		departed[id] = groundPosition(rig)
@@ -1495,6 +1701,17 @@ local function setState(rig: Rig, state: Types.EnemyState, now: number)
 		rig.endedAt = now
 		-- A telegraph followed by a recovery is an attack that landed.
 		rig.struck = state == "recover"
+	end
+	-- A rigged mesh in sight swings its attack clip: over the telegraph, so the
+	-- blow lands as it ends, or at once for a charge without one.
+	if rig.rigged and not rig.culled and rig.sleepColor == nil then
+		if state == "telegraph" then
+			local track = tracksOf(rig).attack
+			local length = if track and track.Length > 0 then track.Length else ATTACK_CLIP_SECONDS
+			playAttack(rig, length / math.max(0.25, rig.telegraphSeconds + STRIKE_SNAP))
+		elseif state == "charge" and was ~= "telegraph" then
+			playAttack(rig, 1)
+		end
 	end
 	rig.state = state
 	local stretch = if state == "charge" then CHARGE_STRETCH else 1
@@ -1784,6 +2001,9 @@ local function render(dt: number)
 			if rig and rig.culled then
 				if not rig.parked then
 					rig.parked = true
+					if rig.rigged then
+						stopClips(rig, 0)
+					end
 					for _, part in rig.parts do
 						count += 1
 						moveParts[count] = part
@@ -1899,6 +2119,20 @@ function EnemyView.telegraph(id: number, seconds: number)
 	end
 end
 
+-- Enemy `id` bit a hero by contact: a rigged mesh in sight swings its attack
+-- clip, fast, unless it is swinging it already.
+function EnemyView.bite(id: number)
+	local rig = rigs[id]
+	if rig == nil or not rig.rigged or rig.culled or rig.sleepColor ~= nil then
+		return
+	end
+	local track = tracksOf(rig).attack
+	if track and not track.IsPlaying then
+		local length = if track.Length > 0 then track.Length else ATTACK_CLIP_SECONDS
+		playAttack(rig, length / BITE_SECONDS)
+	end
+end
+
 -- A status the wire carries no flag for (weakened) was put on enemy `id`.
 function EnemyView.markStatus(id: number, status: Types.Status, seconds: number)
 	local rig = rigs[id]
@@ -1940,7 +2174,7 @@ function EnemyView.start()
 	end
 	-- The meshes load in the background; their kinds use parts meanwhile.
 	for kindId, entry in Config.enemyMeshes do
-		task.spawn(loadMesh, kindId, entry)
+		task.spawn(if entry.rigged then loadRig else loadMesh, kindId, entry)
 	end
 
 	Net.onWorld(sync)
