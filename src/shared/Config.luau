@@ -1059,6 +1059,10 @@ local Config: Types.Config = {
 					},
 				},
 				{ id = "pond", radius = 11, weight = 0.6 },
+				-- The terrain's blocking circles (ADR-0023): never scattered, never
+				-- drawn as props; the builder sculpts them.
+				{ id = "cliff", radius = 3, weight = 0 },
+				{ id = "channel", radius = 4, weight = 0 },
 				-- Lair landmarks: never scattered, drawn only by a lair's kit.
 				{ id = "brambleNest", radius = 9, weight = 0 },
 				{ id = "bog", radius = 10, weight = 0 },
@@ -1426,6 +1430,36 @@ local Config: Types.Config = {
 				},
 			},
 		},
+	},
+	terrain = {
+		plateauCountMin = 4,
+		plateauCountMax = 6,
+		plateauRadiusMin = 25,
+		plateauRadiusMax = 45,
+		plateauHeightMin = 6,
+		plateauHeightMax = 8,
+		plateauSpacing = 60,
+		plateauStartDistance = 90,
+		rampCountMin = 1,
+		rampCountMax = 2,
+		rampWidth = 14,
+		cliffRadius = 3,
+		cliffStep = 5,
+		lairsOnPlateauMin = 1,
+		lairsOnPlateauMax = 2,
+		channelHalfWidth = 4,
+		bankWidth = 5,
+		channelStep = 6,
+		streamSway = 60,
+		fordCount = 3,
+		fordRadius = 7,
+		pondRimWidth = 4,
+		shallowFactor = 0.65,
+		rollingHeight = 3,
+	},
+	flow = {
+		cellSize = 4,
+		floodEverySteps = 6,
 	},
 	-- The forest's meshes, generated with the Studio MCP and published under
 	-- the owner's account (stage 3b): obstacle kind -> variants, and the

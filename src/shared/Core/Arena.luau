@@ -607,6 +607,7 @@ function Arena.generate(
 			then scatterShrines(map, shrines, rng, layout.obstacles, chestX, chestZ)
 			else {},
 		lairSpots = lairSpots,
+		terrain = { plateaus = {}, stream = nil, ponds = {}, slowZones = {}, pads = {} },
 		places = layout.places,
 		paths = layout.paths,
 	}
