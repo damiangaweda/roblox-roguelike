@@ -17,7 +17,7 @@ function State.newRun(config: Types.Config, seed: number): Types.Run
 		rng = rng,
 		seed = seed,
 		time = 0,
-		arena = Arena.generate(map, rng),
+		arena = Arena.generate(map, rng, config.shrines),
 		nextId = 1,
 		enemies = {},
 		projectiles = {},

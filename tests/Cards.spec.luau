@@ -264,4 +264,44 @@ return {
 			end
 		end
 	end,
+
+	["a draw of two ranks gives cards worth two ranks, held to the maximum"] = function()
+		for seed = 1, 30 do
+			local run = Fixtures.run(1, nil, seed)
+			local player = run.players[1]
+			local maxRank = run.config.ranks.maxRank
+			player.skills[1].rank = maxRank - 1
+			player.passives.vigor = 1
+			for _, card in Cards.draw(run, player, 2) do
+				if card.kind == "newSkill" then
+					Assert.equal(card.rank, 2)
+				elseif card.kind == "skillRank" then
+					Assert.equal(card.rank, maxRank, "capped at the maximum")
+				elseif card.kind == "newPassive" then
+					Assert.equal(card.rank, math.min(2, run.config.passives[card.passive].maxRank))
+				elseif card.kind == "passiveRank" then
+					Assert.equal(card.rank, math.min(3, run.config.passives[card.passive].maxRank))
+				end
+			end
+			-- A level-up's draw stays one rank.
+			for _, card in Cards.draw(run, player) do
+				if card.kind == "newSkill" or card.kind == "newPassive" then
+					Assert.equal(card.rank, 1)
+				end
+			end
+		end
+	end,
+
+	["a great offer's new skill arrives at rank two"] = function()
+		local run = Fixtures.run()
+		local player = run.players[1]
+		run.time = 10
+		player.offers = { { { kind = "newSkill", skill = "emberOrb", rank = 2 } } }
+		run.paused = true
+		Assert.truthy(Cards.choose(run, 1, 1))
+		Assert.equal(player.skills[#player.skills].rank, 2)
+		player.offers = { { { kind = "skillRank", skill = "emberOrb", rank = 4 } } }
+		Assert.truthy(Cards.choose(run, 1, 1))
+		Assert.equal(player.skills[#player.skills].rank, 4)
+	end,
 }

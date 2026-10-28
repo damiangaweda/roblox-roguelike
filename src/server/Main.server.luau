@@ -147,6 +147,7 @@ local function startRun()
 		Characters.freeze(player)
 	end
 	ArenaBuilder.build(fresh.arena)
+	ArenaBuilder.buildShrines(fresh.shrines)
 
 	while true do
 		local player, class = next(waiting)
@@ -306,6 +307,10 @@ local function onIntent(player: Player, intent: Protocol.Intent)
 end
 
 local function sendSnapshot(current: Types.Run)
+	-- The builder redraws a shrine only when its state changed.
+	for _, shrine in current.shrines do
+		ArenaBuilder.setShrineState(shrine.id, shrine.used, shrine.readyAt <= current.time)
+	end
 	Network.sendWorld(current, enemyKinds, projectileKinds)
 	Network.sendEvents(pending, selfViews(current))
 	pending = {}

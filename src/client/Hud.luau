@@ -1,13 +1,18 @@
 --!strict
--- The HUD of the solo run, built in code: the class pick screen; in the run
--- health with the barrier, level and experience, kills, the run clock and its
--- timers, banners and notices, the skill bar with ranks and cooldowns, the
--- three utility skills, the passives, the three-card level-up choice, the
--- chest compass, the chest, spell and portal prompts with their bars, the
--- touch buttons and the death and extraction overlay; then the summary. It
--- only shows state and sends intents through Net or Input (AGENTS.md rule 1);
--- every string it shows comes from Strings or Config.
+-- The HUD of the solo run, built in code (stage 3b's layout): the class pick
+-- screen; in the run the experience bar across the top with the level and
+-- kills, the run clock and its timers, banners and notices under it, health
+-- with the barrier and the dash charges at the bottom centre above the skill
+-- bar with ranks and cooldowns and the three utility skills, the passives,
+-- boons and pacts on the right, the three-card level-up choice and the great
+-- offer, the chest compass, the chest, shrine, spell and portal prompts with
+-- their bars, the touch buttons and the death and extraction overlay; then the
+-- summary. The top-left corner stays clear for the chat. Skills, passives and
+-- utilities show their icon from Config.icons, or their initials without one.
+-- It only shows state and sends intents through Net or Input (AGENTS.md rule
+-- 1); every string it shows comes from Strings or Config.
 
+local GuiService = game:GetService("GuiService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -67,10 +72,28 @@ local LEVEL_FLASH_SECONDS = 0.6
 local NOTICE_SECONDS = 2
 local NOTICE_FADE_SECONDS = 0.5
 local MAX_NOTICES = 3
--- The timer lines under the clock, the first notice line under them, and the step between lines.
-local TIMER_TOP = 48
-local NOTICE_TOP = 92
+-- Under the experience bar: the clock, the timer lines under it, the first
+-- notice line under them, and the step between lines.
+local CLOCK_TOP = 2
+local TIMER_TOP = 38
+local NOTICE_TOP = 82
 local NOTICE_STEP = 20
+-- The experience bar: its height and the margin it keeps from the screen's
+-- edges (or the topbar's buttons) and the narrowest it gets.
+local XP_HEIGHT = 20
+local TOP_MARGIN = 12
+local MIN_XP_WIDTH = 160
+-- Health above the skill bar: its height and the gap to the tiles; the dash
+-- charges beside it: each pip's width and the gap between them.
+local HEALTH_HEIGHT = 24
+local VITALS_GAP = 6
+local DASH_PIP_WIDTH = 10
+local DASH_PIP_GAP = 4
+-- Cards and class cards: the icon's side and the card's size.
+local CARD_ICON = 96
+local CARD_WIDTH = 220
+local CARD_HEIGHT = 300
+local CLASS_ICON = 64
 -- Dead and extracted screens fade in over this long, to this tint opacity.
 local STATE_FADE_SECONDS = 0.6
 local DEAD_TINT_ALPHA = 0.1
@@ -90,6 +113,8 @@ local UTILITY_GAP = 20
 local PIP_GAP = 1
 -- Up to this many capitals of a skill's name stand on its tile.
 local MAX_INITIALS = 2
+-- An icon's inset on a tile.
+local ICON_INSET = 4
 -- Touch buttons: size and step.
 local BUTTON_SIZE = 76
 local BUTTON_STEP = 84
@@ -134,6 +159,16 @@ local LOW_HEALTH_COLOR = Color3.fromRGB(110, 0, 0)
 -- The health bar's fill at the top of a low-health pulse; dark enough for the white number.
 local HEALTH_PULSE_COLOR = Color3.fromRGB(255, 96, 86)
 local LEVEL_COLOR = Color3.fromRGB(255, 214, 90)
+-- A great offer's title and frame.
+local GREAT_COLOR = Color3.fromRGB(255, 176, 30)
+local DASH_COLOR = Color3.fromRGB(120, 220, 255)
+-- A shrine's colour, by kind: its prompt's name and its hold bar.
+local SHRINE_COLORS: { [string]: Color3 } = {
+	boon = Color3.fromRGB(255, 200, 60),
+	pact = Color3.fromRGB(200, 30, 50),
+	trial = Color3.fromRGB(150, 80, 240),
+	spring = Color3.fromRGB(70, 220, 240),
+}
 local NOTICE_COLOR = Color3.fromRGB(225, 225, 232)
 local FONT = Enum.Font.GothamMedium
 local FONT_BOLD = Enum.Font.GothamBold
@@ -164,6 +199,7 @@ local TARGETING_TEXT = Strings.targeting :: { [string]: string }
 local EFFECT_TEXT = Strings.effects :: { [string]: string }
 local STAT_TEXT = Strings.stats :: { [string]: string }
 local OUTCOME_TEXT = Strings.summary.outcomes :: { [string]: string }
+local SHRINE_TEXT = Strings.shrines :: { [string]: string }
 
 type Bar = {
 	root: Frame,
@@ -172,8 +208,10 @@ type Bar = {
 }
 
 -- A tile of the skill bar: a skill with its rank pips, or a utility skill.
+-- `icon` shows the skill's icon when it has one, `text` its initials otherwise.
 type Tile = {
 	root: Frame,
+	icon: ImageLabel,
 	sweep: Frame,
 	text: TextLabel,
 	time: TextLabel,
@@ -364,6 +402,67 @@ local function initials(name: string): string
 	return if #letters > 0 then table.concat(letters) else string.upper(string.sub(name, 1, 2))
 end
 
+-- The icon of a skill, passive, utility or class by id, or nil without one.
+local function iconOf(id: string?): string?
+	local icons = (Config :: any).icons
+	if id == nil or type(icons) ~= "table" then
+		return nil
+	end
+	local image = icons[id]
+	return if type(image) == "string" and image ~= "" then image else nil
+end
+
+-- A boon's or pact's name by id, from Config.shrines.
+local function giftName(id: string): string
+	for _, boon in Config.shrines.boons do
+		if boon.id == id then
+			return boon.name
+		end
+	end
+	for _, pact in Config.shrines.pacts do
+		if pact.id == id then
+			return pact.name
+		end
+	end
+	return id
+end
+
+-- A square face `side` wide: the icon of `id` when it has one, else the
+-- initials of `name` on a tile of `color`.
+local function newFace(
+	parent: Instance,
+	side: number,
+	position: UDim2,
+	id: string?,
+	name: string,
+	color: Color3
+): GuiObject
+	local image = iconOf(id)
+	if image then
+		local icon = Instance.new("ImageLabel")
+		icon.Name = "Icon"
+		icon.Size = UDim2.fromOffset(side, side)
+		icon.Position = position
+		icon.BackgroundTransparency = 1
+		icon.Image = image
+		icon.ScaleType = Enum.ScaleType.Fit
+		icon.Parent = parent
+		return icon
+	end
+	local tile = newFrame(parent, "Icon", UDim2.fromOffset(side, side), position, color, 0.1)
+	round(tile, math.floor(side / 6))
+	local letters = newLabel(
+		tile,
+		"Initials",
+		UDim2.fromScale(1, 1),
+		UDim2.new(),
+		math.floor(side * 0.4),
+		FONT_BOLD
+	)
+	letters.Text = initials(name)
+	return tile
+end
+
 local function skillColor(skill: Types.SkillConfig?): Color3
 	local tag = if skill then skill.tags[1] else nil
 	return if tag then TAG_COLORS[tag] else COOLDOWN_COLOR
@@ -467,27 +566,59 @@ local function describePassive(id: string): string
 	return string.format(Strings.passive.percent, trimNumber(passive.perRank * 100), name)
 end
 
--- A card's title, subtitle and description.
-local function describeCard(card: Types.Card, stats: Types.HeroStats): (string, string, string)
+-- How many ranks a card adds to what the player holds: one at a level-up,
+-- more in a great offer; none for the heal.
+local function ranksGained(card: Types.Card, selfView: Protocol.SelfView): number
+	if card.kind == "skillRank" then
+		for _, owned in selfView.skills do
+			if owned.id == card.skill then
+				return card.rank - owned.rank
+			end
+		end
+		return 1
+	elseif card.kind == "newSkill" or card.kind == "newPassive" then
+		return card.rank or 1
+	elseif card.kind == "passiveRank" then
+		return card.rank - (selfView.passives[card.passive] or 0)
+	end
+	return 0
+end
+
+-- A card's title, subtitle and description; `gained` is ranksGained's.
+local function describeCard(
+	card: Types.Card,
+	stats: Types.HeroStats,
+	gained: number
+): (string, string, string)
 	if card.kind == "skillRank" then
 		local skill = Config.skills[card.skill]
 		return if skill then skill.name else card.skill,
-			string.format(Strings.cards.skillRank, card.rank),
+			if gained > 1
+				then string.format(Strings.cards.skillRanks, card.rank, gained)
+				else string.format(Strings.cards.skillRank, card.rank),
 			describeSkill(card.skill, card.rank, stats)
 	elseif card.kind == "newSkill" then
 		local skill = Config.skills[card.skill]
+		local rank = card.rank or 1
 		return if skill then skill.name else card.skill,
-			Strings.cards.newSkill,
-			describeSkill(card.skill, 1, stats)
+			if rank > 1
+				then string.format(Strings.cards.newSkillRank, rank)
+				else Strings.cards.newSkill,
+			describeSkill(card.skill, rank, stats)
 	elseif card.kind == "passiveRank" then
 		local passive = Config.passives[card.passive]
 		return if passive then passive.name else card.passive,
-			string.format(Strings.cards.passiveRank, card.rank),
+			if gained > 1
+				then string.format(Strings.cards.passiveRanks, card.rank, gained)
+				else string.format(Strings.cards.passiveRank, card.rank),
 			describePassive(card.passive)
 	elseif card.kind == "newPassive" then
 		local passive = Config.passives[card.passive]
+		local rank = card.rank or 1
 		return if passive then passive.name else card.passive,
-			Strings.cards.newPassive,
+			if rank > 1
+				then string.format(Strings.cards.newPassiveRank, rank)
+				else Strings.cards.newPassive,
 			describePassive(card.passive)
 	end
 	return Strings.cards.heal,
@@ -554,11 +685,70 @@ function Hud.start()
 	local runLayer = newFrame(root, "Run", UDim2.fromScale(1, 1), UDim2.new(), WHITE, 1)
 	runLayer.Visible = false
 
-	-- Top left: health with the barrier, experience, kills.
-	local stats =
-		newFrame(runLayer, "Stats", UDim2.fromOffset(280, 90), UDim2.fromOffset(16, 16), WHITE, 1)
-	local healthBar =
-		newBar(stats, "Health", UDim2.fromOffset(280, 28), UDim2.new(), HEALTH_COLOR, 18)
+	-- Top: the experience bar across the screen, in the topbar's free row when
+	-- there is one, with the level at its left, the experience in the middle
+	-- and the kills at its right; everything else at the top hangs under it.
+	local xpBar = newBar(
+		runLayer,
+		"Experience",
+		UDim2.fromOffset(MIN_XP_WIDTH, XP_HEIGHT),
+		UDim2.fromOffset(TOP_MARGIN, TOP_MARGIN),
+		XP_COLOR,
+		15
+	)
+	xpBar.label.TextXAlignment = Enum.TextXAlignment.Left
+	xpBar.label.Size = UDim2.new(1, -16, 1, 0)
+	xpBar.label.Position = UDim2.fromOffset(8, 0)
+	local xpAmount =
+		newLabel(xpBar.root, "Amount", UDim2.fromScale(1, 1), UDim2.new(), 14, FONT_BOLD)
+	xpAmount.ZIndex = 2
+	local killsLabel = newLabel(
+		xpBar.root,
+		"Kills",
+		UDim2.new(1, -16, 1, 0),
+		UDim2.fromOffset(8, 0),
+		15,
+		FONT_BOLD
+	)
+	killsLabel.ZIndex = 2
+	killsLabel.TextXAlignment = Enum.TextXAlignment.Right
+	local topLayer = newFrame(runLayer, "Top", UDim2.fromScale(1, 1), UDim2.new(), WHITE, 1)
+
+	-- Bottom centre: health with the barrier as wide as the skill bar, right
+	-- above it, and the dash charges beside it.
+	local utilityCount = #Config.utilities
+	local skillsWidth = MAX_SKILLS * TILE_STEP - (TILE_STEP - TILE_SIZE)
+	local barWidth = skillsWidth + UTILITY_GAP + utilityCount * TILE_STEP - (TILE_STEP - TILE_SIZE)
+	local vitalsTop = -TILE_SIZE - 16 - VITALS_GAP - HEALTH_HEIGHT
+	local healthBar = newBar(
+		runLayer,
+		"Health",
+		UDim2.fromOffset(barWidth, HEALTH_HEIGHT),
+		UDim2.new(0.5, -barWidth / 2, 1, vitalsTop),
+		HEALTH_COLOR,
+		17
+	)
+	local dashCount = math.max(0, Config.player.dashCharges)
+	local dashPips: { Bar } = {}
+	for index = 1, dashCount do
+		local pip = newBar(
+			runLayer,
+			"Dash" .. index,
+			UDim2.fromOffset(DASH_PIP_WIDTH, HEALTH_HEIGHT),
+			UDim2.new(
+				0.5,
+				barWidth / 2 + DASH_PIP_GAP + (index - 1) * (DASH_PIP_WIDTH + DASH_PIP_GAP),
+				1,
+				vitalsTop
+			),
+			DASH_COLOR,
+			1
+		)
+		-- Fills from the bottom up as the charge comes back.
+		pip.fill.AnchorPoint = Vector2.new(0, 1)
+		pip.fill.Position = UDim2.fromScale(0, 1)
+		dashPips[index] = pip
+	end
 	-- The barrier: a lighter segment after the health, or over its end when full.
 	local barrierFill =
 		newFrame(healthBar.root, "Barrier", UDim2.new(), UDim2.new(), BARRIER_COLOR, 0.25)
@@ -569,21 +759,10 @@ function Hud.start()
 	healthStroke.Thickness = 2
 	healthStroke.Transparency = 1
 	healthStroke.Parent = healthBar.root
-	local xpBar = newBar(
-		stats,
-		"Experience",
-		UDim2.fromOffset(280, 22),
-		UDim2.fromOffset(0, 34),
-		XP_COLOR,
-		15
-	)
-	local killsLabel =
-		newLabel(stats, "Kills", UDim2.fromOffset(280, 22), UDim2.fromOffset(0, 62), 16, FONT)
-	killsLabel.TextXAlignment = Enum.TextXAlignment.Left
 
-	-- Right edge: the passives taken, with their ranks.
+	-- Right edge: the passives taken, with their ranks, then the boons and pacts.
 	local passiveList =
-		newLabel(runLayer, "Passives", UDim2.fromOffset(200, 0), UDim2.new(1, -16, 0, 16), 16, FONT)
+		newLabel(topLayer, "Passives", UDim2.fromOffset(200, 0), UDim2.new(1, -16, 0, 8), 16, FONT)
 	passiveList.AnchorPoint = Vector2.new(1, 0)
 	passiveList.AutomaticSize = Enum.AutomaticSize.Y
 	passiveList.TextXAlignment = Enum.TextXAlignment.Right
@@ -593,15 +772,15 @@ function Hud.start()
 	-- Top centre: the run clock, the final boss's and the portal's timers, the
 	-- notices and the banner.
 	local clockLabel = newLabel(
-		runLayer,
+		topLayer,
 		"Clock",
 		UDim2.fromOffset(220, 36),
-		UDim2.new(0.5, -110, 0, 12),
+		UDim2.new(0.5, -110, 0, CLOCK_TOP),
 		30,
 		FONT_BOLD
 	)
 	local bossTimerLabel = newLabel(
-		runLayer,
+		topLayer,
 		"FinalBossTimer",
 		UDim2.fromOffset(460, 20),
 		UDim2.new(0.5, -230, 0, TIMER_TOP),
@@ -610,7 +789,7 @@ function Hud.start()
 	)
 	bossTimerLabel.TextColor3 = HURT_COLOR
 	local portalTimerLabel = newLabel(
-		runLayer,
+		topLayer,
 		"PortalTimer",
 		UDim2.fromOffset(460, 20),
 		UDim2.new(0.5, -230, 0, TIMER_TOP + 20),
@@ -621,7 +800,7 @@ function Hud.start()
 	local noticeLabels: { TextLabel } = {}
 	for index = 1, MAX_NOTICES do
 		local label = newLabel(
-			runLayer,
+			topLayer,
 			"Notice" .. index,
 			UDim2.fromOffset(460, NOTICE_STEP),
 			UDim2.new(0.5, -230, 0, NOTICE_TOP + (index - 1) * NOTICE_STEP),
@@ -633,7 +812,7 @@ function Hud.start()
 		noticeLabels[index] = label
 	end
 	local bannerLabel = newLabel(
-		runLayer,
+		topLayer,
 		"Banner",
 		UDim2.fromOffset(640, 48),
 		UDim2.new(0.5, -320, 0, NOTICE_TOP + MAX_NOTICES * NOTICE_STEP),
@@ -679,7 +858,7 @@ function Hud.start()
 	-- banner, clear of its full growth, while the banner shows.
 	local levelPopupPosition = UDim2.fromScale(0.5, 0.22)
 	local levelPopup =
-		newLabel(runLayer, "LevelUp", UDim2.fromOffset(320, 56), levelPopupPosition, 40, FONT_BOLD)
+		newLabel(topLayer, "LevelUp", UDim2.fromOffset(320, 56), levelPopupPosition, 40, FONT_BOLD)
 	local levelPopupBelowBanner = UDim2.new(
 		0.5,
 		0,
@@ -695,9 +874,6 @@ function Hud.start()
 	levelPopupScale.Parent = levelPopup
 
 	-- Bottom centre: up to six skills, then the three utility skills.
-	local utilityCount = #Config.utilities
-	local skillsWidth = MAX_SKILLS * TILE_STEP - (TILE_STEP - TILE_SIZE)
-	local barWidth = skillsWidth + UTILITY_GAP + utilityCount * TILE_STEP - (TILE_STEP - TILE_SIZE)
 	local skillBar = newFrame(
 		runLayer,
 		"SkillBar",
@@ -717,9 +893,20 @@ function Hud.start()
 			0.1
 		)
 		round(tile, 8)
+		-- The icon, above the rank pips; hidden while the skill has none.
+		local icon = Instance.new("ImageLabel")
+		icon.Name = "Icon"
+		icon.Size =
+			UDim2.new(1, -2 * ICON_INSET, 1, -2 * ICON_INSET - (if pipCount > 0 then 8 else 0))
+		icon.Position = UDim2.fromOffset(ICON_INSET, ICON_INSET)
+		icon.BackgroundTransparency = 1
+		icon.ScaleType = Enum.ScaleType.Fit
+		icon.Visible = false
+		icon.Parent = tile
 		-- Covers the tile from the bottom up while the cooldown runs, draining away.
 		local sweep = newFrame(tile, "Cooldown", UDim2.new(), UDim2.fromScale(0, 1), BLACK, 0.45)
 		sweep.AnchorPoint = Vector2.new(0, 1)
+		sweep.ZIndex = 2
 		round(sweep, 8)
 		local text = newLabel(
 			tile,
@@ -729,10 +916,10 @@ function Hud.start()
 			18,
 			FONT_BOLD
 		)
-		text.ZIndex = 2
+		text.ZIndex = 3
 		local time =
 			newLabel(tile, "Time", UDim2.new(1, -4, 0, 16), UDim2.new(0, 2, 1, -18), 14, FONT_BOLD)
-		time.ZIndex = 2
+		time.ZIndex = 3
 		local pips: { Frame } = {}
 		if pipCount > 0 then
 			local pipSize = math.floor((TILE_SIZE - 4 - (pipCount - 1) * PIP_GAP) / pipCount)
@@ -746,11 +933,11 @@ function Hud.start()
 					PIP_EMPTY_COLOR,
 					0
 				)
-				pip.ZIndex = 2
+				pip.ZIndex = 3
 				pips[index] = pip
 			end
 		end
-		return { root = tile, sweep = sweep, text = text, time = time, pips = pips }
+		return { root = tile, icon = icon, sweep = sweep, text = text, time = time, pips = pips }
 	end
 
 	local skillTiles: { Tile } = {}
@@ -769,6 +956,13 @@ function Hud.start()
 		tile.text.TextSize = 12
 		tile.text.Text = utility.name
 		tile.text.TextWrapped = true
+		-- With an icon the name gives way to it.
+		local image = iconOf(utility.id)
+		if image then
+			tile.icon.Image = image
+			tile.icon.Visible = true
+			tile.text.Visible = false
+		end
 		local key = newLabel(
 			tile.root,
 			"Key",
@@ -777,30 +971,40 @@ function Hud.start()
 			13,
 			FONT_BOLD
 		)
-		key.ZIndex = 2
+		key.ZIndex = 3
 		key.TextXAlignment = Enum.TextXAlignment.Left
 		key.Text = if touch then "" else (Strings.keys.utilities[index] or "")
 		utilityTiles[index] = tile
 	end
 
-	-- What the interact or cast key would do here, if anything.
+	-- What the interact key would do here, if anything, above the health bar;
+	-- a shrine in reach is named above it.
 	local prompt = newLabel(
 		runLayer,
 		"Prompt",
 		UDim2.fromOffset(520, 26),
-		UDim2.new(0.5, -260, 1, -TILE_SIZE - 52),
+		UDim2.new(0.5, -260, 1, vitalsTop - 8 - 26),
 		20,
 		FONT_BOLD
 	)
 	prompt.TextColor3 = EXTRACT_COLOR
 	prompt.Visible = false
+	local shrineLabel = newLabel(
+		runLayer,
+		"Shrine",
+		UDim2.fromOffset(520, 28),
+		UDim2.new(0.5, -260, 1, vitalsTop - 8 - 26 - 28),
+		22,
+		FONT_BOLD
+	)
+	shrineLabel.Visible = false
 	local interactName = if touch then Strings.buttons.interact else Strings.keys.interact
-	local castName = if touch then Strings.buttons.cast else Strings.keys.cast
 
 	-- Touch: large round buttons in the bottom-right corner: the utility skills
-	-- in the bottom row, interact and cast above. Interact is held: opening the
-	-- chest takes a moment.
+	-- in the bottom row, interact and dash above. Interact is held: opening the
+	-- chest or activating a shrine takes a moment; elsewhere it casts the spell.
 	local utilityButtons: { TextButton } = {}
+	local dashButton: TextButton? = nil
 	if touch then
 		local function cornerButton(
 			name: string,
@@ -833,7 +1037,7 @@ function Hud.start()
 		end
 
 		local interact =
-			cornerButton("InteractButton", Strings.buttons.interact, EXTRACT_COLOR, 1, 1)
+			cornerButton("InteractButton", Strings.buttons.interact, EXTRACT_COLOR, 0, 1)
 		interact.MouseButton1Down:Connect(function()
 			Input.interact(true)
 		end)
@@ -844,10 +1048,11 @@ function Hud.start()
 			Input.interact(false)
 		end)
 
-		local cast = cornerButton("CastButton", Strings.buttons.cast, PORTAL_COLOR, 0, 1)
-		cast.Activated:Connect(function()
-			Input.cast()
+		local dash = cornerButton("DashButton", Strings.buttons.dash, DASH_COLOR, 1, 1)
+		dash.Activated:Connect(function()
+			Input.dash()
 		end)
+		dashButton = dash
 	end
 
 	-- Dead and extracted overlay for the local player.
@@ -883,17 +1088,32 @@ function Hud.start()
 		offerLayer,
 		"Title",
 		UDim2.fromOffset(600, 40),
-		UDim2.new(0.5, -300, 0.5, -190),
+		UDim2.new(0.5, -300, 0.5, -CARD_HEIGHT / 2 - 56),
 		28,
 		FONT_BOLD
 	)
 	offerTitle.Text = Strings.cards.title
 	offerTitle.TextColor3 = LEVEL_COLOR
+	-- A great offer stands in a gold frame.
+	local greatFrame = newFrame(
+		offerLayer,
+		"GreatFrame",
+		UDim2.fromOffset(720 + 24, CARD_HEIGHT + 24),
+		UDim2.new(0.5, -372, 0.5, -CARD_HEIGHT / 2 - 12),
+		GREAT_COLOR,
+		0.85
+	)
+	round(greatFrame, 14)
+	local greatStroke = Instance.new("UIStroke")
+	greatStroke.Color = GREAT_COLOR
+	greatStroke.Thickness = 3
+	greatStroke.Parent = greatFrame
+	greatFrame.Visible = false
 	local cardRow = newFrame(
 		offerLayer,
 		"Cards",
-		UDim2.fromOffset(720, 250),
-		UDim2.new(0.5, -360, 0.5, -135),
+		UDim2.fromOffset(720, CARD_HEIGHT),
+		UDim2.new(0.5, -360, 0.5, -CARD_HEIGHT / 2),
 		WHITE,
 		1
 	)
@@ -904,6 +1124,8 @@ function Hud.start()
 	cardLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	cardLayout.Parent = cardRow
 	local shownOffer = ""
+	-- A trial was won by the local player: the next offer to show is its great offer.
+	local greatPending = false
 
 	-- The pick screen: the title and one card per class.
 	local pickLayer = newFrame(root, "Pick", UDim2.fromScale(1, 1), UDim2.new(), PANEL_COLOR, 0.15)
@@ -911,7 +1133,7 @@ function Hud.start()
 		pickLayer,
 		"Title",
 		UDim2.fromOffset(600, 50),
-		UDim2.new(0.5, -300, 0.5, -230),
+		UDim2.new(0.5, -300, 0.5, -240),
 		36,
 		FONT_BOLD
 	)
@@ -919,8 +1141,8 @@ function Hud.start()
 	local pickRow = newFrame(
 		pickLayer,
 		"Classes",
-		UDim2.fromOffset(780, 280),
-		UDim2.new(0.5, -390, 0.5, -160),
+		UDim2.fromOffset(780, 310),
+		UDim2.new(0.5, -390, 0.5, -175),
 		WHITE,
 		1
 	)
@@ -934,7 +1156,7 @@ function Hud.start()
 		pickLayer,
 		"Waiting",
 		UDim2.fromOffset(600, 30),
-		UDim2.new(0.5, -300, 0.5, 140),
+		UDim2.new(0.5, -300, 0.5, 150),
 		20,
 		FONT_BOLD
 	)
@@ -946,7 +1168,7 @@ function Hud.start()
 
 	for order, class in sortedClasses() do
 		local colour = hexColor(class.colour)
-		local button = newButton(pickRow, class.id, UDim2.fromOffset(240, 270), PANEL_COLOR)
+		local button = newButton(pickRow, class.id, UDim2.fromOffset(240, 300), PANEL_COLOR)
 		button.LayoutOrder = order
 		round(button, 10)
 		local stroke = Instance.new("UIStroke")
@@ -954,13 +1176,27 @@ function Hud.start()
 		stroke.Color = colour
 		stroke.Thickness = 3
 		stroke.Parent = button
+		newFace(
+			button,
+			CLASS_ICON,
+			UDim2.new(0.5, -CLASS_ICON / 2, 0, 14),
+			if iconOf(class.id) then class.id else class.startSkill,
+			class.name,
+			colour
+		)
 		local name =
-			newLabel(button, "Name", UDim2.new(1, 0, 0, 44), UDim2.fromOffset(0, 18), 30, FONT_BOLD)
+			newLabel(button, "Name", UDim2.new(1, 0, 0, 40), UDim2.fromOffset(0, 82), 30, FONT_BOLD)
 		name.Text = class.name
 		name.TextColor3 = colour
 		local start = Config.skills[class.startSkill]
-		local lines =
-			newLabel(button, "Lines", UDim2.new(1, -24, 0, 180), UDim2.fromOffset(12, 74), 17, FONT)
+		local lines = newLabel(
+			button,
+			"Lines",
+			UDim2.new(1, -24, 0, 168),
+			UDim2.fromOffset(12, 126),
+			17,
+			FONT
+		)
 		lines.TextWrapped = true
 		lines.TextYAlignment = Enum.TextYAlignment.Top
 		local synergies = class.synergies
@@ -1027,6 +1263,7 @@ function Hud.start()
 		lowLevel = 0
 		levelUpAt = -math.huge
 		shownState = "alive"
+		greatPending = false
 		table.clear(notices)
 	end
 
@@ -1113,6 +1350,20 @@ function Hud.start()
 				showBanner(Strings.banners.portalOpened)
 			elseif event.kind == "castInterrupted" and event.player == userId then
 				pushNotice(Strings.notices.interrupted)
+			elseif event.kind == "shrineActivated" and event.player == userId then
+				local gift = event.gift
+				if type(gift) == "string" then
+					pushNotice(string.format(Strings.notices.gift, giftName(gift)))
+				elseif event.shrineKind == "spring" then
+					pushNotice(Strings.notices.springUsed)
+				end
+			elseif event.kind == "trialStarted" then
+				pushNotice(Strings.notices.trialStarted)
+			elseif event.kind == "trialCompleted" then
+				pushNotice(Strings.notices.trialCompleted)
+				if event.player == userId then
+					greatPending = true
+				end
 			elseif event.kind == "levelUp" and event.player == userId then
 				levelUpAt = os.clock()
 				levelPopup.Text = string.format(Strings.levelUp, event.level)
@@ -1131,8 +1382,10 @@ function Hud.start()
 		end
 	end)
 
-	-- Rebuilds the card buttons when the offer changes.
-	local function showOffer(offer: { Types.Card }?, heroStats: Types.HeroStats?)
+	-- Rebuilds the card buttons when the offer changes. A great offer (the
+	-- one after a trial the local player won, or any card worth more than one
+	-- rank) gets its own title and a gold frame.
+	local function showOffer(offer: { Types.Card }?, selfView: Protocol.SelfView?)
 		local key = offerKey(offer)
 		offerLayer.Visible = offer ~= nil
 		if key == shownOffer then
@@ -1144,14 +1397,32 @@ function Hud.start()
 				child:Destroy()
 			end
 		end
-		if offer == nil or heroStats == nil then
+		if offer == nil or selfView == nil then
 			return
 		end
+		local heroStats = selfView.stats
+		local gains: { number } = {}
+		local great = greatPending
+		greatPending = false
 		for index, card in offer do
-			local title, subtitle, description = describeCard(card, heroStats)
+			gains[index] = ranksGained(card, selfView)
+			if gains[index] > 1 then
+				great = true
+			end
+		end
+		offerTitle.Text = if great then Strings.cards.greatTitle else Strings.cards.title
+		offerTitle.TextColor3 = if great then GREAT_COLOR else LEVEL_COLOR
+		offerTitle.TextSize = if great then 34 else 28
+		greatFrame.Visible = great
+		for index, card in offer do
+			local title, subtitle, description = describeCard(card, heroStats, gains[index])
 			local colour = rarity(card)
-			local button =
-				newButton(cardRow, "Card" .. index, UDim2.fromOffset(220, 250), PANEL_COLOR)
+			local button = newButton(
+				cardRow,
+				"Card" .. index,
+				UDim2.fromOffset(CARD_WIDTH, CARD_HEIGHT),
+				PANEL_COLOR
+			)
 			button.LayoutOrder = index
 			button.BackgroundTransparency = 0.05
 			round(button, 10)
@@ -1169,15 +1440,29 @@ function Hud.start()
 					16,
 					FONT_BOLD
 				)
-				hint.Text = Strings.keys.utilities[index] or ""
+				hint.Text = Strings.keys.cards[index] or ""
 				hint.TextColor3 = colour
 			end
+			-- The icon large, the name under it, then the rank and the description.
+			local id: string? = (card :: any).skill or (card :: any).passive
+			local faceColor = if (card :: any).skill
+				then skillColor(Config.skills[(card :: any).skill])
+				elseif (card :: any).passive then UTILITY_COLOR
+				else HEALTH_COLOR
+			newFace(
+				button,
+				CARD_ICON,
+				UDim2.new(0.5, -CARD_ICON / 2, 0, 12),
+				id or "heal",
+				title,
+				faceColor
+			)
 			local titleLabel = newLabel(
 				button,
 				"Title",
-				UDim2.new(1, -20, 0, 50),
-				UDim2.fromOffset(10, 26),
-				20,
+				UDim2.new(1, -20, 0, 44),
+				UDim2.fromOffset(10, CARD_ICON + 16),
+				19,
 				FONT_BOLD
 			)
 			titleLabel.TextWrapped = true
@@ -1186,17 +1471,17 @@ function Hud.start()
 				button,
 				"Subtitle",
 				UDim2.new(1, -20, 0, 20),
-				UDim2.fromOffset(10, 78),
+				UDim2.fromOffset(10, CARD_ICON + 60),
 				15,
 				FONT_BOLD
 			)
 			subtitleLabel.Text = subtitle
-			subtitleLabel.TextColor3 = colour
+			subtitleLabel.TextColor3 = if gains[index] > 1 then GREAT_COLOR else colour
 			local descriptionLabel = newLabel(
 				button,
 				"Description",
-				UDim2.new(1, -20, 0, 140),
-				UDim2.fromOffset(10, 104),
+				UDim2.new(1, -20, 0, CARD_HEIGHT - CARD_ICON - 90),
+				UDim2.fromOffset(10, CARD_ICON + 84),
 				14,
 				FONT
 			)
@@ -1209,14 +1494,44 @@ function Hud.start()
 		end
 	end
 
+	-- Lays the experience bar along the topbar's free row (between Roblox's
+	-- own buttons), or along the screen's top without one, and hangs the rest
+	-- of the top under it. Offsets are in the scaled root's units.
+	local function layoutTop()
+		local camera = workspace.CurrentCamera
+		local scale = math.max(uiScale.Scale, 1e-3)
+		local screenWidth = (if camera then camera.ViewportSize.X else 1280) / scale
+		local inset = GuiService.TopbarInset
+		local left, width, top, below
+		if inset.Width > 0 and inset.Height > 0 then
+			local rowTop = inset.Min.Y / scale
+			local rowHeight = inset.Height / scale
+			left = inset.Min.X / scale + TOP_MARGIN
+			width = inset.Width / scale - 2 * TOP_MARGIN
+			top = rowTop + math.max(0, (rowHeight - XP_HEIGHT) / 2)
+			below = rowTop + rowHeight
+		else
+			left = TOP_MARGIN
+			width = screenWidth - 2 * TOP_MARGIN
+			top = TOP_MARGIN
+			below = TOP_MARGIN + XP_HEIGHT
+		end
+		width = math.max(width, MIN_XP_WIDTH)
+		xpBar.root.Position = UDim2.fromOffset(left, top)
+		xpBar.root.Size = UDim2.fromOffset(width, XP_HEIGHT)
+		topLayer.Position = UDim2.fromOffset(0, below + 4)
+	end
+
 	local function updateScale()
 		local camera = workspace.CurrentCamera
 		local height = if camera then camera.ViewportSize.Y else DESIGN_HEIGHT
 		local scale = math.clamp(height / DESIGN_HEIGHT, MIN_SCALE, MAX_SCALE)
 		uiScale.Scale = scale
 		root.Size = UDim2.fromScale(1 / scale, 1 / scale)
+		layoutTop()
 	end
 	updateScale()
+	GuiService:GetPropertyChangedSignal("TopbarInset"):Connect(layoutTop)
 	local function watchCamera()
 		local camera = workspace.CurrentCamera
 		if camera then
@@ -1243,6 +1558,10 @@ function Hud.start()
 			if skillView then
 				local skill = Config.skills[skillView.id]
 				tile.root.BackgroundColor3 = skillColor(skill)
+				local image = iconOf(skillView.id)
+				tile.icon.Visible = image ~= nil
+				tile.icon.Image = image or ""
+				tile.text.Visible = image == nil
 				tile.text.Text = initials(if skill then skill.name else skillView.id)
 				local left = cooldownLeft(skillView.readyIn, elapsed)
 				local fraction = if skillView.cooldown > 0
@@ -1276,7 +1595,36 @@ function Hud.start()
 		end
 	end
 
-	-- The passives taken, one per line, sorted by name; the text is set only on a change.
+	-- The dash charges: a full pip per charge held, the next one filling as its
+	-- cooldown runs, the rest empty; the touch button greys with none held.
+	local function updateDash(selfView: Protocol.SelfView?, elapsed: number)
+		local charges = if selfView and type(selfView.dashCharges) == "number"
+			then selfView.dashCharges
+			else 0
+		local readyIn = if selfView and type(selfView.dashReadyIn) == "number"
+			then cooldownLeft(selfView.dashReadyIn, elapsed)
+			else 0
+		local cooldown = Config.player.dashCooldownSeconds
+		for index, pip in dashPips do
+			local fraction = if index <= charges
+				then 1
+				elseif index == charges + 1 and cooldown > 0 then math.clamp(
+					1 - readyIn / cooldown,
+					0,
+					1
+				)
+				else 0
+			pip.fill.Size = UDim2.fromScale(1, fraction)
+			pip.fill.BackgroundColor3 = if index <= charges then DASH_COLOR else COOLDOWN_COLOR
+		end
+		local button = dashButton
+		if button then
+			button.BackgroundColor3 = if charges > 0 then DASH_COLOR else COOLDOWN_COLOR
+		end
+	end
+
+	-- The passives taken, one per line, sorted by name, then the boons and
+	-- pacts in the order taken; the text is set only on a change.
 	local function updatePassives(selfView: Protocol.SelfView?)
 		local entries: { string } = {}
 		if selfView then
@@ -1293,6 +1641,15 @@ function Hud.start()
 				)
 			end
 			table.sort(entries)
+			local bonuses = selfView.bonuses
+			if type(bonuses) == "table" and #bonuses > 0 then
+				if #entries > 0 then
+					table.insert(entries, "")
+				end
+				for _, id in bonuses do
+					table.insert(entries, giftName(id))
+				end
+			end
 		end
 		local text = table.concat(entries, "\n")
 		if text ~= shownPassives then
@@ -1447,16 +1804,17 @@ function Hud.start()
 			setBar(
 				xpBar,
 				if selfView.xpToNext > 0 then selfView.xp / selfView.xpToNext else 0,
-				string.format(
-					Strings.experience,
-					selfView.level,
-					math.floor(selfView.xp),
-					math.floor(selfView.xpToNext)
-				)
+				string.format(Strings.level, selfView.level)
+			)
+			xpAmount.Text = string.format(
+				Strings.experienceShort,
+				math.floor(selfView.xp),
+				math.floor(selfView.xpToNext)
 			)
 			killsLabel.Text = string.format(Strings.kills, selfView.kills)
 		else
 			setBar(xpBar, 0, "")
+			xpAmount.Text = ""
 			killsLabel.Text = ""
 		end
 		-- Level-up: the experience bar flashes gold, and the popup grows and fades.
@@ -1481,6 +1839,7 @@ function Hud.start()
 
 		updatePassives(selfView)
 		updateSkillBar(selfView, sinceSelf)
+		updateDash(selfView, sinceSelf)
 
 		-- The run clock and the timers under it, run on between snapshots.
 		clockLabel.Text = formatTime(if world then world.time + sinceSnapshot else 0)
@@ -1519,7 +1878,8 @@ function Hud.start()
 		end
 
 		-- The prompt, the action bar and the compass, from where the local
-		-- character stands. The portal wins over the chest, the chest over the spell.
+		-- character stands. The portal wins over the chest, the chest over a
+		-- shrine, a shrine over the spell, as Input decides what F does.
 		local character = player.Character
 		local ownRoot = if character then character:FindFirstChild("HumanoidRootPart") else nil
 		local here: Vector3? = if ownRoot and ownRoot:IsA("BasePart")
@@ -1528,19 +1888,36 @@ function Hud.start()
 			else nil
 		local extraction = Config.extraction
 		local promptText: string? = nil
+		local shrineText: string? = nil
+		local shrineColor = EXTRACT_COLOR
 		local barShown = false
 		if alive and world and view and here then
-			local function near(x: number, z: number, radius: number): boolean
-				local dx, dz = x - here.X, z - here.Z
-				return dx * dx + dz * dz <= radius * radius
-			end
 			local chest = world.chest
-			if portal and near(portal.x, portal.z, extraction.portalRadius) then
+			local target, shrine = Input.target(here)
+			-- A spring still recharging is named, and F casts beside it.
+			local named = shrine or (if target == nil then Input.shrineNear(here) else nil)
+			if named then
+				shrineColor = SHRINE_COLORS[named.kind] or EXTRACT_COLOR
+				local gift = named.gift
+				if named.kind == "spring" and named.readyIn > 0 then
+					shrineText = string.format(
+						Strings.shrines.springBack,
+						math.max(1, math.ceil(named.readyIn - sinceSnapshot))
+					)
+				elseif type(gift) == "string" then
+					shrineText = giftName(gift)
+				else
+					shrineText = SHRINE_TEXT[named.kind] or named.kind
+				end
+			end
+			if target == "portal" then
 				promptText = string.format(Strings.prompts.portal, interactName)
-			elseif not chest.opened and near(chest.x, chest.z, extraction.openRadius) then
+			elseif target == "chest" then
 				promptText = string.format(Strings.prompts.open, interactName)
+			elseif target == "shrine" then
+				promptText = string.format(Strings.prompts.hold, interactName)
 			elseif selfView and selfView.hasSpell and portal == nil and view.castingLeft <= 0 then
-				promptText = string.format(Strings.prompts.cast, castName)
+				promptText = string.format(Strings.prompts.cast, interactName)
 			end
 			if view.castingLeft > 0 then
 				barShown = true
@@ -1551,10 +1928,21 @@ function Hud.start()
 				barShown = true
 				actionBar.fill.BackgroundColor3 = EXTRACT_COLOR
 				setBar(actionBar, view.openProgress / extraction.openSeconds, Strings.bars.opening)
+			elseif (view.shrineProgress or 0) > 0 then
+				barShown = true
+				actionBar.fill.BackgroundColor3 = shrineColor
+				setBar(
+					actionBar,
+					view.shrineProgress / math.max(Config.shrines.holdSeconds, 1e-3),
+					Strings.bars.activating
+				)
 			end
 		end
 		prompt.Visible = promptText ~= nil
 		prompt.Text = promptText or ""
+		shrineLabel.Visible = shrineText ~= nil
+		shrineLabel.Text = shrineText or ""
+		shrineLabel.TextColor3 = shrineColor
 		actionBar.root.Visible = barShown
 		local compassChest = if alive
 				and world
@@ -1566,7 +1954,7 @@ function Hud.start()
 
 		-- The level-up choice, while the local player is alive with an offer waiting.
 		local offer = if alive and selfView then selfView.offer else nil
-		showOffer(offer, if selfView then selfView.stats else nil)
+		showOffer(offer, selfView)
 
 		-- Dead, extracted: the tint and the panel fade in when the state begins.
 		local state: Types.PlayerState = if view then view.state else "alive"

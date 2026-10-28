@@ -3,7 +3,7 @@
 -- shots flying straight. A bolt hits when it reaches its target, or lands
 -- where it is when the target is gone; an enemy shot hurts the hero it
 -- touches and with a radius bursts there or where its flight ends. Obstacles
--- never block a shot.
+-- never block a shot, and a shot flies through a dashing hero.
 
 local Damage = require("./Damage")
 local Geometry = require("./Geometry")
@@ -65,7 +65,10 @@ local function burstOnPlayers(run: Types.Run, projectile: Types.Projectile)
 	burstEvent(run, projectile)
 	local reach = projectile.radius + run.config.player.radius
 	for _, player in State.alivePlayers(run) do
-		if Geometry.distance(projectile.x, projectile.z, player.x, player.z) <= reach then
+		if
+			Geometry.distance(projectile.x, projectile.z, player.x, player.z) <= reach
+			and not Hero.untouchable(run, player)
+		then
 			Hero.damage(run, player, projectile.damage, projectile.source)
 			if projectile.knockback > 0 then
 				local dx, dz = Geometry.normalize(player.x - projectile.x, player.z - projectile.z)
@@ -81,7 +84,7 @@ local function touchedPlayer(run: Types.Run, x: number, z: number): Types.Player
 	local bestDistance = math.huge
 	for _, player in State.alivePlayers(run) do
 		local distance = Geometry.distance(x, z, player.x, player.z)
-		if distance <= reach and distance < bestDistance then
+		if distance <= reach and distance < bestDistance and not Hero.untouchable(run, player) then
 			best = player
 			bestDistance = distance
 		end

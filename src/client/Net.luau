@@ -78,9 +78,15 @@ function Net.useUtility(index: number)
 	intentRemote:FireServer("utility", index)
 end
 
--- The open button went down (`held`) or up: holding it at the chest opens it.
+-- The interact button went down (`held`) or up: holding it at the chest
+-- opens it, beside a shrine activates it.
 function Net.setInteracting(held: boolean)
 	intentRemote:FireServer("interact", held)
+end
+
+-- Dashes towards (dx, dz), not both zero; the run normalises it.
+function Net.dash(dx: number, dz: number)
+	intentRemote:FireServer("dash", dx, dz)
 end
 
 -- Starts casting the extraction spell.

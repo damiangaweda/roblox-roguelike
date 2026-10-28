@@ -1,10 +1,16 @@
 --!strict
--- Builds the forest map in the workspace from the core's arena (ADR-0014):
--- a round ground, an invisible wall at the edge, low-poly obstacles built
--- from parts whose solid body is exactly the core's circle, and the extraction
--- chest. Everything here is presentation; the rules live in the core.
+-- Builds the forest map in the workspace from the core's arena (ADR-0014,
+-- ADR-0020): a round terrain ground with clearings and a path to the chest,
+-- an invisible wall at the edge, a prop per obstacle drawn from its kind's
+-- mesh (or built from parts while the kind has none), an invisible solid body
+-- per obstacle circle, the shrines and the extraction chest. Everything here
+-- is presentation; the rules live in the core.
 
-local Types = require(game:GetService("ReplicatedStorage").Shared.Core.Types)
+local InsertService = game:GetService("InsertService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Config = require(ReplicatedStorage.Shared.Config)
+local Types = require(ReplicatedStorage.Shared.Core.Types)
 
 local ArenaBuilder = {}
 
@@ -19,6 +25,23 @@ local PATCH_MATERIALS = {
 }
 local PATCH_COUNT = 120
 local PATCH_RADIUS_MIN, PATCH_RADIUS_MAX = 6, 18
+-- Clearings: lighter grass discs away from the start. Terrain colours are per
+-- material, so the clearings take a material nothing else uses, recoloured.
+local CLEARING_MATERIAL = Enum.Material.Snow
+local CLEARING_COLOR = Color3.fromRGB(138, 170, 88)
+local CLEARING_COUNT_MIN, CLEARING_COUNT_MAX = 3, 5
+local CLEARING_RADIUS_MIN, CLEARING_RADIUS_MAX = 25, 40
+local CLEARING_START_GAP = 60
+local CLEARING_ATTEMPTS = 20
+-- The path: a winding dirt band from the start to the chest.
+local PATH_MATERIAL = Enum.Material.Mud
+local PATH_COLOR = Color3.fromRGB(128, 102, 68)
+local PATH_STEP = 3
+local PATH_RADIUS = 3.5
+local PATH_SWAY = 14
+local PATH_WAVES = 2.5
+local PATH_START_GAP = 10
+local PATH_CHEST_GAP = 8
 local FLOWER_COUNT = 50
 local FLOWER_COLORS = {
 	Color3.fromRGB(240, 200, 80),
@@ -32,6 +55,7 @@ local TREE_LINE_SPACING = 11
 local TREE_LINE_RADIUS = 5
 local WALL_HEIGHT = 40
 local WALL_THICKNESS = 4
+local BODY_HEIGHT = 12
 local BUILD_BATCH = 40
 
 local TRUNK_COLORS =
@@ -48,14 +72,65 @@ local ROCK_COLORS =
 local MOSS_COLOR = Color3.fromRGB(96, 140, 72)
 local RUIN_COLOR = Color3.fromRGB(150, 140, 120)
 local RUIN_DARK = Color3.fromRGB(104, 96, 84)
+local FENCE_COLOR = Color3.fromRGB(122, 90, 60)
+local WATER_COLOR = Color3.fromRGB(64, 138, 140)
+local POND_BED_COLOR = Color3.fromRGB(52, 60, 44)
+local POND_RIM_MATERIAL = Enum.Material.Sand
 local START_STONE_COLOR = Color3.fromRGB(170, 160, 140)
 local CHEST_WOOD = Color3.fromRGB(120, 72, 36)
 local CHEST_BAND = Color3.fromRGB(230, 190, 90)
 local CHEST_GLOW = Color3.fromRGB(255, 220, 130)
 
+-- Shrines: a stone plinth, a floating emblem and a beam in the kind's colour.
+local SHRINE_COLORS: { [string]: Color3 } = {
+	boon = Color3.fromRGB(255, 200, 80),
+	pact = Color3.fromRGB(220, 60, 80),
+	trial = Color3.fromRGB(170, 90, 255),
+	spring = Color3.fromRGB(80, 220, 230),
+}
+local SHRINE_STONE = Color3.fromRGB(132, 128, 120)
+local SHRINE_STONE_DARK = Color3.fromRGB(98, 94, 88)
+local SHRINE_SPENT = Color3.fromRGB(120, 120, 124)
+local SHRINE_EMBLEM_HEIGHT = 5
+local BEAM_HEIGHT = 60
+local BEAM_RADIUS = 0.5
+local BEAM_GLOW_RADIUS = 1.4
+local BEAM_TRANSPARENCY = 0.35
+local BEAM_GLOW_TRANSPARENCY = 0.85
+local BEAM_DIM_TRANSPARENCY = 0.8
+local SHRINE_LIGHT_BRIGHTNESS = 3
+local SHRINE_LIGHT_DIM = 0.8
+
+type Look = { part: BasePart, color: Color3, material: Enum.Material }
+type ShrineLook = {
+	beam: Part,
+	glow: Part,
+	light: PointLight,
+	emblem: { Look },
+	state: string?,
+}
+
+-- A circle of a kind's footprint, offset from the prop's centre (Config.maps).
+type FootprintCircle = { dx: number, dz: number, radius: number }
+
+-- A prop to draw: where its centre is, how it turns, and the world position
+-- of each circle of its kind's footprint.
+type Prop = {
+	kind: string,
+	x: number,
+	z: number,
+	rotation: number,
+	radius: number,
+	group: number,
+	circles: { { x: number, z: number, radius: number } },
+}
+
 local folder: Folder? = nil
 local chestModel: Model? = nil
 local chestLid: Part? = nil
+local shrineLooks: { [number]: ShrineLook } = {}
+-- One loaded mesh per mesh id, cloned for every prop; false when it failed.
+local templates: { [string]: MeshPart | false } = {}
 
 local function newPart(name: string, color: Color3, material: Enum.Material, parent: Instance): Part
 	local part = Instance.new("Part")
@@ -69,16 +144,21 @@ local function newPart(name: string, color: Color3, material: Enum.Material, par
 	return part
 end
 
--- Dressing that nothing collides with or queries.
-local function decor(name: string, color: Color3, material: Enum.Material, parent: Instance): Part
-	local part = newPart(name, color, material, parent)
+local function quiet(part: BasePart)
 	part.CanCollide = false
 	part.CanQuery = false
 	part.CanTouch = false
+end
+
+-- Dressing that nothing collides with or queries.
+local function decor(name: string, color: Color3, material: Enum.Material, parent: Instance): Part
+	local part = newPart(name, color, material, parent)
+	quiet(part)
 	return part
 end
 
--- An invisible, anchored body: what stops characters is exactly the core's circle.
+-- An invisible, anchored body: what stops the knockback and dash raycasts is
+-- exactly the core's circle.
 local function body(
 	name: string,
 	x: number,
@@ -103,6 +183,17 @@ end
 
 local function pick<T>(list: { T }, random: Random): T
 	return list[random:NextInteger(1, #list)]
+end
+
+-- The core's rotation turns (dx, dz) by `rotation` in the x/z plane; the same
+-- turn as a CFrame is a yaw of -rotation.
+local function turn(dx: number, dz: number, rotation: number): (number, number)
+	local c, s = math.cos(rotation), math.sin(rotation)
+	return dx * c - dz * s, dx * s + dz * c
+end
+
+local function yaw(rotation: number): CFrame
+	return CFrame.Angles(0, -rotation, 0)
 end
 
 local function cylinder(
@@ -152,33 +243,95 @@ local function block(
 	return part
 end
 
+local function assetId(id: string): string
+	if id ~= "" and tonumber(id) ~= nil then
+		return "rbxassetid://" .. id
+	end
+	return id
+end
+
+-- Loads a mesh once; a failed load is remembered, so the kind falls back to
+-- parts without asking again.
+local function template(meshId: string): MeshPart?
+	local cached = templates[meshId]
+	if cached ~= nil then
+		return if typeof(cached) == "Instance" then cached :: MeshPart else nil
+	end
+	local ok, result = pcall(function()
+		return InsertService:CreateMeshPartAsync(
+			assetId(meshId),
+			Enum.CollisionFidelity.Box,
+			Enum.RenderFidelity.Automatic
+		)
+	end)
+	if ok and result then
+		templates[meshId] = result
+		return result
+	end
+	warn(`ArenaBuilder: mesh {meshId} did not load, using parts: {result}`)
+	templates[meshId] = false
+	return nil
+end
+
+-- Loads every mesh the config lists before the map is drawn.
+local function preloadProps()
+	for _, variants in Config.props do
+		for _, variant in variants do
+			template(variant.meshId)
+		end
+	end
+end
+
+-- The kind's mesh, drawn at the prop's centre on the ground; false when the
+-- kind has no mesh or it failed to load.
+local function meshProp(prop: Prop, parent: Instance): boolean
+	local variants = Config.props[prop.kind]
+	if variants == nil or #variants == 0 then
+		return false
+	end
+	local variant = variants[prop.group % #variants + 1]
+	local source = template(variant.meshId)
+	if source == nil then
+		return false
+	end
+	local mesh = source:Clone()
+	mesh.Name = prop.kind
+	mesh.Anchored = true
+	quiet(mesh)
+	if variant.textureId ~= "" then
+		mesh.TextureID = assetId(variant.textureId)
+	end
+	local size = source.Size * variant.scale
+	mesh.Size = size
+	mesh.CFrame = CFrame.new(prop.x, variant.yOffset + size.Y / 2, prop.z) * yaw(prop.rotation)
+	mesh.Parent = parent
+	return true
+end
+
 -- A tree: a trunk and a crown of a few overlapping balls, the crown leaning a
 -- little so no two trees read the same.
-local function buildTree(obstacle: Types.Obstacle, big: boolean, parent: Instance, random: Random)
+local function buildTree(
+	x: number,
+	z: number,
+	r: number,
+	rotation: number,
+	big: boolean,
+	parent: Instance,
+	random: Random
+)
 	local model = Instance.new("Model")
 	model.Name = if big then "BigTree" else "Tree"
-	local r = obstacle.radius
 	local trunkRadius = r * (if big then 0.32 else 0.28)
 	local height = r * (if big then 3.2 else 2.6) + random:NextNumber(-1, 1)
 	local trunk = pick(TRUNK_COLORS, random)
-	cylinder(
-		"Trunk",
-		obstacle.x,
-		obstacle.z,
-		-0.5,
-		height * 0.55,
-		trunkRadius,
-		trunk,
-		Enum.Material.Wood,
-		model
-	)
+	cylinder("Trunk", x, z, -0.5, height * 0.55, trunkRadius, trunk, Enum.Material.Wood, model)
 	-- Roots: three short blocks splayed at the base.
 	for index = 1, 3 do
-		local angle = obstacle.rotation + index * 2 * math.pi / 3
+		local angle = rotation + index * 2 * math.pi / 3
 		local position = Vector3.new(
-			obstacle.x + math.cos(angle) * trunkRadius * 1.2,
+			x + math.cos(angle) * trunkRadius * 1.2,
 			0.4,
-			obstacle.z + math.sin(angle) * trunkRadius * 1.2
+			z + math.sin(angle) * trunkRadius * 1.2
 		)
 		block(
 			"Root",
@@ -194,13 +347,13 @@ local function buildTree(obstacle: Types.Obstacle, big: boolean, parent: Instanc
 	local crownShade = crown:Lerp(Color3.new(0, 0, 0), 0.18)
 	local balls = if big then 5 else 3
 	for index = 1, balls do
-		local angle = obstacle.rotation + index * 2 * math.pi / balls
+		local angle = rotation + index * 2 * math.pi / balls
 		local spread = if index == 1 then 0 else r * 0.55
 		local diameter = r * (if index == 1 then 2.2 else 1.6) * random:NextNumber(0.9, 1.1)
 		local position = Vector3.new(
-			obstacle.x + math.cos(angle) * spread,
+			x + math.cos(angle) * spread,
 			height * 0.55 + diameter * 0.35 + (if index == 1 then r * 0.5 else 0),
-			obstacle.z + math.sin(angle) * spread
+			z + math.sin(angle) * spread
 		)
 		ball(
 			"Crown",
@@ -211,30 +364,24 @@ local function buildTree(obstacle: Types.Obstacle, big: boolean, parent: Instanc
 			model
 		)
 	end
-	body("Body", obstacle.x, obstacle.z, r, height, model)
 	model.Parent = parent
 end
 
 -- A rock: two or three tilted blocks, the biggest capped with moss.
-local function buildRock(
-	obstacle: Types.Obstacle,
-	boulder: boolean,
-	parent: Instance,
-	random: Random
-)
+local function buildRock(prop: Prop, boulder: boolean, parent: Instance, random: Random)
 	local model = Instance.new("Model")
 	model.Name = if boulder then "Boulder" else "Rock"
-	local r = obstacle.radius
+	local r = prop.radius
 	local color = pick(ROCK_COLORS, random)
 	local pieces = if boulder then 3 else 2
 	for index = 1, pieces do
-		local angle = obstacle.rotation + index * 2.1
+		local angle = prop.rotation + index * 2.1
 		local offset = if index == 1 then 0 else r * 0.45
 		local size = r * (if index == 1 then 1.5 else 1.0) * random:NextNumber(0.85, 1.15)
 		local position = Vector3.new(
-			obstacle.x + math.cos(angle) * offset,
+			prop.x + math.cos(angle) * offset,
 			size * 0.38,
-			obstacle.z + math.sin(angle) * offset
+			prop.z + math.sin(angle) * offset
 		)
 		block(
 			"Stone",
@@ -253,7 +400,7 @@ local function buildRock(
 	if boulder then
 		local moss = ball(
 			"Moss",
-			Vector3.new(obstacle.x, r * 0.9, obstacle.z),
+			Vector3.new(prop.x, r * 0.9, prop.z),
 			r * 1.3,
 			MOSS_COLOR,
 			Enum.Material.Grass,
@@ -261,92 +408,354 @@ local function buildRock(
 		)
 		moss.Size = Vector3.new(r * 1.4, r * 0.5, r * 1.4)
 	end
-	body("Body", obstacle.x, obstacle.z, r, r * 1.6, model)
 	model.Parent = parent
 end
 
--- A ruin: a broken ring of wall pieces and a fallen column.
-local function buildRuin(obstacle: Types.Obstacle, parent: Instance, random: Random)
+-- A ruin: a broken ring of wall pieces and a fallen column, one per circle,
+-- standing in for a building without its mesh.
+local function buildRuin(prop: Prop, parent: Instance, random: Random)
 	local model = Instance.new("Model")
 	model.Name = "Ruin"
-	local r = obstacle.radius
-	local pieces = 5
-	for index = 1, pieces do
-		if index == 3 then
-			continue -- the gap
+	for _, circle in prop.circles do
+		local r = circle.radius
+		local pieces = 5
+		for index = 1, pieces do
+			if index == 3 then
+				continue -- the gap
+			end
+			local angle = prop.rotation + index * 2 * math.pi / pieces
+			local height = r * random:NextNumber(0.5, 1.1)
+			local position = Vector3.new(
+				circle.x + math.cos(angle) * r * 0.75,
+				height / 2,
+				circle.z + math.sin(angle) * r * 0.75
+			)
+			local tangent = Vector3.new(-math.sin(angle), 0, math.cos(angle))
+			block(
+				"Wall",
+				CFrame.lookAt(position, position + tangent),
+				Vector3.new(1.2, height, r * 0.9),
+				if index % 2 == 0 then RUIN_COLOR else RUIN_DARK,
+				Enum.Material.Cobblestone,
+				model
+			)
 		end
-		local angle = obstacle.rotation + index * 2 * math.pi / pieces
-		local height = r * random:NextNumber(0.5, 1.1)
-		local position = Vector3.new(
-			obstacle.x + math.cos(angle) * r * 0.75,
-			height / 2,
-			obstacle.z + math.sin(angle) * r * 0.75
-		)
-		local tangent = Vector3.new(-math.sin(angle), 0, math.cos(angle))
+		local column = decor("Column", RUIN_COLOR, Enum.Material.Cobblestone, model)
+		column.Shape = Enum.PartType.Cylinder
+		column.Size = Vector3.new(r * 1.2, 1.2, 1.2)
+		column.CFrame = CFrame.new(circle.x, 0.6, circle.z) * yaw(prop.rotation)
+	end
+	model.Parent = parent
+end
+
+-- A stump: a short trunk with a pale cut top.
+local function buildStump(prop: Prop, parent: Instance, random: Random)
+	local model = Instance.new("Model")
+	model.Name = "Stump"
+	local trunk = pick(TRUNK_COLORS, random)
+	local r = prop.radius * 0.8
+	cylinder("Trunk", prop.x, prop.z, -0.3, 1.6, r, trunk, Enum.Material.Wood, model)
+	cylinder(
+		"Cut",
+		prop.x,
+		prop.z,
+		1.6,
+		1.7,
+		r * 0.85,
+		trunk:Lerp(Color3.new(1, 1, 1), 0.35),
+		Enum.Material.Wood,
+		model
+	)
+	model.Parent = parent
+end
+
+-- The two footprint circles furthest apart, as world positions: a log's ends,
+-- a fence's first and last post.
+local function span(prop: Prop): (Vector3, Vector3, number)
+	local first, last = prop.circles[1], prop.circles[#prop.circles]
+	return Vector3.new(first.x, 0, first.z), Vector3.new(last.x, 0, last.z), first.radius
+end
+
+-- A fallen log lying across its footprint.
+local function buildLog(prop: Prop, parent: Instance, random: Random)
+	local model = Instance.new("Model")
+	model.Name = "Log"
+	local from, to, r = span(prop)
+	local radius = r * 0.85
+	local length = (to - from).Magnitude + r * 2
+	local centre = (from + to) / 2 + Vector3.new(0, radius, 0)
+	local log = decor("Log", pick(TRUNK_COLORS, random), Enum.Material.Wood, model)
+	log.Shape = Enum.PartType.Cylinder
+	log.Size = Vector3.new(length, radius * 2, radius * 2)
+	log.CFrame = CFrame.new(centre) * yaw(prop.rotation)
+	model.Parent = parent
+end
+
+-- A fence: a post at every footprint circle and two rails along them.
+local function buildFence(prop: Prop, parent: Instance)
+	local model = Instance.new("Model")
+	model.Name = "Fence"
+	for index, circle in prop.circles do
 		block(
-			"Wall",
-			CFrame.lookAt(position, position + tangent),
-			Vector3.new(1.2, height, r * 0.9),
-			if index % 2 == 0 then RUIN_COLOR else RUIN_DARK,
-			Enum.Material.Cobblestone,
+			"Post" .. index,
+			CFrame.new(circle.x, 1.75, circle.z) * yaw(prop.rotation),
+			Vector3.new(0.6, 3.5, 0.6),
+			FENCE_COLOR,
+			Enum.Material.Wood,
 			model
 		)
 	end
-	local fallen = CFrame.new(obstacle.x, 0.6, obstacle.z)
-		* CFrame.Angles(0, obstacle.rotation, math.pi / 2)
-	local column = decor("Column", RUIN_COLOR, Enum.Material.Cobblestone, model)
-	column.Shape = Enum.PartType.Cylinder
-	column.Size = Vector3.new(r * 1.2, 1.2, 1.2)
-	column.CFrame = fallen
-	body("Body", obstacle.x, obstacle.z, r, r * 1.2, model)
+	local from, to = span(prop)
+	local length = (to - from).Magnitude + 1
+	for index, height in { 1.2, 2.6 } do
+		local centre = (from + to) / 2 + Vector3.new(0, height, 0)
+		block(
+			"Rail" .. index,
+			CFrame.new(centre) * yaw(prop.rotation),
+			Vector3.new(length, 0.35, 0.25),
+			FENCE_COLOR:Lerp(Color3.new(0, 0, 0), 0.12),
+			Enum.Material.Wood,
+			model
+		)
+	end
 	model.Parent = parent
 end
 
-local function buildObstacle(obstacle: Types.Obstacle, parent: Instance, random: Random)
-	if obstacle.kind == "tree" then
-		buildTree(obstacle, false, parent, random)
-	elseif obstacle.kind == "bigTree" then
-		buildTree(obstacle, true, parent, random)
-	elseif obstacle.kind == "rock" then
-		buildRock(obstacle, false, parent, random)
-	elseif obstacle.kind == "boulder" then
-		buildRock(obstacle, true, parent, random)
+-- A stone circle: a standing stone at every footprint circle.
+local function buildStoneCircle(prop: Prop, parent: Instance, random: Random)
+	local model = Instance.new("Model")
+	model.Name = "StoneCircle"
+	local color = pick(ROCK_COLORS, random)
+	for index, circle in prop.circles do
+		local height = random:NextNumber(4, 6.5)
+		block(
+			"Stone" .. index,
+			CFrame.new(circle.x, height / 2 - 0.3, circle.z)
+				* yaw(prop.rotation + index)
+				* CFrame.Angles(random:NextNumber(-0.08, 0.08), 0, random:NextNumber(-0.08, 0.08)),
+			Vector3.new(circle.radius * 1.3, height, circle.radius),
+			color,
+			Enum.Material.Slate,
+			model
+		)
+	end
+	model.Parent = parent
+end
+
+-- A pond, always from parts: the terrain is dug out and banked with sand, a
+-- dark bed lies under a flat, slightly reflective water disc sunk below the
+-- ground, so the bank's edge shows.
+local function buildPond(prop: Prop, parent: Instance)
+	local terrain = workspace.Terrain
+	local r = prop.radius
+	terrain:FillCylinder(
+		CFrame.new(prop.x, -GROUND_THICKNESS / 2, prop.z),
+		GROUND_THICKNESS,
+		r + 6,
+		POND_RIM_MATERIAL
+	)
+	terrain:FillCylinder(
+		CFrame.new(prop.x, -GROUND_THICKNESS / 2, prop.z),
+		GROUND_THICKNESS + 1,
+		r + 3,
+		Enum.Material.Air
+	)
+	local model = Instance.new("Model")
+	model.Name = "Pond"
+	cylinder("Bed", prop.x, prop.z, -2.6, -2, r + 5, POND_BED_COLOR, Enum.Material.Mud, model)
+	local water = cylinder(
+		"Water",
+		prop.x,
+		prop.z,
+		-0.9,
+		-0.3,
+		r + 4,
+		WATER_COLOR,
+		Enum.Material.SmoothPlastic,
+		model
+	)
+	water.Transparency = 0.2
+	water.Reflectance = 0.15
+	water.CastShadow = false
+	model.Parent = parent
+end
+
+local function buildFallback(prop: Prop, parent: Instance, random: Random)
+	local kind = prop.kind
+	if kind == "pine" or kind == "tree" then
+		buildTree(prop.x, prop.z, prop.radius, prop.rotation, false, parent, random)
+	elseif kind == "oak" or kind == "bigTree" then
+		buildTree(prop.x, prop.z, prop.radius, prop.rotation, true, parent, random)
+	elseif kind == "stump" then
+		buildStump(prop, parent, random)
+	elseif kind == "rock" then
+		buildRock(prop, false, parent, random)
+	elseif kind == "boulder" then
+		buildRock(prop, true, parent, random)
+	elseif kind == "log" then
+		buildLog(prop, parent, random)
+	elseif kind == "fence" then
+		buildFence(prop, parent)
+	elseif kind == "stoneCircle" then
+		buildStoneCircle(prop, parent, random)
 	else
-		buildRuin(obstacle, parent, random)
+		-- chapel, tower, hut, well and anything new: a ruin until its mesh comes.
+		buildRuin(prop, parent, random)
+	end
+end
+
+local function drawProp(prop: Prop, parent: Instance, random: Random)
+	if prop.kind == "pond" then
+		buildPond(prop, parent)
+	elseif not meshProp(prop, parent) then
+		buildFallback(prop, parent, random)
+	end
+end
+
+-- The footprints of the current map's kinds, by kind id.
+local function footprints(): { [string]: { FootprintCircle } }
+	local result = {}
+	local map = Config.maps[Config.map]
+	if map then
+		for _, kind in map.obstacleKinds do
+			if kind.footprint then
+				result[kind.id] = kind.footprint
+			end
+		end
+	end
+	return result
+end
+
+-- The prop an anchor circle stands for. Its centre is the anchor's x/z, or,
+-- when the core gave every circle of the footprint, the circles' mean less the
+-- footprint's turned mean offset, so it holds whichever circle is the anchor.
+local function propOf(
+	anchor: Types.Obstacle,
+	group: { Types.Obstacle },
+	footprint: { FootprintCircle }?
+): Prop
+	local x, z = anchor.x, anchor.z
+	local circles = {}
+	if footprint and #footprint > 0 then
+		if #group == #footprint then
+			local sx, sz, ox, oz = 0, 0, 0, 0
+			for _, circle in group do
+				sx += circle.x
+				sz += circle.z
+			end
+			for _, offset in footprint do
+				ox += offset.dx
+				oz += offset.dz
+			end
+			local tx, tz = turn(ox / #footprint, oz / #footprint, anchor.rotation)
+			x, z = sx / #group - tx, sz / #group - tz
+		end
+		for _, offset in footprint do
+			local dx, dz = turn(offset.dx, offset.dz, anchor.rotation)
+			table.insert(circles, { x = x + dx, z = z + dz, radius = offset.radius })
+		end
+	else
+		table.insert(circles, { x = x, z = z, radius = anchor.radius })
+	end
+	return {
+		kind = anchor.kind,
+		x = x,
+		z = z,
+		rotation = anchor.rotation,
+		radius = anchor.radius,
+		group = anchor.group,
+		circles = circles,
+	}
+end
+
+-- A terrain disc of `material` flush with the ground.
+local function paint(x: number, z: number, radius: number, material: Enum.Material)
+	workspace.Terrain:FillCylinder(
+		CFrame.new(x, -GROUND_THICKNESS / 2, z),
+		GROUND_THICKNESS,
+		radius,
+		material
+	)
+end
+
+-- Lighter grass discs away from the start, none overlapping another.
+local function buildClearings(arena: Types.Arena, random: Random)
+	local placed: { { x: number, z: number, radius: number } } = {}
+	local count = random:NextInteger(CLEARING_COUNT_MIN, CLEARING_COUNT_MAX)
+	for _ = 1, count do
+		local radius = random:NextNumber(CLEARING_RADIUS_MIN, CLEARING_RADIUS_MAX)
+		for _ = 1, CLEARING_ATTEMPTS do
+			local angle = random:NextNumber(0, 2 * math.pi)
+			local distance = math.max(arena.radius - radius - 10, 0)
+				* math.sqrt(random:NextNumber())
+			local x, z = math.cos(angle) * distance, math.sin(angle) * distance
+			local fits = math.sqrt((x - arena.startX) ^ 2 + (z - arena.startZ) ^ 2)
+				>= CLEARING_START_GAP + radius
+			for _, other in placed do
+				if math.sqrt((x - other.x) ^ 2 + (z - other.z) ^ 2) < radius + other.radius then
+					fits = false
+					break
+				end
+			end
+			if fits then
+				table.insert(placed, { x = x, z = z, radius = radius })
+				paint(x, z, radius, CLEARING_MATERIAL)
+				break
+			end
+		end
+	end
+end
+
+-- A winding dirt band from the start toward the chest: a chain of terrain
+-- discs swaying off the straight line, back on it at both ends.
+local function buildPath(arena: Types.Arena, random: Random)
+	local from = Vector3.new(arena.startX, 0, arena.startZ)
+	local to = Vector3.new(arena.chestX, 0, arena.chestZ)
+	local line = to - from
+	local length = line.Magnitude
+	local run = length - PATH_START_GAP - PATH_CHEST_GAP
+	if run <= 0 then
+		return
+	end
+	local along = line.Unit
+	local side = Vector3.new(-along.Z, 0, along.X)
+	local phase = random:NextNumber(0, 2 * math.pi)
+	local steps = math.floor(run / PATH_STEP)
+	for index = 0, steps do
+		local t = index / steps
+		local sway = PATH_SWAY
+			* math.sin(t * PATH_WAVES * 2 * math.pi + phase)
+			* math.sin(t * math.pi)
+		local point = from + along * (PATH_START_GAP + t * run) + side * sway
+		paint(point.X, point.Z, PATH_RADIUS * random:NextNumber(0.85, 1.15), PATH_MATERIAL)
+		if index % BUILD_BATCH == 0 then
+			task.wait()
+		end
 	end
 end
 
 -- The ground is terrain: a grass disc with patches of other materials
 -- blended in, which gives the forest floor its texture and swaying grass for
--- nothing per frame; above it the start's ring of stones and a few flowers.
+-- nothing per frame; clearings and the path over them; above it the start's
+-- ring of stones and a few flowers.
 local function buildGround(arena: Types.Arena, parent: Instance, random: Random)
 	local terrain = workspace.Terrain
+	terrain:SetMaterialColor(CLEARING_MATERIAL, CLEARING_COLOR)
+	terrain:SetMaterialColor(PATH_MATERIAL, PATH_COLOR)
 	local outer = arena.radius + GROUND_OVERHANG
-	terrain:FillCylinder(
-		CFrame.new(0, -GROUND_THICKNESS / 2, 0),
-		GROUND_THICKNESS,
-		outer,
-		Enum.Material.Grass
-	)
+	paint(0, 0, outer, Enum.Material.Grass)
 	for index = 1, PATCH_COUNT do
 		local angle = random:NextNumber(0, 2 * math.pi)
 		local distance = arena.radius * math.sqrt(random:NextNumber())
 		local radius = random:NextNumber(PATCH_RADIUS_MIN, PATCH_RADIUS_MAX)
 		local material = PATCH_MATERIALS[random:NextInteger(1, #PATCH_MATERIALS)]
-		terrain:FillCylinder(
-			CFrame.new(
-				math.cos(angle) * distance,
-				-GROUND_THICKNESS / 2,
-				math.sin(angle) * distance
-			),
-			GROUND_THICKNESS,
-			radius,
-			material
-		)
+		paint(math.cos(angle) * distance, math.sin(angle) * distance, radius, material)
 		if index % 40 == 0 then
 			task.wait()
 		end
 	end
+	buildClearings(arena, random)
+	buildPath(arena, random)
 
 	local ground = Instance.new("Model")
 	ground.Name = "Ground"
@@ -380,9 +789,9 @@ local function buildGround(arena: Types.Arena, parent: Instance, random: Random)
 	ground.Parent = parent
 end
 
--- A dense line of trees just outside the edge: the forest closes the map,
--- so the invisible wall reads as something. Dressing only; the wall stops
--- the characters.
+-- A dense line of pines and oaks just outside the edge: the forest closes the
+-- map, so the invisible wall reads as something. Dressing only; the wall
+-- stops the characters.
 local function buildTreeLine(arena: Types.Arena, parent: Instance, random: Random)
 	local line = Instance.new("Model")
 	line.Name = "TreeLine"
@@ -393,18 +802,22 @@ local function buildTreeLine(arena: Types.Arena, parent: Instance, random: Rando
 		for index = 1, trees do
 			local angle = (index + ring * 0.5) * 2 * math.pi / trees
 			local wobble = random:NextNumber(-TREE_LINE_SPACING * 0.3, TREE_LINE_SPACING * 0.3)
-			local obstacle: Types.Obstacle = {
-				id = 0,
-				kind = "bigTree",
-				x = math.cos(angle) * (radius + wobble),
-				z = math.sin(angle) * (radius + wobble),
-				radius = TREE_LINE_RADIUS * random:NextNumber(0.85, 1.2),
-				rotation = angle,
-				group = 0,
-				anchor = true,
-			}
-			buildTree(obstacle, ring == 1, line, random)
+			local x = math.cos(angle) * (radius + wobble)
+			local z = math.sin(angle) * (radius + wobble)
+			local treeRadius = TREE_LINE_RADIUS * random:NextNumber(0.85, 1.2)
 			count += 1
+			local prop: Prop = {
+				kind = if random:NextNumber() < 0.6 then "pine" else "oak",
+				x = x,
+				z = z,
+				rotation = angle,
+				radius = treeRadius,
+				group = count,
+				circles = { { x = x, z = z, radius = treeRadius } },
+			}
+			if not meshProp(prop, line) then
+				buildTree(x, z, treeRadius, angle, ring == 1, line, random)
+			end
 			if count % BUILD_BATCH == 0 then
 				task.wait()
 			end
@@ -505,14 +918,149 @@ local function buildChest(arena: Types.Arena, parent: Instance)
 	chestLid = lid
 end
 
+-- The emblem floating over a shrine's plinth, by kind; returns its parts.
+local function buildEmblem(
+	kind: string,
+	x: number,
+	z: number,
+	color: Color3,
+	model: Model
+): { BasePart }
+	local y = SHRINE_EMBLEM_HEIGHT
+	local parts: { BasePart } = {}
+	if kind == "boon" then
+		-- A golden orb in a glassy halo.
+		table.insert(
+			parts,
+			ball("Orb", Vector3.new(x, y, z), 2.4, color, Enum.Material.Neon, model)
+		)
+		local halo = ball("Halo", Vector3.new(x, y, z), 3.4, color, Enum.Material.Glass, model)
+		halo.Transparency = 0.6
+		table.insert(parts, halo)
+	elseif kind == "pact" then
+		-- A crimson blade, point up, over a dark crossguard.
+		table.insert(
+			parts,
+			block(
+				"Blade",
+				CFrame.new(x, y, z),
+				Vector3.new(0.3, 3.2, 0.9),
+				color,
+				Enum.Material.Neon,
+				model
+			)
+		)
+		local tip = Instance.new("WedgePart")
+		tip.Name = "Tip"
+		tip.Anchored = true
+		quiet(tip)
+		tip.Color = color
+		tip.Material = Enum.Material.Neon
+		tip.Size = Vector3.new(0.3, 1.2, 0.9)
+		tip.CFrame = CFrame.new(x, y + 2.2, z)
+		tip.Parent = model
+		table.insert(parts, tip)
+		table.insert(
+			parts,
+			block(
+				"Guard",
+				CFrame.new(x, y - 1.7, z),
+				Vector3.new(0.5, 0.4, 2.4),
+				color:Lerp(Color3.new(0, 0, 0), 0.5),
+				Enum.Material.Metal,
+				model
+			)
+		)
+	elseif kind == "trial" then
+		-- A violet ring standing on edge.
+		local pieces = 12
+		for index = 1, pieces do
+			local angle = index * 2 * math.pi / pieces
+			table.insert(
+				parts,
+				block(
+					"Ring" .. index,
+					CFrame.new(x + math.cos(angle) * 1.8, y + math.sin(angle) * 1.8, z)
+						* CFrame.Angles(0, 0, angle),
+					Vector3.new(0.5, 1.05, 0.5),
+					color,
+					Enum.Material.Neon,
+					model
+				)
+			)
+		end
+	else
+		-- A spring: a stone basin of glowing water on the plinth, a drop above.
+		cylinder("Basin", x, z, 1.6, 2.5, 2.2, SHRINE_STONE_DARK, Enum.Material.Slate, model)
+		table.insert(
+			parts,
+			cylinder("Water", x, z, 2.5, 2.6, 1.8, color, Enum.Material.Neon, model)
+		)
+		table.insert(
+			parts,
+			ball("Drop", Vector3.new(x, y, z), 1.2, color, Enum.Material.Neon, model)
+		)
+	end
+	return parts
+end
+
+local function buildShrine(shrine: Types.Shrine, parent: Instance)
+	local color = SHRINE_COLORS[shrine.kind] or SHRINE_COLORS.boon
+	local model = Instance.new("Model")
+	model.Name = "Shrine_" .. shrine.id
+	local x, z, r = shrine.x, shrine.z, shrine.radius
+	local plinth =
+		cylinder("Plinth", x, z, -0.2, 1, r, SHRINE_STONE, Enum.Material.Cobblestone, model)
+	plinth.CanCollide = true
+	plinth.CanQuery = true
+	cylinder("Top", x, z, 1, 1.6, r * 0.7, SHRINE_STONE_DARK, Enum.Material.Slate, model)
+	local emblem: { Look } = {}
+	for _, part in buildEmblem(shrine.kind, x, z, color, model) do
+		part.CastShadow = false
+		table.insert(emblem, { part = part, color = part.Color, material = part.Material })
+	end
+	local beam = cylinder(
+		"Beam",
+		x,
+		z,
+		1.6,
+		1.6 + BEAM_HEIGHT,
+		BEAM_RADIUS,
+		color,
+		Enum.Material.Neon,
+		model
+	)
+	beam.CastShadow = false
+	local glow = cylinder(
+		"BeamGlow",
+		x,
+		z,
+		1.6,
+		1.6 + BEAM_HEIGHT,
+		BEAM_GLOW_RADIUS,
+		color,
+		Enum.Material.Neon,
+		model
+	)
+	glow.CastShadow = false
+	local light = Instance.new("PointLight")
+	light.Color = color
+	light.Range = 18
+	light.Parent = emblem[1].part
+	model.Parent = parent
+	shrineLooks[shrine.id] = { beam = beam, glow = glow, light = light, emblem = emblem }
+	ArenaBuilder.setShrineState(shrine.id, shrine.used, true)
+end
+
 -- Replaces the previous run's map with this one. Yields between batches of
 -- obstacles, so a frame never builds everything at once.
 function ArenaBuilder.build(arena: Types.Arena)
 	ArenaBuilder.clear()
+	preloadProps()
 	local root = Instance.new("Folder")
 	root.Name = "World"
 	folder = root
-	-- Only the look varies with it: colours and tilts.
+	-- Only the look varies with it: colours, tilts, clearings and the path.
 	local random = Random.new(arena.chestX * 1000 + arena.chestZ)
 	buildGround(arena, root, random)
 	buildWall(arena, root)
@@ -523,11 +1071,70 @@ function ArenaBuilder.build(arena: Types.Arena)
 	local obstacles = Instance.new("Folder")
 	obstacles.Name = "Obstacles"
 	obstacles.Parent = root
+	local groups: { [number]: { Types.Obstacle } } = {}
+	for _, obstacle in arena.obstacles do
+		local group = groups[obstacle.group]
+		if group == nil then
+			group = {}
+			groups[obstacle.group] = group
+		end
+		table.insert(group, obstacle)
+	end
+	local kinds = footprints()
 	for index, obstacle in arena.obstacles do
-		buildObstacle(obstacle, obstacles, random)
+		if obstacle.anchor then
+			local prop = propOf(obstacle, groups[obstacle.group], kinds[obstacle.kind])
+			drawProp(prop, obstacles, random)
+		end
+		body("Body" .. obstacle.id, obstacle.x, obstacle.z, obstacle.radius, BODY_HEIGHT, obstacles)
 		if index % BUILD_BATCH == 0 then
 			task.wait()
 		end
+	end
+end
+
+-- Puts the run's shrines on the map, in workspace.World.Shrines.
+function ArenaBuilder.buildShrines(shrines: { Types.Shrine })
+	local root = folder
+	if root == nil then
+		return
+	end
+	local existing = root:FindFirstChild("Shrines")
+	if existing then
+		existing:Destroy()
+	end
+	shrineLooks = {}
+	local parent = Instance.new("Folder")
+	parent.Name = "Shrines"
+	for _, shrine in shrines do
+		buildShrine(shrine, parent)
+	end
+	parent.Parent = root
+end
+
+-- Shows whether a shrine can be used: a used one loses its beam and its
+-- emblem greys; a spring recharging (not ready) keeps a dim beam. Does
+-- nothing when the state is the one already shown.
+function ArenaBuilder.setShrineState(id: number, used: boolean, ready: boolean)
+	local look = shrineLooks[id]
+	if look == nil then
+		return
+	end
+	local state = if used then "used" elseif ready then "ready" else "dim"
+	if look.state == state then
+		return
+	end
+	look.state = state
+	look.beam.Transparency = if state == "ready"
+		then BEAM_TRANSPARENCY
+		elseif state == "dim" then BEAM_DIM_TRANSPARENCY
+		else 1
+	look.glow.Transparency = if state == "ready" then BEAM_GLOW_TRANSPARENCY else 1
+	look.light.Enabled = state ~= "used"
+	look.light.Brightness = if state == "ready" then SHRINE_LIGHT_BRIGHTNESS else SHRINE_LIGHT_DIM
+	for _, part in look.emblem do
+		part.part.Color = if used then SHRINE_SPENT else part.color
+		part.part.Material = if used then Enum.Material.SmoothPlastic else part.material
 	end
 end
 
@@ -547,8 +1154,9 @@ function ArenaBuilder.setChestOpened(opened: boolean)
 	end
 end
 
--- Removes the current map and what a default place brings: the baseplate and
--- any spawn location. Characters reach the map through the run's teleport.
+-- Removes the current map, its shrines and what a default place brings: the
+-- baseplate and any spawn location. Characters reach the map through the
+-- run's teleport.
 function ArenaBuilder.clear()
 	workspace.Terrain:Clear()
 	if folder then
@@ -557,6 +1165,7 @@ function ArenaBuilder.clear()
 	end
 	chestModel = nil
 	chestLid = nil
+	shrineLooks = {}
 	local baseplate = workspace:FindFirstChild("Baseplate")
 	if baseplate then
 		baseplate:Destroy()

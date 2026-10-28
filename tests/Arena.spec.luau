@@ -3,6 +3,35 @@ local Arena = require("../src/shared/Core/Arena")
 local Assert = require("./Assert")
 local Fixtures = require("./Fixtures")
 local Geometry = require("../src/shared/Core/Geometry")
+local Rng = require("../src/shared/Core/Rng")
+local Types = require("../src/shared/Core/Types")
+
+-- The obstacle kind of `id` on the run's map.
+local function kindOf(map: Types.MapConfig, id: string): any
+	for _, kind in map.obstacleKinds do
+		if kind.id == id then
+			return kind
+		end
+	end
+	error("no obstacle kind " .. id)
+end
+
+-- The obstacles of each group, in the order placed.
+local function groups(arena: Types.Arena): { [number]: { Types.Obstacle } }
+	local byGroup: { [number]: { Types.Obstacle } } = {}
+	for _, obstacle in arena.obstacles do
+		local list = byGroup[obstacle.group] or {}
+		table.insert(list, obstacle)
+		byGroup[obstacle.group] = list
+	end
+	return byGroup
+end
+
+local function spots(seed: number): { Types.ShrineSpot }
+	local config = Fixtures.config()
+	local map = config.maps[config.map]
+	return Arena.generate(map, Rng.new(seed), config.shrines).shrineSpots
+end
 
 return {
 	["the scatter keeps its spacing and the clear ground"] = function()
@@ -28,7 +57,8 @@ return {
 				"inside"
 			)
 			for j, b in arena.obstacles do
-				if i < j then
+				-- A prop's own circles may touch; props keep their spacing.
+				if i < j and a.group ~= b.group then
 					Assert.truthy(
 						Geometry.distance(a.x, a.z, b.x, b.z)
 							>= a.radius + b.radius + map.obstacleSpacing - 1e-6,
@@ -129,5 +159,144 @@ return {
 		)
 		local x, z = Arena.freeSpot(run.arena, 0, 0, 1.5, run.rng, 8)
 		Assert.truthy(Arena.blocking(run.arena, x, z, 1.5) == nil)
+	end,
+
+	["a prop with a footprint takes one circle per entry, turned with it"] = function()
+		local run = Fixtures.run(1, nil, 7)
+		local map = run.map
+		local seen = 0
+		for group, circles in groups(run.arena) do
+			local first = circles[1]
+			local kind = kindOf(map, first.kind)
+			local footprint = kind.footprint
+			for order, circle in circles do
+				Assert.equal(circle.kind, first.kind, "one kind per group")
+				Assert.equal(circle.rotation, first.rotation, "one rotation per group")
+				Assert.equal(circle.anchor, order == 1, "only the first is the anchor")
+			end
+			if footprint == nil then
+				Assert.equal(#circles, 1, "a plain kind is one circle")
+				Assert.equal(first.radius, kind.radius)
+				continue
+			end
+			seen += 1
+			Assert.equal(#circles, #footprint, "group " .. group)
+			-- The centre, found from the anchor, puts every circle at its turned offset.
+			local cos, sin = math.cos(first.rotation), math.sin(first.rotation)
+			local cx = first.x - (footprint[1].dx * cos - footprint[1].dz * sin)
+			local cz = first.z - (footprint[1].dx * sin + footprint[1].dz * cos)
+			for order, entry in footprint do
+				local circle = circles[order]
+				Assert.near(circle.x, cx + entry.dx * cos - entry.dz * sin, 1e-6)
+				Assert.near(circle.z, cz + entry.dx * sin + entry.dz * cos, 1e-6)
+				Assert.equal(circle.radius, entry.radius)
+			end
+		end
+		Assert.truthy(seen > 5, "props with footprints placed: " .. seen)
+	end,
+
+	["a footprint's offset turns with the rotation"] = function()
+		local config = Fixtures.config()
+		local map = config.maps[config.map]
+		map.obstacleKinds = {
+			{
+				id = "log",
+				radius = 1,
+				weight = 1,
+				footprint = { { dx = 0, dz = 0, radius = 1 }, { dx = 5, dz = 0, radius = 1 } },
+			},
+		}
+		local arena = Arena.generate(map, Rng.new(5))
+		local turned = 0
+		for _, circles in groups(arena) do
+			local a, b = circles[1], circles[2]
+			Assert.near(Geometry.distance(a.x, a.z, b.x, b.z), 5, 1e-6)
+			Assert.near(b.x - a.x, 5 * math.cos(a.rotation), 1e-6)
+			Assert.near(b.z - a.z, 5 * math.sin(a.rotation), 1e-6)
+			if math.abs(b.z - a.z) > 1 then
+				turned += 1
+			end
+		end
+		Assert.truthy(turned > 0, "some logs turned")
+	end,
+
+	["without the shrines' config no spots are scattered"] = function()
+		local config = Fixtures.config()
+		Assert.equal(#Arena.generate(config.maps[config.map], Rng.new(1)).shrineSpots, 0)
+	end,
+
+	["shrine spots are dealt round-robin, two of each kind"] = function()
+		local config = Fixtures.config()
+		for seed = 1, 5 do
+			local list = spots(seed)
+			Assert.equal(#list, config.shrines.count, "seed " .. seed)
+			local counts: { [string]: number } = {}
+			for _, spot in list do
+				counts[spot.kind] = (counts[spot.kind] or 0) + 1
+			end
+			for _, kind in config.shrines.kinds do
+				Assert.equal(counts[kind], 2, kind)
+			end
+		end
+	end,
+
+	["shrine spots keep their distances"] = function()
+		local config = Fixtures.config()
+		local shrines = config.shrines
+		local map = config.maps[config.map]
+		for seed = 1, 5 do
+			local arena = Arena.generate(map, Rng.new(seed), shrines)
+			for i, spot in arena.shrineSpots do
+				Assert.truthy(
+					Geometry.distance(spot.x, spot.z, 0, 0) >= shrines.startMinDistance,
+					"start"
+				)
+				Assert.truthy(
+					Geometry.distance(spot.x, spot.z, arena.chestX, arena.chestZ)
+						>= shrines.chestMinDistance,
+					"chest"
+				)
+				Assert.truthy(
+					Geometry.distance(spot.x, spot.z, 0, 0) + shrines.radius
+						<= map.radius - map.edgeMargin + 1e-6,
+					"inside"
+				)
+				for j, other in arena.shrineSpots do
+					if i < j then
+						Assert.truthy(
+							Geometry.distance(spot.x, spot.z, other.x, other.z) >= shrines.spacing,
+							"spacing"
+						)
+					end
+				end
+				for _, obstacle in arena.obstacles do
+					Assert.truthy(
+						Geometry.distance(spot.x, spot.z, obstacle.x, obstacle.z)
+							>= obstacle.radius + shrines.radius + map.obstacleSpacing,
+						"clear of obstacles"
+					)
+				end
+			end
+		end
+	end,
+
+	["the same seed scatters the same shrine spots"] = function()
+		local a, b, c = spots(9), spots(9), spots(10)
+		Assert.equal(#a, #b)
+		for i, spot in a do
+			Assert.equal(spot.kind, b[i].kind)
+			Assert.equal(spot.x, b[i].x)
+			Assert.equal(spot.z, b[i].z)
+		end
+		Assert.truthy(a[1].x ~= c[1].x or a[1].z ~= c[1].z, "another seed, other spots")
+	end,
+
+	["a spot that never fits is skipped"] = function()
+		local config = Fixtures.config()
+		config.shrines.spacing = 10000
+		Assert.equal(
+			#Arena.generate(config.maps[config.map], Rng.new(1), config.shrines).shrineSpots,
+			1
+		)
 	end,
 }
