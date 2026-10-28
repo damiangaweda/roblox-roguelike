@@ -1026,12 +1026,12 @@ local Config: Types.Config = {
 				{ id = "boulder", radius = 4.3, weight = 3 },
 				{
 					id = "log",
-					radius = 2,
+					radius = 1.6,
 					weight = 3,
 					footprint = {
-						{ dx = 0, dz = 0, radius = 2 },
-						{ dx = -3, dz = 0, radius = 2 },
-						{ dx = 3, dz = 0, radius = 2 },
+						{ dx = 0, dz = 0, radius = 1.6 },
+						{ dx = -2.9, dz = 0, radius = 1.6 },
+						{ dx = 2.9, dz = 0, radius = 1.6 },
 					},
 				},
 				{
