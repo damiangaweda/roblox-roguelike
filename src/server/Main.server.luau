@@ -487,6 +487,15 @@ local function applyDebug(current: Types.Run)
 		end
 		workspace:SetAttribute("DebugGoToLair", nil)
 	end
+	-- DebugGoTo (a Vector3; its X and Z) puts every member there.
+	local goTo = workspace:GetAttribute("DebugGoTo")
+	if typeof(goTo) == "Vector3" then
+		for _, core in current.players do
+			core.x = goTo.X
+			core.z = goTo.Z
+		end
+		workspace:SetAttribute("DebugGoTo", nil)
+	end
 	-- DebugInvulnerable keeps every member at full health while set.
 	if workspace:GetAttribute("DebugInvulnerable") == true then
 		for _, core in current.players do
