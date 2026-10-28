@@ -451,8 +451,6 @@ local SLEEP_GLOW_MIN = 0.72
 local SLEEP_GLOW_MAX = 0.88
 local SLEEP_GLOW_HZ = 0.35
 local SLEEP_LIGHT_BRIGHTNESS = 0.6
--- A sleeping guard has stood still since the last snapshot, to the stud's hundredth.
-local STILL = 0.01
 -- A telegraph's length before the event that names it arrives.
 local DEFAULT_TELEGRAPH = 0.5
 
@@ -1138,24 +1136,20 @@ end
 -- lair's boss while the lair sleeps, or an elite standing still inside a
 -- sleeping lair (its guard).
 local function sleepingIn(enemy: Protocol.EnemyView, lairs: { Protocol.LairView }): Color3?
-	local kind = Config.enemies[enemy.kind]
-	local role = if kind then kind.role else nil
-	if role ~= "boss" and role ~= "elite" then
+	if not enemy.asleep then
 		return nil
 	end
-	local before = previousById[enemy.id]
-	local still = before == nil
-		or (math.abs(before.x - enemy.x) < STILL and math.abs(before.z - enemy.z) < STILL)
+	-- The glow takes the colour of the nearest lair.
+	local best: Protocol.LairView? = nil
+	local bestDistance = math.huge
 	for _, lair in lairs do
-		if lair.asleep then
-			local inside = (enemy.x - lair.x) ^ 2 + (enemy.z - lair.z) ^ 2 <= lair.radius ^ 2
-			if lair.bossId == enemy.id or (role == "elite" and still and inside) then
-				local lairKind = lairKinds[lair.kind]
-				return if lairKind then fromHex(lairKind.colour) else WHITE
-			end
+		local distance = (enemy.x - lair.x) ^ 2 + (enemy.z - lair.z) ^ 2
+		if distance < bestDistance then
+			best, bestDistance = lair, distance
 		end
 	end
-	return nil
+	local lairKind = if best then lairKinds[best.kind] else nil
+	return if lairKind then fromHex(lairKind.colour) else WHITE
 end
 
 -- Runs once per snapshot: pairs models with enemies and sets how they look.

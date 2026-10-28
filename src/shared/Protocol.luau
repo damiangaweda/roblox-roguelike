@@ -184,6 +184,8 @@ export type EnemyView = {
 	buffed: boolean,
 	-- A boss's phase; 1 for everything else.
 	phase: number,
+	-- Asleep in its lair (a boss or a guard).
+	asleep: boolean,
 }
 
 -- One enemy on the wire, after a u16 count:
@@ -191,6 +193,8 @@ export type EnemyView = {
 --   10 u8 state (chase 0, telegraph 1, charge 2, recover 3), 11 u8 health
 --   share, 12 u8 flags, 13 u8 phase.
 local ENEMY_BYTES = 14
+-- The top bit of the phase byte: the enemy sleeps in its lair.
+local ASLEEP_BIT = 128
 local FLAG_SLOWED = 1
 local FLAG_ROOTED = 2
 local FLAG_STUNNED = 4
@@ -248,7 +252,12 @@ function Protocol.encodeEnemies(run: Types.Run, kinds: { string }): buffer
 		local health = if enemy.maxHealth > 0 then enemy.health / enemy.maxHealth else 0
 		buffer.writeu8(out, offset + 11, math.clamp(math.ceil(health * 255), 0, 255))
 		buffer.writeu8(out, offset + 12, enemyFlags(run, enemy))
-		buffer.writeu8(out, offset + 13, math.clamp(enemy.phase, 0, 255))
+		-- The phase in the low bits, the sleep flag (ADR-0021) in the top one.
+		buffer.writeu8(
+			out,
+			offset + 13,
+			math.clamp(enemy.phase, 0, 127) + (if enemy.asleep then ASLEEP_BIT else 0)
+		)
 	end
 	return out
 end
@@ -284,7 +293,8 @@ function Protocol.decodeEnemies(data: any, kinds: { string }): { EnemyView }?
 			bleeding = hasFlag(flags, FLAG_BLEEDING),
 			poisoned = hasFlag(flags, FLAG_POISONED),
 			buffed = hasFlag(flags, FLAG_BUFFED),
-			phase = buffer.readu8(data, offset + 13),
+			phase = buffer.readu8(data, offset + 13) % ASLEEP_BIT,
+			asleep = buffer.readu8(data, offset + 13) >= ASLEEP_BIT,
 		}
 	end
 	return enemies
